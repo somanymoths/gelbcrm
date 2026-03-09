@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { upsertYookassaPayment } from '@/lib/db';
+import { syncCardPaymentStatusByProviderPaymentId } from '@/lib/funnel';
 
 const webhookSchema = z.object({
   type: z.string().optional(),
@@ -48,7 +49,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    await upsertYookassaPayment({
+    await Promise.all([
+      upsertYookassaPayment({
       providerPaymentId: payment.id,
       status: payment.status,
       amount,
@@ -60,7 +62,12 @@ export async function POST(request: Request) {
       metadata: payment.metadata ?? null,
       rawPayload: payload as unknown as Record<string, unknown>,
       paidAt: payment.captured_at ?? null
-    });
+      }),
+      syncCardPaymentStatusByProviderPaymentId({
+        providerPaymentId: payment.id,
+        providerStatus: payment.status
+      })
+    ]);
 
     return NextResponse.json({ ok: true });
   } catch (error) {

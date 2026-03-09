@@ -53,11 +53,11 @@ export async function POST(request: Request) {
 
     return NextResponse.json(created, { status: 201 });
   } catch (error) {
-    if (isDuplicateError(error, 'uq_students_email')) {
+    if (isDuplicateError(error, 'uq_students_email') || isDuplicateError(error, 'uq_students_email_active')) {
       return NextResponse.json({ code: 'DUPLICATE_EMAIL', message: 'Ученик с таким email уже существует' }, { status: 409 });
     }
 
-    if (isDuplicateError(error, 'uq_students_phone')) {
+    if (isDuplicateError(error, 'uq_students_phone') || isDuplicateError(error, 'uq_students_phone_active')) {
       return NextResponse.json({ code: 'DUPLICATE_PHONE', message: 'Ученик с таким телефоном уже существует' }, { status: 409 });
     }
 

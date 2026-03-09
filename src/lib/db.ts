@@ -1073,3 +1073,352 @@ export async function listPaymentHistory(limit = 200): Promise<PaymentHistoryRow
 
   return rows as PaymentHistoryRow[];
 }
+
+export type TariffGridListItem = {
+  id: string;
+  name: string;
+  is_active: 0 | 1;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TariffPackageItem = {
+  id: string;
+  tariff_grid_id: string;
+  lessons_count: number;
+  price_per_lesson_rub: number;
+  total_price_rub: number;
+  is_active: 0 | 1;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TariffGridWithPackages = TariffGridListItem & {
+  packages: TariffPackageItem[];
+};
+
+export async function listTariffGrids(input?: { includeInactive?: boolean }): Promise<TariffGridWithPackages[]> {
+  const includeInactive = Boolean(input?.includeInactive);
+  const [gridRows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT id, name, is_active, created_at, updated_at
+      FROM tariff_grids
+      ${includeInactive ? '' : 'WHERE is_active = 1'}
+      ORDER BY created_at DESC
+    `
+  );
+
+  if (gridRows.length === 0) return [];
+
+  const ids = gridRows.map((row) => String(row.id));
+  const placeholders = ids.map(() => '?').join(', ');
+
+  const [packageRows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        id,
+        tariff_grid_id,
+        lessons_count,
+        price_per_lesson_rub,
+        total_price_rub,
+        is_active,
+        created_at,
+        updated_at
+      FROM tariff_packages
+      WHERE tariff_grid_id IN (${placeholders})
+      ORDER BY lessons_count ASC, total_price_rub ASC
+    `,
+    ids
+  );
+
+  const packageMap = new Map<string, TariffPackageItem[]>();
+
+  for (const row of packageRows) {
+    const key = String(row.tariff_grid_id);
+    const list = packageMap.get(key) ?? [];
+    list.push({
+      id: String(row.id),
+      tariff_grid_id: String(row.tariff_grid_id),
+      lessons_count: Number(row.lessons_count),
+      price_per_lesson_rub: Number(row.price_per_lesson_rub),
+      total_price_rub: Number(row.total_price_rub),
+      is_active: Number(row.is_active) ? 1 : 0,
+      created_at: String(row.created_at),
+      updated_at: String(row.updated_at)
+    });
+    packageMap.set(key, list);
+  }
+
+  return gridRows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    is_active: Number(row.is_active) ? 1 : 0,
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+    packages: packageMap.get(String(row.id)) ?? []
+  }));
+}
+
+export async function createTariffGrid(input: {
+  name: string;
+  actorUserId: string;
+  packages: Array<{ lessonsCount: number; pricePerLessonRub: number }>;
+}): Promise<TariffGridWithPackages> {
+  const connection = await getPool().getConnection();
+  const gridId = randomUUID();
+
+  try {
+    await connection.beginTransaction();
+
+    await connection.query(
+      `
+        INSERT INTO tariff_grids (id, name, is_active, created_by)
+        VALUES (?, ?, 1, ?)
+      `,
+      [gridId, input.name, input.actorUserId]
+    );
+
+    for (const pkg of input.packages) {
+      const price = Number(pkg.pricePerLessonRub);
+      const lessons = Number(pkg.lessonsCount);
+      const total = Number((price * lessons).toFixed(2));
+
+      await connection.query(
+        `
+          INSERT INTO tariff_packages (
+            id,
+            tariff_grid_id,
+            lessons_count,
+            price_per_lesson_rub,
+            total_price_rub,
+            is_active
+          )
+          VALUES (?, ?, ?, ?, ?, 1)
+        `,
+        [randomUUID(), gridId, lessons, price, total]
+      );
+    }
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'tariff_grid',
+      entityId: gridId,
+      action: 'create',
+      diffAfter: {
+        name: input.name,
+        packages_count: input.packages.length
+      }
+    });
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+
+  const created = await getTariffGridById({ id: gridId });
+  if (!created) throw new Error('TARIFF_GRID_NOT_FOUND');
+  return created;
+}
+
+export async function getTariffGridById(input: { id: string }): Promise<TariffGridWithPackages | null> {
+  const [gridRows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT id, name, is_active, created_at, updated_at
+      FROM tariff_grids
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [input.id]
+  );
+
+  if (gridRows.length === 0) return null;
+
+  const [packageRows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        id,
+        tariff_grid_id,
+        lessons_count,
+        price_per_lesson_rub,
+        total_price_rub,
+        is_active,
+        created_at,
+        updated_at
+      FROM tariff_packages
+      WHERE tariff_grid_id = ?
+      ORDER BY lessons_count ASC, total_price_rub ASC
+    `,
+    [input.id]
+  );
+
+  const packages: TariffPackageItem[] = packageRows.map((row) => ({
+    id: String(row.id),
+    tariff_grid_id: String(row.tariff_grid_id),
+    lessons_count: Number(row.lessons_count),
+    price_per_lesson_rub: Number(row.price_per_lesson_rub),
+    total_price_rub: Number(row.total_price_rub),
+    is_active: Number(row.is_active) ? 1 : 0,
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at)
+  }));
+
+  return {
+    id: String(gridRows[0].id),
+    name: String(gridRows[0].name),
+    is_active: Number(gridRows[0].is_active) ? 1 : 0,
+    created_at: String(gridRows[0].created_at),
+    updated_at: String(gridRows[0].updated_at),
+    packages
+  };
+}
+
+export async function updateTariffGrid(input: {
+  id: string;
+  actorUserId: string;
+  name?: string;
+  isActive?: boolean;
+}): Promise<void> {
+  const updates: string[] = [];
+  const values: Array<string | number> = [];
+
+  if (typeof input.name === 'string') {
+    updates.push('name = ?');
+    values.push(input.name);
+  }
+
+  if (typeof input.isActive === 'boolean') {
+    updates.push('is_active = ?');
+    values.push(input.isActive ? 1 : 0);
+  }
+
+  if (updates.length === 0) return;
+
+  const [result] = await getPool().query<mysql.ResultSetHeader>(
+    `
+      UPDATE tariff_grids
+      SET ${updates.join(', ')}
+      WHERE id = ?
+    `,
+    [...values, input.id]
+  );
+
+  if (result.affectedRows === 0) {
+    throw new Error('TARIFF_GRID_NOT_FOUND');
+  }
+}
+
+export async function createTariffPackage(input: {
+  tariffGridId: string;
+  lessonsCount: number;
+  pricePerLessonRub: number;
+}): Promise<TariffPackageItem> {
+  const [gridRows] = await getPool().query<mysql.RowDataPacket[]>(
+    `SELECT id FROM tariff_grids WHERE id = ? LIMIT 1`,
+    [input.tariffGridId]
+  );
+
+  if (gridRows.length === 0) {
+    throw new Error('TARIFF_GRID_NOT_FOUND');
+  }
+
+  const id = randomUUID();
+  const total = Number((input.lessonsCount * input.pricePerLessonRub).toFixed(2));
+
+  await getPool().query(
+    `
+      INSERT INTO tariff_packages (
+        id,
+        tariff_grid_id,
+        lessons_count,
+        price_per_lesson_rub,
+        total_price_rub,
+        is_active
+      )
+      VALUES (?, ?, ?, ?, ?, 1)
+    `,
+    [id, input.tariffGridId, input.lessonsCount, input.pricePerLessonRub, total]
+  );
+
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        id,
+        tariff_grid_id,
+        lessons_count,
+        price_per_lesson_rub,
+        total_price_rub,
+        is_active,
+        created_at,
+        updated_at
+      FROM tariff_packages
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [id]
+  );
+
+  return {
+    id: String(rows[0].id),
+    tariff_grid_id: String(rows[0].tariff_grid_id),
+    lessons_count: Number(rows[0].lessons_count),
+    price_per_lesson_rub: Number(rows[0].price_per_lesson_rub),
+    total_price_rub: Number(rows[0].total_price_rub),
+    is_active: Number(rows[0].is_active) ? 1 : 0,
+    created_at: String(rows[0].created_at),
+    updated_at: String(rows[0].updated_at)
+  };
+}
+
+export async function updateTariffPackage(input: {
+  id: string;
+  lessonsCount?: number;
+  pricePerLessonRub?: number;
+  isActive?: boolean;
+}): Promise<void> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT lessons_count, price_per_lesson_rub
+      FROM tariff_packages
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [input.id]
+  );
+
+  if (rows.length === 0) {
+    throw new Error('TARIFF_PACKAGE_NOT_FOUND');
+  }
+
+  const nextLessons = typeof input.lessonsCount === 'number' ? input.lessonsCount : Number(rows[0].lessons_count);
+  const nextPrice =
+    typeof input.pricePerLessonRub === 'number' ? input.pricePerLessonRub : Number(rows[0].price_per_lesson_rub);
+  const nextTotal = Number((nextLessons * nextPrice).toFixed(2));
+
+  const updates: string[] = [
+    'lessons_count = ?',
+    'price_per_lesson_rub = ?',
+    'total_price_rub = ?'
+  ];
+  const values: Array<string | number> = [nextLessons, nextPrice, nextTotal];
+
+  if (typeof input.isActive === 'boolean') {
+    updates.push('is_active = ?');
+    values.push(input.isActive ? 1 : 0);
+  }
+
+  const [result] = await getPool().query<mysql.ResultSetHeader>(
+    `
+      UPDATE tariff_packages
+      SET ${updates.join(', ')}
+      WHERE id = ?
+    `,
+    [...values, input.id]
+  );
+
+  if (result.affectedRows === 0) {
+    throw new Error('TARIFF_PACKAGE_NOT_FOUND');
+  }
+}
