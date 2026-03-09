@@ -271,10 +271,20 @@ export function TariffsTab() {
 
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             {packages.map((pkg, index) => (
-              <Card
-                key={pkg.key}
-                size="small"
-                extra={
+              <Card key={pkg.key} size="small">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, width: '100%', flexWrap: 'wrap' }}>
+                  <Space wrap size={12}>
+                    <Typography.Text>Пакет {index + 1}</Typography.Text>
+                    <Space size={6}>
+                      <InputNumber min={1} value={pkg.lessonsCount} onChange={(value) => handlePackageChange(pkg.key, 'lessonsCount', value)} />
+                      <Typography.Text type="secondary">занятий</Typography.Text>
+                    </Space>
+                    <Space size={6}>
+                      <InputNumber min={1} value={pkg.pricePerLesson} onChange={(value) => handlePackageChange(pkg.key, 'pricePerLesson', value)} />
+                      <Typography.Text type="secondary">₽/занятие</Typography.Text>
+                    </Space>
+                    <Typography.Text strong>{formatRub(getPackageTotal(pkg))}</Typography.Text>
+                  </Space>
                   <Button
                     type="text"
                     danger
@@ -283,20 +293,7 @@ export function TariffsTab() {
                   >
                     Удалить
                   </Button>
-                }
-              >
-                <Space wrap size={12}>
-                  <Typography.Text>Пакет {index + 1}</Typography.Text>
-                  <Space size={6}>
-                    <InputNumber min={1} value={pkg.lessonsCount} onChange={(value) => handlePackageChange(pkg.key, 'lessonsCount', value)} />
-                    <Typography.Text type="secondary">занятий</Typography.Text>
-                  </Space>
-                  <Space size={6}>
-                    <InputNumber min={1} value={pkg.pricePerLesson} onChange={(value) => handlePackageChange(pkg.key, 'pricePerLesson', value)} />
-                    <Typography.Text type="secondary">₽/занятие</Typography.Text>
-                  </Space>
-                  <Typography.Text strong>{formatRub(getPackageTotal(pkg))}</Typography.Text>
-                </Space>
+                </div>
               </Card>
             ))}
           </Space>
