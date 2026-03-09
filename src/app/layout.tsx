@@ -8,6 +8,7 @@ import { AppShell } from '@/components/app-shell';
 
 export const metadata: Metadata = {
   title: 'GelbCRM',
+  applicationName: 'GelbCRM',
   description: 'CRM для языковой онлайн-школы'
 };
 
