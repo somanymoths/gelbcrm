@@ -1,0 +1,929 @@
+openapi: 3.1.0
+info:
+  title: GELB CRM API
+  version: 0.1.0
+  description: API для MVP CRM языковой онлайн-школы
+servers:
+  - url: /api/v1
+security:
+  - cookieAuth: []
+
+tags:
+  - name: Auth
+  - name: Students
+  - name: Teachers
+  - name: Tariffs
+  - name: Payments
+  - name: Journal
+  - name: Notifications
+  - name: Audit
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Вход по логину и паролю
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login, password]
+              properties:
+                login: { type: string }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthUser'
+        '401': { description: Неверные учетные данные }
+
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Запрос восстановления пароля (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login]
+              properties:
+                login: { type: string }
+      responses:
+        '204': { description: Ссылка отправлена }
+
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Сброс пароля по токену
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token: { type: string }
+                newPassword: { type: string, format: password }
+      responses:
+        '204': { description: Пароль обновлен }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Выход
+      responses:
+        '204': { description: Сессия завершена }
+
+  /students:
+    get:
+      tags: [Students]
+      summary: Список учеников
+      parameters:
+        - in: query
+          name: stage
+          schema: { type: string }
+        - in: query
+          name: teacherId
+          schema: { type: string, format: uuid }
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Student' }
+                  total: { type: integer }
+    post:
+      tags: [Students]
+      summary: Создать ученика
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudentCreate'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Student' }
+        '409':
+          description: Duplicate email/phone
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /students/{id}:
+    get:
+      tags: [Students]
+      summary: Карточка ученика
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudentDetails' }
+        '404': { description: Not found }
+    patch:
+      tags: [Students]
+      summary: Обновить карточку ученика
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StudentUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Student' }
+
+  /students/{id}/stage:
+    patch:
+      tags: [Students]
+      summary: Сменить этап воронки
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stageCode]
+              properties:
+                stageCode:
+                  type: string
+                  enum: [interested, qualification, meeting, payment, on_lessons, last_lesson, declined, stopped]
+      responses:
+        '204': { description: Updated }
+
+  /students/{id}/assign-teacher:
+    patch:
+      tags: [Students]
+      summary: Назначить преподавателя
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [teacherId]
+              properties:
+                teacherId: { type: string, format: uuid }
+      responses:
+        '204': { description: Updated }
+
+  /students/{id}/notes:
+    get:
+      tags: [Students]
+      summary: Заметки ученика
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/StudentNote' }
+    post:
+      tags: [Students]
+      summary: Добавить заметку
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string, minLength: 1 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudentNote' }
+
+  /students/{id}/teacher-history:
+    get:
+      tags: [Students]
+      summary: История смены преподавателя
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TeacherHistoryEntry' }
+
+  /teachers:
+    get:
+      tags: [Teachers]
+      summary: Список преподавателей
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Teacher' }
+    post:
+      tags: [Teachers]
+      summary: Создать преподавателя и аккаунт
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TeacherCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Teacher' }
+
+  /teachers/{id}:
+    get:
+      tags: [Teachers]
+      summary: Карточка преподавателя
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Teacher' }
+    patch:
+      tags: [Teachers]
+      summary: Обновить преподавателя
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TeacherUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Teacher' }
+
+  /teachers/{id}/reset-password:
+    post:
+      tags: [Teachers]
+      summary: Сброс пароля преподавателя администратором
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newPassword]
+              properties:
+                newPassword: { type: string, format: password, minLength: 8 }
+      responses:
+        '204': { description: Password reset }
+
+  /tariff-grids:
+    get:
+      tags: [Tariffs]
+      summary: Список тарифных сеток
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TariffGrid' }
+    post:
+      tags: [Tariffs]
+      summary: Создать тарифную сетку
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TariffGrid' }
+
+  /tariff-grids/{id}:
+    get:
+      tags: [Tariffs]
+      summary: Карточка тарифной сетки
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TariffGridDetails' }
+    patch:
+      tags: [Tariffs]
+      summary: Обновить тарифную сетку
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                isActive: { type: boolean }
+      responses:
+        '200': { description: Updated }
+
+  /tariff-grids/{id}/packages:
+    post:
+      tags: [Tariffs]
+      summary: Добавить пакет в сетку
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TariffPackageCreate'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TariffPackage' }
+
+  /tariff-packages/{id}:
+    patch:
+      tags: [Tariffs]
+      summary: Обновить пакет
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lessonsCount: { type: integer, minimum: 1 }
+                pricePerLessonRub: { type: number, minimum: 0 }
+                totalPriceRub: { type: number, minimum: 0 }
+                isActive: { type: boolean }
+      responses:
+        '200': { description: Updated }
+
+  /tariff-grids/{id}/payment-links:
+    post:
+      tags: [Tariffs]
+      summary: Создать ссылку оплаты для тарифной сетки
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentLink' }
+
+  /payment-links/{slug}:
+    get:
+      tags: [Tariffs]
+      security: []
+      summary: Публичная страница выбора пакета
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  grid: { $ref: '#/components/schemas/TariffGrid' }
+                  packages:
+                    type: array
+                    items: { $ref: '#/components/schemas/TariffPackage' }
+
+  /payments:
+    get:
+      tags: [Payments]
+      summary: История оплат
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, succeeded, failed, requires_manual_link, refunded]
+        - in: query
+          name: from
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          schema: { type: string, format: date-time }
+        - in: query
+          name: studentId
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Payment' }
+
+  /payments/{id}/manual-link:
+    post:
+      tags: [Payments]
+      summary: Ручная привязка платежа к ученику
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [studentId]
+              properties:
+                studentId: { type: string, format: uuid }
+      responses:
+        '204': { description: Linked }
+
+  /webhooks/yookassa:
+    post:
+      tags: [Payments]
+      security: []
+      summary: Webhook ЮKassa
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200': { description: Event processed }
+
+  /journal/weekly-template:
+    get:
+      tags: [Journal]
+      summary: Недельный шаблон преподавателя
+      parameters:
+        - in: query
+          name: teacherId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WeeklySlot' }
+    put:
+      tags: [Journal]
+      summary: Полная замена недельного шаблона
+      parameters:
+        - in: query
+          name: teacherId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slots]
+              properties:
+                slots:
+                  type: array
+                  items: { $ref: '#/components/schemas/WeeklySlotUpsert' }
+      responses:
+        '204': { description: Updated }
+
+  /journal/slots:
+    get:
+      tags: [Journal]
+      summary: Слоты по диапазону дат
+      parameters:
+        - in: query
+          name: teacherId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: dateFrom
+          required: true
+          schema: { type: string, format: date }
+        - in: query
+          name: dateTo
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/LessonSlot' }
+    post:
+      tags: [Journal]
+      summary: Создать слот
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LessonSlotCreate'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LessonSlot' }
+
+  /journal/slots/{id}:
+    patch:
+      tags: [Journal]
+      summary: Обновить слот
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                studentId: { type: string, format: uuid, nullable: true }
+                date: { type: string, format: date }
+                startTime: { type: string, pattern: '^\\d{2}:\\d{2}$' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LessonSlot' }
+
+  /journal/slots/{id}/status:
+    post:
+      tags: [Journal]
+      summary: Изменить статус слота
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [planned, completed, rescheduled, canceled]
+                rescheduleToDate:
+                  type: string
+                  format: date
+                rescheduleToTime:
+                  type: string
+                  pattern: '^\\d{2}:\\d{2}$'
+      responses:
+        '204': { description: Updated }
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: Уведомления текущего пользователя
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Notification' }
+
+  /notifications/{id}/read:
+    patch:
+      tags: [Notifications]
+      summary: Пометить уведомление прочитанным
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '204': { description: Updated }
+
+  /audit-logs:
+    get:
+      tags: [Audit]
+      summary: Фильтруемый аудит-лог
+      parameters:
+        - in: query
+          name: entityType
+          schema: { type: string }
+        - in: query
+          name: entityId
+          schema: { type: string }
+        - in: query
+          name: actor
+          schema: { type: string, format: uuid }
+        - in: query
+          name: from
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditLog' }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: gelb_session
+
+  parameters:
+    IdPath:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+
+    AuthUser:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        role: { type: string, enum: [admin, teacher] }
+        login: { type: string }
+
+    Student:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        firstName: { type: string }
+        lastName: { type: string }
+        phone: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        stageCode: { type: string }
+        assignedTeacherId: { type: string, format: uuid, nullable: true }
+
+    StudentCreate:
+      type: object
+      required: [firstName, lastName]
+      properties:
+        firstName: { type: string }
+        lastName: { type: string }
+        contactLink: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+
+    StudentUpdate:
+      allOf:
+        - $ref: '#/components/schemas/StudentCreate'
+
+    StudentDetails:
+      allOf:
+        - $ref: '#/components/schemas/Student'
+        - type: object
+          properties:
+            notes:
+              type: array
+              items: { $ref: '#/components/schemas/StudentNote' }
+            balanceLessonsLeft: { type: integer }
+            primaryTariffGridId: { type: string, format: uuid, nullable: true }
+
+    StudentNote:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        body: { type: string }
+        authorUserId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+
+    TeacherHistoryEntry:
+      type: object
+      properties:
+        oldTeacherId: { type: string, format: uuid, nullable: true }
+        newTeacherId: { type: string, format: uuid, nullable: true }
+        changedBy: { type: string, format: uuid }
+        changedAt: { type: string, format: date-time }
+
+    Teacher:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        fullName: { type: string }
+        phone: { type: string, nullable: true }
+        contactLink: { type: string, nullable: true }
+        language: { type: string, nullable: true }
+        lessonRateRub: { type: number, nullable: true }
+        timezone: { type: string }
+
+    TeacherCreate:
+      type: object
+      required: [fullName, login, password]
+      properties:
+        fullName: { type: string }
+        phone: { type: string, nullable: true }
+        contactLink: { type: string, nullable: true }
+        language: { type: string, nullable: true }
+        lessonRateRub: { type: number, nullable: true }
+        timezone: { type: string, default: Europe/Moscow }
+        login: { type: string }
+        password: { type: string, format: password }
+
+    TeacherUpdate:
+      type: object
+      properties:
+        fullName: { type: string }
+        phone: { type: string, nullable: true }
+        contactLink: { type: string, nullable: true }
+        language: { type: string, nullable: true }
+        lessonRateRub: { type: number, nullable: true }
+        timezone: { type: string }
+
+    TariffGrid:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        isActive: { type: boolean }
+
+    TariffGridDetails:
+      allOf:
+        - $ref: '#/components/schemas/TariffGrid'
+        - type: object
+          properties:
+            packages:
+              type: array
+              items: { $ref: '#/components/schemas/TariffPackage' }
+            links:
+              type: array
+              items: { $ref: '#/components/schemas/PaymentLink' }
+
+    TariffPackage:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tariffGridId: { type: string, format: uuid }
+        lessonsCount: { type: integer }
+        pricePerLessonRub: { type: number }
+        totalPriceRub: { type: number }
+        isActive: { type: boolean }
+
+    TariffPackageCreate:
+      type: object
+      required: [lessonsCount, pricePerLessonRub, totalPriceRub]
+      properties:
+        lessonsCount: { type: integer, minimum: 1 }
+        pricePerLessonRub: { type: number, minimum: 0 }
+        totalPriceRub: { type: number, minimum: 0 }
+
+    PaymentLink:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tariffGridId: { type: string, format: uuid }
+        publicSlug: { type: string }
+        isActive: { type: boolean }
+
+    Payment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        provider: { type: string, enum: [yookassa] }
+        providerPaymentId: { type: string }
+        studentId: { type: string, format: uuid, nullable: true }
+        status: { type: string, enum: [pending, succeeded, failed, requires_manual_link, refunded] }
+        amountRub: { type: number }
+        paidAt: { type: string, format: date-time, nullable: true }
+
+    WeeklySlot:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        weekday: { type: integer, minimum: 1, maximum: 7 }
+        startTime: { type: string, pattern: '^\\d{2}:\\d{2}$' }
+        isActive: { type: boolean }
+
+    WeeklySlotUpsert:
+      type: object
+      required: [weekday, startTime]
+      properties:
+        weekday: { type: integer, minimum: 1, maximum: 7 }
+        startTime: { type: string, pattern: '^\\d{2}:\\d{2}$' }
+        isActive: { type: boolean, default: true }
+
+    LessonSlot:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        teacherId: { type: string, format: uuid }
+        studentId: { type: string, format: uuid, nullable: true }
+        date: { type: string, format: date }
+        startTime: { type: string, pattern: '^\\d{2}:\\d{2}$' }
+        status: { type: string, enum: [planned, completed, rescheduled, canceled] }
+
+    LessonSlotCreate:
+      type: object
+      required: [teacherId, date, startTime]
+      properties:
+        teacherId: { type: string, format: uuid }
+        studentId: { type: string, format: uuid, nullable: true }
+        date: { type: string, format: date }
+        startTime: { type: string, pattern: '^\\d{2}:\\d{2}$' }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string }
+        title: { type: string }
+        body: { type: string }
+        channel: { type: string, enum: [in_app, telegram] }
+        isRead: { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    AuditLog:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        actorUserId: { type: string, format: uuid, nullable: true }
+        entityType: { type: string }
+        entityId: { type: string }
+        action: { type: string }
+        diffBefore: { type: object, nullable: true, additionalProperties: true }
+        diffAfter: { type: object, nullable: true, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
