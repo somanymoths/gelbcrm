@@ -1,7 +1,12 @@
 import { redirect } from 'next/navigation';
-import { getCurrentRole } from '@/lib/auth';
+import { getCurrentSession } from '@/lib/auth';
 
 export default async function HomePage() {
-  const role = await getCurrentRole();
-  redirect(role === 'admin' ? '/funnel' : '/journal');
+  const session = await getCurrentSession();
+
+  if (!session) {
+    redirect('/login');
+  }
+
+  redirect(session.role === 'admin' ? '/funnel' : '/journal');
 }

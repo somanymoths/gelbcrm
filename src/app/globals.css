@@ -1,10 +1,7 @@
 :root {
-  --bg: #f5f7fb;
-  --panel: #ffffff;
-  --text: #0f172a;
-  --muted: #475569;
-  --border: #dbe3ef;
-  --accent: #1d4ed8;
+  --bg: #f6f8ff;
+  --text: #111827;
+  --bg-gradient: radial-gradient(circle at top right, #dbeafe 0%, #f6f8ff 45%);
 }
 
 * {
@@ -15,35 +12,14 @@ html,
 body {
   margin: 0;
   padding: 0;
-  font-family: 'Segoe UI', Tahoma, sans-serif;
-  background: radial-gradient(circle at top right, #e8f0ff 0%, var(--bg) 40%);
+  background: var(--bg-gradient);
   color: var(--text);
+}
+
+html[data-theme-preset='sost'] {
+  --bg-gradient: radial-gradient(circle at top right, #dbeafe 0%, #f6f8ff 45%);
 }
 
 a {
   color: inherit;
-}
-
-.container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 24px;
-}
-
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 16px;
-}
-
-.grid {
-  display: grid;
-  gap: 16px;
-}
-
-@media (max-width: 768px) {
-  .container {
-    padding: 14px;
-  }
 }

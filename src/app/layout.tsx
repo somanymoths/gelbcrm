@@ -1,7 +1,10 @@
 import './globals.css';
+import 'antd/dist/reset.css';
 import type { Metadata } from 'next';
-import { AppNav } from '@/components/nav';
-import { getCurrentRole } from '@/lib/auth';
+import { AntdRegistry } from '@ant-design/nextjs-registry';
+import { getCurrentSession } from '@/lib/auth';
+import { AppProviders } from '@/components/app-providers';
+import { AppShell } from '@/components/app-shell';
 
 export const metadata: Metadata = {
   title: 'GELB CRM',
@@ -9,19 +12,16 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const role = await getCurrentRole();
+  const session = await getCurrentSession();
 
   return (
     <html lang="ru">
       <body>
-        <div className="container">
-          <header className="panel" style={{ marginBottom: 16 }}>
-            <h1 style={{ marginTop: 0 }}>GELB CRM</h1>
-            <p style={{ marginTop: 0, color: '#475569' }}>Роль: {role === 'admin' ? 'Администратор' : 'Преподаватель'}</p>
-            <AppNav role={role} />
-          </header>
-          {children}
-        </div>
+        <AntdRegistry>
+          <AppProviders>
+            <AppShell session={session}>{children}</AppShell>
+          </AppProviders>
+        </AntdRegistry>
       </body>
     </html>
   );
