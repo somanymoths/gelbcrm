@@ -7,7 +7,7 @@ import { AppProviders } from '@/components/app-providers';
 import { AppShell } from '@/components/app-shell';
 
 export const metadata: Metadata = {
-  title: 'GELB CRM',
+  title: 'GelbCRM',
   description: 'CRM для языковой онлайн-школы'
 };
 
