@@ -40,7 +40,7 @@ export function AppShell({ children, session }: { children: React.ReactNode; ses
           <Space orientation="vertical" size={14} style={{ width: '100%' }}>
             <Space orientation="vertical" size={6} style={{ width: '100%' }}>
               <Typography.Title level={4} style={{ margin: 0 }}>
-                GELB CRM
+                GelbCRM
               </Typography.Title>
               <Tag color="geekblue">{session.role === 'admin' ? 'Администратор' : 'Преподаватель'}: {session.login}</Tag>
             </Space>
