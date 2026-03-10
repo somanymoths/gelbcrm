@@ -100,8 +100,6 @@ type CreateFormState = {
   leadSource: string;
   comment: string;
   startLessonsAt: string;
-  lastLessonAt: string;
-  paidLessonsLeft: number;
 };
 
 const INITIAL_CREATE_FORM: CreateFormState = {
@@ -112,9 +110,7 @@ const INITIAL_CREATE_FORM: CreateFormState = {
   email: '',
   leadSource: '',
   comment: '',
-  startLessonsAt: '',
-  lastLessonAt: '',
-  paidLessonsLeft: 0
+  startLessonsAt: ''
 };
 
 function formatDate(value: string | null | undefined): string {
@@ -292,10 +288,22 @@ export function FunnelBoard() {
     setCreating(true);
 
     try {
+      const payload: Record<string, string> = {
+        firstName: createForm.firstName,
+        lastName: createForm.lastName
+      };
+
+      if (createForm.phone.trim()) payload.phone = createForm.phone;
+      if (createForm.contact.trim()) payload.contact = createForm.contact;
+      if (createForm.email.trim()) payload.email = createForm.email;
+      if (createForm.leadSource.trim()) payload.leadSource = createForm.leadSource;
+      if (createForm.comment.trim()) payload.comment = createForm.comment;
+      if (createForm.startLessonsAt.trim()) payload.startLessonsAt = createForm.startLessonsAt;
+
       const response = await fetch('/api/v1/funnel/cards', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(createForm)
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
@@ -718,33 +726,23 @@ export function FunnelBoard() {
               </Form.Item>
             </Col>
             <Col xs={24} md={12} lg={6}>
-              <Form.Item label="Телефон" required>
+              <Form.Item label="Телефон">
                 <Input value={createForm.phone} onChange={(event) => setCreateForm((prev) => ({ ...prev, phone: event.target.value }))} />
               </Form.Item>
             </Col>
             <Col xs={24} md={12} lg={6}>
-              <Form.Item label="Email" required>
+              <Form.Item label="Email">
                 <Input value={createForm.email} onChange={(event) => setCreateForm((prev) => ({ ...prev, email: event.target.value }))} />
               </Form.Item>
             </Col>
             <Col xs={24} md={12} lg={8}>
-              <Form.Item label="Контакт" required>
+              <Form.Item label="Контакт">
                 <Input value={createForm.contact} onChange={(event) => setCreateForm((prev) => ({ ...prev, contact: event.target.value }))} />
               </Form.Item>
             </Col>
             <Col xs={24} md={12} lg={8}>
-              <Form.Item label="Источник лида" required>
+              <Form.Item label="Источник лида">
                 <Input value={createForm.leadSource} onChange={(event) => setCreateForm((prev) => ({ ...prev, leadSource: event.target.value }))} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12} lg={8}>
-              <Form.Item label="Осталось оплаченных занятий" required>
-                <InputNumber
-                  min={0}
-                  style={{ width: '100%' }}
-                  value={createForm.paidLessonsLeft}
-                  onChange={(value) => setCreateForm((prev) => ({ ...prev, paidLessonsLeft: Number(value) || 0 }))}
-                />
               </Form.Item>
             </Col>
             <Col xs={24} md={12} lg={6}>
@@ -756,17 +754,8 @@ export function FunnelBoard() {
                 />
               </Form.Item>
             </Col>
-            <Col xs={24} md={12} lg={6}>
-              <Form.Item label="Дата последнего занятия">
-                <Input
-                  type="date"
-                  value={createForm.lastLessonAt}
-                  onChange={(event) => setCreateForm((prev) => ({ ...prev, lastLessonAt: event.target.value }))}
-                />
-              </Form.Item>
-            </Col>
             <Col xs={24} lg={12}>
-              <Form.Item label="Комментарий" required>
+              <Form.Item label="Комментарий">
                 <Input.TextArea rows={1} value={createForm.comment} onChange={(event) => setCreateForm((prev) => ({ ...prev, comment: event.target.value }))} />
               </Form.Item>
             </Col>

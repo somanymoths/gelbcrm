@@ -249,14 +249,14 @@ export async function listFunnelBoardCards(): Promise<FunnelCardListItem[]> {
 export async function createFunnelCard(input: {
   firstName: string;
   lastName: string;
-  phone: string;
-  contact: string;
-  email: string;
-  leadSource: string;
+  phone?: string | null;
+  contact?: string | null;
+  email?: string | null;
+  leadSource?: string | null;
   comment?: string | null;
   startLessonsAt?: string | null;
   lastLessonAt?: string | null;
-  paidLessonsLeft: number;
+  paidLessonsLeft?: number;
   actorUserId: string;
 }): Promise<FunnelCardDetails> {
   const connection = await getPool().getConnection();
@@ -298,14 +298,14 @@ export async function createFunnelCard(input: {
         id,
         input.firstName,
         input.lastName,
-        input.contact,
-        input.phone,
-        input.email,
-        input.leadSource,
+        input.contact ?? null,
+        input.phone ?? null,
+        input.email ?? null,
+        input.leadSource ?? null,
         input.comment ?? null,
         toNullableDate(input.startLessonsAt),
         toNullableDate(input.lastLessonAt),
-        input.paidLessonsLeft,
+        input.paidLessonsLeft ?? 0,
         stageId
       ]
     );
@@ -326,8 +326,8 @@ export async function createFunnelCard(input: {
       diffAfter: {
         first_name: input.firstName,
         last_name: input.lastName,
-        phone: input.phone,
-        email: input.email,
+        phone: input.phone ?? null,
+        email: input.email ?? null,
         stage_code: 'interested'
       }
     });

@@ -7,14 +7,12 @@ import { normalizePhone } from '@/lib/phone';
 const createSchema = z.object({
   firstName: z.string().trim().min(1),
   lastName: z.string().trim().min(1),
-  phone: z.string().trim().min(1),
-  contact: z.string().trim().min(1).max(255),
-  email: z.string().trim().email(),
-  leadSource: z.string().trim().min(1).max(191),
-  comment: z.string().trim().min(1),
-  startLessonsAt: z.string().trim().optional().nullable(),
-  lastLessonAt: z.string().trim().optional().nullable(),
-  paidLessonsLeft: z.number().int().min(0)
+  phone: z.string().trim().optional().nullable(),
+  contact: z.string().trim().max(255).optional().nullable(),
+  email: z.union([z.string().trim().email(), z.literal(''), z.null()]).optional(),
+  leadSource: z.string().trim().max(191).optional().nullable(),
+  comment: z.string().trim().optional().nullable(),
+  startLessonsAt: z.string().trim().optional().nullable()
 });
 
 export async function POST(request: Request) {
@@ -28,16 +26,24 @@ export async function POST(request: Request) {
     return NextResponse.json({ code: 'INVALID_PAYLOAD', message: 'Некорректные данные карточки' }, { status: 400 });
   }
 
-  let phone: string;
+  const phoneRaw = toNullableTrimmed(parsed.data.phone);
+  const contact = toNullableTrimmed(parsed.data.contact);
+  const leadSource = toNullableTrimmed(parsed.data.leadSource);
+  const comment = toNullableTrimmed(parsed.data.comment);
+  const email = toNullableTrimmed(parsed.data.email ?? null);
+  const startLessonsAt = toNullableTrimmed(parsed.data.startLessonsAt);
+  let phone: string | null = null;
 
-  try {
-    phone = normalizePhone(parsed.data.phone) ?? '';
-  } catch {
-    return NextResponse.json({ code: 'INVALID_PHONE_FORMAT', message: 'Некорректный формат телефона' }, { status: 422 });
-  }
+  if (phoneRaw) {
+    try {
+      phone = normalizePhone(phoneRaw) ?? '';
+    } catch {
+      return NextResponse.json({ code: 'INVALID_PHONE_FORMAT', message: 'Некорректный формат телефона' }, { status: 422 });
+    }
 
-  if (!phone) {
-    return NextResponse.json({ code: 'INVALID_PHONE_FORMAT', message: 'Некорректный формат телефона' }, { status: 422 });
+    if (!phone) {
+      return NextResponse.json({ code: 'INVALID_PHONE_FORMAT', message: 'Некорректный формат телефона' }, { status: 422 });
+    }
   }
 
   try {
@@ -45,13 +51,11 @@ export async function POST(request: Request) {
       firstName: parsed.data.firstName,
       lastName: parsed.data.lastName,
       phone,
-      contact: parsed.data.contact,
-      email: parsed.data.email,
-      leadSource: parsed.data.leadSource,
-      comment: parsed.data.comment,
-      startLessonsAt: parsed.data.startLessonsAt ?? null,
-      lastLessonAt: parsed.data.lastLessonAt ?? null,
-      paidLessonsLeft: parsed.data.paidLessonsLeft,
+      contact,
+      email,
+      leadSource,
+      comment,
+      startLessonsAt,
       actorUserId: guard.session.id
     });
 
@@ -74,4 +78,10 @@ function isDuplicateError(error: unknown, indexName: string): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const candidate = error as { code?: string; message?: string };
   return candidate.code === 'ER_DUP_ENTRY' && Boolean(candidate.message?.includes(indexName));
+}
+
+function toNullableTrimmed(value?: string | null): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
