@@ -51,12 +51,16 @@ scripts/new-task-branch.sh "Новая задача: <текст задачи>"
 - `--type feat|fix|chore|hotfix`
 - `--issue GELB-123`
 - `--push`
+- `--no-bootstrap`
+- `--no-check`
 
 Пример:
 
 ```bash
 scripts/new-task-branch.sh "Исправить дубли платежей в воронке" --type fix --issue GELB-412 --push
 ```
+
+По умолчанию скрипт после создания ветки проверяет зависимости в текущем worktree и при необходимости запускает `npm ci` (или `npm install`, если lockfile отсутствует), а затем выполняет `npm run typecheck` и `npm run lint`. Это нужно, чтобы новая ветка сразу была готова к текущему `pre-push` hook и `push`. Если нужен только быстрый checkout без подготовки, используй `--no-bootstrap` и/или `--no-check`.
 
 ## 7) Правило контекста
 

@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'HELP'
 Usage:
-  scripts/new-task-branch.sh "<task text>" [--type feat|fix|chore|hotfix] [--issue GELB-123] [--base main] [--push]
+  scripts/new-task-branch.sh "<task text>" [--type feat|fix|chore|hotfix] [--issue GELB-123] [--base main] [--push] [--no-bootstrap] [--no-check]
 
 Examples:
   scripts/new-task-branch.sh "Новая задача: исправить дубли платежей в воронке"
@@ -24,6 +24,8 @@ TYPE=""
 ISSUE=""
 BASE_BRANCH="main"
 PUSH_BRANCH=0
+BOOTSTRAP_DEPS=1
+RUN_CHECKS=1
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -41,6 +43,14 @@ while [ "$#" -gt 0 ]; do
       ;;
     --push)
       PUSH_BRANCH=1
+      shift
+      ;;
+    --no-bootstrap)
+      BOOTSTRAP_DEPS=0
+      shift
+      ;;
+    --no-check)
+      RUN_CHECKS=0
       shift
       ;;
     *)
@@ -105,6 +115,36 @@ fi
 
 git pull --ff-only
 git checkout -b "$TARGET_BRANCH"
+
+if [ "$BOOTSTRAP_DEPS" -eq 1 ] && [ -f package.json ]; then
+  NEED_INSTALL=0
+
+  if [ -f package-lock.json ]; then
+    if [ ! -d node_modules ] || [ ! -f node_modules/.package-lock.json ] || ! cmp -s package-lock.json node_modules/.package-lock.json; then
+      NEED_INSTALL=1
+    fi
+  elif [ ! -d node_modules ]; then
+    NEED_INSTALL=1
+  fi
+
+  if [ "$NEED_INSTALL" -eq 1 ]; then
+    echo "Bootstrapping dependencies for this worktree..."
+    if [ -f package-lock.json ]; then
+      npm ci
+    else
+      npm install
+    fi
+  else
+    echo "Dependencies are already up to date for this worktree."
+  fi
+fi
+
+if [ "$RUN_CHECKS" -eq 1 ] && [ -f package.json ]; then
+  echo "Running typecheck for this worktree..."
+  npm run typecheck
+  echo "Running lint for this worktree..."
+  npm run lint
+fi
 
 if [ "$PUSH_BRANCH" -eq 1 ]; then
   git push -u origin "$TARGET_BRANCH"
