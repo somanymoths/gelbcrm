@@ -18,6 +18,20 @@
 7. Открыть:
    http://localhost:3000
 
+## Автоподключение `.env.local` для новых веток/worktree
+
+Чтобы не копировать `.env.local` вручную при каждом новом checkout/worktree:
+
+1. Создайте общий env-файл один раз (вне репозитория):
+   mkdir -p ~/.config/gelbcrm
+   cp .env.example ~/.config/gelbcrm/.env.local
+2. Заполните реальные значения в `~/.config/gelbcrm/.env.local`.
+3. Включите локальные git hooks проекта:
+   git config core.hooksPath .githooks
+
+После этого при `git checkout`/новой ветке hook автоматически создаст в репозитории symlink `.env.local`.
+Если нужен другой путь, задайте `GELBCRM_SHARED_ENV_FILE`.
+
 ## Аутентификация
 
 - Вход: `POST /api/v1/auth/login`

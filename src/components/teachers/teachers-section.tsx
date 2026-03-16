@@ -710,7 +710,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
           <Alert
             type="error"
             showIcon
-            message={error}
+            title={error}
             action={
               <Button size="small" onClick={() => void fetchTeachers(0, false)}>
                 Повторить
@@ -1015,7 +1015,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
                 <Alert
                   type="warning"
                   showIcon
-                  message="Удаление заблокировано: есть привязанные ученики"
+                  title="Удаление заблокировано: есть привязанные ученики"
                   description="Отвяжите выбранных или всех учеников, чтобы продолжить удаление."
                 />
 
