@@ -51,6 +51,8 @@ scripts/new-task-branch.sh "Новая задача: <текст задачи>"
 - `--type feat|fix|chore|hotfix`
 - `--issue GELB-123`
 - `--push`
+- `--no-bootstrap`
+- `--no-check`
 
 Пример:
 
@@ -58,18 +60,27 @@ scripts/new-task-branch.sh "Новая задача: <текст задачи>"
 scripts/new-task-branch.sh "Исправить дубли платежей в воронке" --type fix --issue GELB-412 --push
 ```
 
-Для нового чата под отдельную задачу лучше использовать отдельный worktree с автозапуском dev-сервера:
+По умолчанию скрипт после создания ветки проверяет зависимости в текущем worktree и при необходимости запускает `npm ci` (или `npm install`, если lockfile отсутствует), а затем выполняет `npm run typecheck` и `npm run lint`. Это нужно, чтобы новая ветка сразу была готова к текущему `pre-push` hook и `push`. Если нужен только быстрый checkout без подготовки, используй `--no-bootstrap` и/или `--no-check`.
+
+## 6.1) Полный старт новой задачи
 
 ```bash
-npm run task:new -- "Добавить фильтр по преподавателю" --worktree
+scripts/start-task.sh "Новая задача: <текст задачи>" --type fix --push
 ```
 
-Что делает этот режим:
-- создаёт ветку `codex/<type>/<slug>`;
-- создаёт отдельный `git worktree` в `$HOME/.codex/task-worktrees/gelbcrm/...`;
-- подбирает свободный порт, запускает `npm run dev`;
-- открывает `http://localhost:<port>` в браузере;
-- печатает `Next chat cwd`, который стоит использовать как рабочую директорию для нового чата.
+Что делает:
+- создаёт ветку через `new-task-branch.sh`
+- готовит зависимости и прогоняет `typecheck` + `lint`
+- создаёт страницу в Notion, если настроены `NOTION_TOKEN` и database id
+- поднимает `npm run dev` в фоне
+- открывает `http://localhost:3000` на macOS
+
+Опции:
+- `--port 3000`
+- `--no-dev`
+- `--no-open`
+- `--no-notion`
+- `--notion-db-env NOTION_TASKS_DB_ID`
 
 ## 7) Правило контекста
 
