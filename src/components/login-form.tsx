@@ -53,7 +53,7 @@ export function LoginForm() {
 
       {error ? (
         <Form.Item>
-          <Alert type="error" message={error} showIcon />
+          <Alert type="error" title={error} showIcon />
         </Form.Item>
       ) : null}
 

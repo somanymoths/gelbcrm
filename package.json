@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "task:new": "bash scripts/new-task-branch.sh",
     "build": "next build",
     "start": "next start",
     "deploy": "bash scripts/deploy.sh",
