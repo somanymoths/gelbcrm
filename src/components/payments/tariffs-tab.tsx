@@ -250,12 +250,12 @@ export function TariffsTab() {
   };
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       {contextHolder}
       {modalContextHolder}
 
       <Card title="Новый тариф (серверный)">
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           <Form form={form} layout="vertical">
             <Form.Item
               label="Название тарифа"
@@ -269,7 +269,7 @@ export function TariffsTab() {
 
           <Typography.Text strong>Пакеты</Typography.Text>
 
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={8} style={{ width: '100%' }}>
             {packages.map((pkg, index) => (
               <Card key={pkg.key} size="small">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, width: '100%', flexWrap: 'wrap' }}>
@@ -335,7 +335,7 @@ export function TariffsTab() {
               title: 'Пакеты',
               key: 'packages',
               render: (_, tariff) => (
-                <Space direction="vertical" size={2}>
+                <Space orientation="vertical" size={2}>
                   {tariff.packages.length === 0 ? <Typography.Text type="secondary">Нет пакетов</Typography.Text> : null}
                   {tariff.packages.map((pkg) => (
                     <Space key={pkg.id}>

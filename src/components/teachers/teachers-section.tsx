@@ -609,7 +609,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
   ];
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <div>
           <Typography.Title level={2} style={{ margin: 0 }}>
@@ -772,7 +772,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
         {detailLoading || !detail ? (
           <Typography.Text type="secondary">Загрузка...</Typography.Text>
         ) : (
-          <Space direction="vertical" style={{ width: '100%' }} size={16}>
+          <Space orientation="vertical" style={{ width: '100%' }} size={16}>
             {!isEditing ? (
               <>
                 <Descriptions size="small" column={1} bordered>
@@ -793,7 +793,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
                   {detail.students.length === 0 ? (
                     <Typography.Text type="secondary">Нет учеников</Typography.Text>
                   ) : (
-                    <Space direction="vertical" size={4}>
+                    <Space orientation="vertical" size={4}>
                       {detail.students.map((student) => (
                         <Typography.Text key={student.id}>{student.full_name}</Typography.Text>
                       ))}
@@ -990,7 +990,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
         {dependenciesLoading ? (
           <Typography.Text type="secondary">Загрузка...</Typography.Text>
         ) : !deleteTeacher ? null : (
-          <Space direction="vertical" style={{ width: '100%' }}>
+          <Space orientation="vertical" style={{ width: '100%' }}>
             {dependencies.length === 0 ? (
               <>
                 <Typography.Text>Привязанных учеников нет. Можно удалить преподавателя навсегда.</Typography.Text>
@@ -1024,7 +1024,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
                   value={selectedStudentIds}
                   onChange={(values) => setSelectedStudentIds(values as string[])}
                 >
-                  <Space direction="vertical" style={{ width: '100%' }}>
+                  <Space orientation="vertical" style={{ width: '100%' }}>
                     {dependencies.map((student) => (
                       <Checkbox key={student.id} value={student.id}>
                         {student.full_name}

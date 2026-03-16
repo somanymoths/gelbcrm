@@ -484,7 +484,7 @@ export function FunnelBoard() {
   }
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       {contextHolder}
 
       <div>
@@ -529,7 +529,7 @@ export function FunnelBoard() {
                     }
                   }}
                 >
-                  <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  <Space orientation="vertical" size={10} style={{ width: '100%' }}>
                     {stageCards.map((card) => (
                       <Card
                         key={card.id}
@@ -539,7 +539,7 @@ export function FunnelBoard() {
                         onClick={() => void openCard(card.id)}
                         hoverable
                       >
-                        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                        <Space orientation="vertical" size={4} style={{ width: '100%' }}>
                           <Typography.Text strong>{card.full_name}</Typography.Text>
                           <Typography.Text type="secondary">Преподаватель: {card.teacher_full_name ?? 'Не назначен'}</Typography.Text>
                           <Typography.Text type="secondary">Следующее занятие: {formatDate(card.next_lesson_at)}</Typography.Text>
@@ -568,7 +568,7 @@ export function FunnelBoard() {
       <Drawer
         title={selectedCard ? `Карточка: ${selectedCard.full_name}` : 'Карточка'}
         open={drawerOpen}
-        width={720}
+        size={720}
         onClose={() => {
           setDrawerOpen(false);
           setSelectedCard(null);
@@ -579,7 +579,7 @@ export function FunnelBoard() {
             <Spin />
           </div>
         ) : (
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={16} style={{ width: '100%' }}>
             <Card size="small" title="Данные карточки">
               <Row gutter={12}>
                 <Col span={12}>
@@ -646,7 +646,7 @@ export function FunnelBoard() {
             </Card>
 
             <Card size="small" title="Создать ссылку на оплату">
-              <Space direction="vertical" style={{ width: '100%' }}>
+              <Space orientation="vertical" style={{ width: '100%' }}>
                 <Space>
                   <Select
                     style={{ minWidth: 360 }}
@@ -663,11 +663,11 @@ export function FunnelBoard() {
                 {paymentLinks.length === 0 ? (
                   <Typography.Text type="secondary">Ссылок оплаты пока нет</Typography.Text>
                 ) : (
-                  <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                  <Space orientation="vertical" style={{ width: '100%' }} size={8}>
                     {paymentLinks.map((item) => (
                       <Card key={item.id} size="small">
                         <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                          <Space direction="vertical" size={0}>
+                          <Space orientation="vertical" size={0}>
                             <Typography.Text>
                               {item.amount} ₽ <Tag color={statusColor(item.status)}>{statusLabel(item.status)}</Tag>
                             </Typography.Text>
@@ -688,10 +688,10 @@ export function FunnelBoard() {
               {auditItems.length === 0 ? (
                 <Typography.Text type="secondary">Лог пуст</Typography.Text>
               ) : (
-                <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                <Space orientation="vertical" style={{ width: '100%' }} size={8}>
                   {auditItems.map((item) => (
                     <Card key={item.id} size="small">
-                      <Space direction="vertical" size={0}>
+                      <Space orientation="vertical" size={0}>
                         <Typography.Text>
                           {item.action} • {item.actor_login ?? 'admin'}
                         </Typography.Text>
@@ -802,7 +802,7 @@ export function FunnelBoard() {
         onOk={() => void onRestoreCard()}
         okText="Восстановить"
       >
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <Space orientation="vertical" style={{ width: '100%' }}>
           <Select
             placeholder="Выберите карточку"
             value={restoreCardId}
@@ -822,10 +822,10 @@ export function FunnelBoard() {
           {archivedCards.length === 0 ? (
             <Typography.Text type="secondary">Архив пуст</Typography.Text>
           ) : (
-            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+            <Space orientation="vertical" style={{ width: '100%' }} size={8}>
               {archivedCards.map((item) => (
                 <Card key={item.id} size="small">
-                  <Space direction="vertical" size={0}>
+                  <Space orientation="vertical" size={0}>
                     <Typography.Text>{item.full_name}</Typography.Text>
                     <Typography.Text type="secondary">{item.stage_name}</Typography.Text>
                   </Space>
