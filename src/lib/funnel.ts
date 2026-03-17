@@ -188,14 +188,14 @@ export async function listFunnelBoardCards(): Promise<FunnelCardListItem[]> {
         s.entity_type,
         s.first_name,
         s.last_name,
-        CONCAT_WS(' ', s.last_name, s.first_name) AS full_name,
+        CONCAT_WS(' ', s.first_name, s.last_name) AS full_name,
         s.phone,
         s.email,
         s.contact_link,
         s.lead_source,
         s.card_comment,
         s.assigned_teacher_id,
-        CONCAT_WS(' ', t.last_name, t.first_name) AS teacher_full_name,
+        CONCAT_WS(' ', t.first_name, t.last_name) AS teacher_full_name,
         fs.id AS stage_id,
         fs.code AS stage_code,
         fs.name AS stage_name,
@@ -357,14 +357,14 @@ export async function getFunnelCardById(input: {
         s.entity_type,
         s.first_name,
         s.last_name,
-        CONCAT_WS(' ', s.last_name, s.first_name) AS full_name,
+        CONCAT_WS(' ', s.first_name, s.last_name) AS full_name,
         s.phone,
         s.email,
         s.contact_link,
         s.lead_source,
         s.card_comment,
         s.assigned_teacher_id,
-        CONCAT_WS(' ', t.last_name, t.first_name) AS teacher_full_name,
+        CONCAT_WS(' ', t.first_name, t.last_name) AS teacher_full_name,
         fs.id AS stage_id,
         fs.code AS stage_code,
         fs.name AS stage_name,
@@ -877,14 +877,14 @@ export async function listArchivedFunnelCards(): Promise<FunnelCardListItem[]> {
         s.entity_type,
         s.first_name,
         s.last_name,
-        CONCAT_WS(' ', s.last_name, s.first_name) AS full_name,
+        CONCAT_WS(' ', s.first_name, s.last_name) AS full_name,
         s.phone,
         s.email,
         s.contact_link,
         s.lead_source,
         s.card_comment,
         s.assigned_teacher_id,
-        CONCAT_WS(' ', t.last_name, t.first_name) AS teacher_full_name,
+        CONCAT_WS(' ', t.first_name, t.last_name) AS teacher_full_name,
         fs.id AS stage_id,
         fs.code AS stage_code,
         fs.name AS stage_name,
@@ -1507,7 +1507,7 @@ export async function syncCardPaymentStatusByProviderPaymentId(input: {
 export async function listActiveTeachersBasic(): Promise<Array<{ id: string; full_name: string }>> {
   const [rows] = await getPool().query<mysql.RowDataPacket[]>(
     `
-      SELECT id, CONCAT_WS(' ', last_name, first_name) AS full_name
+      SELECT id, CONCAT_WS(' ', first_name, last_name) AS full_name
       FROM teachers
       WHERE deleted_at IS NULL
       ORDER BY last_name ASC, first_name ASC

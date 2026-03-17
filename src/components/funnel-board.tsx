@@ -122,6 +122,18 @@ const INITIAL_CREATE_FORM: CreateFormState = {
   startLessonsAt: ''
 };
 
+function formatPersonName(input: {
+  firstName?: string | null;
+  lastName?: string | null;
+  fallbackFullName?: string | null;
+}): string {
+  const firstName = input.firstName?.trim() ?? '';
+  const lastName = input.lastName?.trim() ?? '';
+  const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+  if (fullName) return fullName;
+  return input.fallbackFullName?.trim() ?? '';
+}
+
 function formatDate(value: string | null | undefined): string {
   if (!value) return '—';
   return new Date(value).toLocaleString();
@@ -299,6 +311,14 @@ export function FunnelBoard() {
 
     return map;
   }, [cards, stages]);
+
+  const teacherNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const teacher of teachers) {
+      map.set(teacher.id, teacher.full_name);
+    }
+    return map;
+  }, [teachers]);
 
   const tariffPackageOptions = useMemo(() => {
     return tariffs.flatMap((tariff) =>
@@ -890,8 +910,19 @@ export function FunnelBoard() {
                         hoverable
                       >
                         <Space orientation="vertical" size={4} style={{ width: '100%' }}>
-                          <Typography.Text strong>{card.full_name}</Typography.Text>
-                          <Typography.Text type="secondary">Преподаватель: {card.teacher_full_name ?? 'Не назначен'}</Typography.Text>
+                          <Typography.Text strong>
+                            {formatPersonName({
+                              firstName: card.first_name,
+                              lastName: card.last_name,
+                              fallbackFullName: card.full_name
+                            })}
+                          </Typography.Text>
+                          <Typography.Text type="secondary">
+                            Преподаватель:{' '}
+                            {card.assigned_teacher_id
+                              ? teacherNameById.get(card.assigned_teacher_id) ?? card.teacher_full_name ?? 'Не назначен'
+                              : 'Не назначен'}
+                          </Typography.Text>
                           <Typography.Text type="secondary">Следующее занятие: {formatDate(card.next_lesson_at)}</Typography.Text>
                           <Typography.Text type="secondary">Осталось занятий: {card.paid_lessons_left}</Typography.Text>
                           <Tag color={card.entity_type === 'student' ? 'green' : 'blue'}>{card.entity_type === 'student' ? 'Ученик' : 'Лид'}</Tag>
@@ -981,7 +1012,11 @@ export function FunnelBoard() {
               <Avatar size={64}>{selectedCard.first_name?.[0] ?? 'У'}</Avatar>
               <Space orientation="vertical" size={2}>
                 <Typography.Text strong style={{ fontSize: 20, lineHeight: 1.1 }}>
-                  {selectedCard.full_name}
+                  {formatPersonName({
+                    firstName: selectedCard.first_name,
+                    lastName: selectedCard.last_name,
+                    fallbackFullName: selectedCard.full_name
+                  })}
                 </Typography.Text>
                 <Typography.Text style={{ fontSize: 20, color: 'rgba(0,0,0,0.64)', textDecoration: 'underline' }}>
                   {selectedCard.contact_link || '@telegram'}
@@ -1037,7 +1072,7 @@ export function FunnelBoard() {
                   placeholder="Не назначен"
                   value={selectedTeacherId}
                   onChange={(value) => setSelectedTeacherId(value ?? null)}
-                  options={teachers.map((teacher) => ({ value: teacher.id, label: teacher.full_name }))}
+                  options={teachers.map((teacher) => ({ value: teacher.id, label: teacherNameById.get(teacher.id) ?? teacher.full_name }))}
                   allowClear
                 />
                 <Button
@@ -1353,7 +1388,14 @@ export function FunnelBoard() {
             placeholder="Выберите карточку"
             value={restoreCardId}
             onChange={(value) => setRestoreCardId(value)}
-            options={archivedCards.map((card) => ({ value: card.id, label: `${card.full_name} (${card.stage_name})` }))}
+            options={archivedCards.map((card) => ({
+              value: card.id,
+              label: `${formatPersonName({
+                firstName: card.first_name,
+                lastName: card.last_name,
+                fallbackFullName: card.full_name
+              })} (${card.stage_name})`
+            }))}
           />
 
           <Select
@@ -1372,7 +1414,13 @@ export function FunnelBoard() {
               {archivedCards.map((item) => (
                 <Card key={item.id} size="small">
                   <Space orientation="vertical" size={0}>
-                    <Typography.Text>{item.full_name}</Typography.Text>
+                    <Typography.Text>
+                      {formatPersonName({
+                        firstName: item.first_name,
+                        lastName: item.last_name,
+                        fallbackFullName: item.full_name
+                      })}
+                    </Typography.Text>
                     <Typography.Text type="secondary">{item.stage_name}</Typography.Text>
                   </Space>
                 </Card>

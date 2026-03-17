@@ -81,6 +81,18 @@ type TeacherFormValues = {
 const PHONE_MASK_REGEX = /^\+7 \(\d{3}\) \d{3}-\d{2}-\d{2}$/;
 const FLAG_OPTIONS = ['🇬🇧', '🇩🇪', '🇪🇸', '🇫🇷', '🇮🇹', '🇷🇺', '🇺🇸', '🇵🇹', '🇨🇳', '🇯🇵', '🇰🇷', '🇹🇷'];
 
+function formatPersonName(input: {
+  firstName?: string | null;
+  lastName?: string | null;
+  fallbackFullName?: string | null;
+}): string {
+  const firstName = input.firstName?.trim() ?? '';
+  const lastName = input.lastName?.trim() ?? '';
+  const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+  if (fullName) return fullName;
+  return input.fallbackFullName?.trim() ?? '';
+}
+
 function formatPhoneInput(value?: string | null): string {
   const rawDigits = String(value ?? '').replace(/\D/g, '');
   if (!rawDigits) return '';
@@ -514,7 +526,12 @@ export function TeachersSection({ scope }: { scope: Scope }) {
       key: 'name',
       sorter: true,
       sortOrder: sortBy === 'name' ? (sortDir === 'asc' ? 'ascend' : 'descend') : null,
-      render: (_, row) => row.full_name
+      render: (_, row) =>
+        formatPersonName({
+          firstName: row.first_name,
+          lastName: row.last_name,
+          fallbackFullName: row.full_name
+        })
     },
     {
       title: 'Ученики',
@@ -763,7 +780,15 @@ export function TeachersSection({ scope }: { scope: Scope }) {
           setIsEditing(false);
         }}
         width={780}
-        title={detail ? detail.full_name : 'Преподаватель'}
+        title={
+          detail
+            ? formatPersonName({
+                firstName: detail.first_name,
+                lastName: detail.last_name,
+                fallbackFullName: detail.full_name
+              })
+            : 'Преподаватель'
+        }
         footer={null}
         destroyOnHidden
         maskClosable
@@ -795,7 +820,13 @@ export function TeachersSection({ scope }: { scope: Scope }) {
                   ) : (
                     <Space orientation="vertical" size={4}>
                       {detail.students.map((student) => (
-                        <Typography.Text key={student.id}>{student.full_name}</Typography.Text>
+                        <Typography.Text key={student.id}>
+                          {formatPersonName({
+                            firstName: student.first_name,
+                            lastName: student.last_name,
+                            fallbackFullName: student.full_name
+                          })}
+                        </Typography.Text>
                       ))}
                     </Space>
                   )}
@@ -978,7 +1009,15 @@ export function TeachersSection({ scope }: { scope: Scope }) {
 
       <Modal
         open={deleteOpen}
-        title={deleteTeacher ? `Удалить преподавателя: ${deleteTeacher.full_name}` : 'Удалить преподавателя'}
+        title={
+          deleteTeacher
+            ? `Удалить преподавателя: ${formatPersonName({
+                firstName: deleteTeacher.first_name,
+                lastName: deleteTeacher.last_name,
+                fallbackFullName: deleteTeacher.full_name
+              })}`
+            : 'Удалить преподавателя'
+        }
         onCancel={() => {
           setDeleteOpen(false);
           setDeleteTeacher(null);
@@ -1027,7 +1066,11 @@ export function TeachersSection({ scope }: { scope: Scope }) {
                   <Space orientation="vertical" style={{ width: '100%' }}>
                     {dependencies.map((student) => (
                       <Checkbox key={student.id} value={student.id}>
-                        {student.full_name}
+                        {formatPersonName({
+                          firstName: student.first_name,
+                          lastName: student.last_name,
+                          fallbackFullName: student.full_name
+                        })}
                       </Checkbox>
                     ))}
                   </Space>
