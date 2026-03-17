@@ -203,21 +203,26 @@ export function TariffsTab() {
     }
   };
 
-  const togglePackageActive = async (pkg: TariffPackage, nextActive: boolean) => {
-    const response = await fetch(`/api/v1/tariff-packages/${pkg.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ isActive: nextActive })
+  const deleteTariffGrid = async (tariff: TariffGrid) => {
+    Modal.confirm({
+      title: `Удалить тариф «${tariff.name}»?`,
+      content: 'Тарифная сетка будет удалена без возможности восстановления.',
+      okText: 'Удалить',
+      okButtonProps: { danger: true },
+      cancelText: 'Отмена',
+      onOk: async () => {
+        const response = await fetch(`/api/v1/tariff-grids/${tariff.id}`, { method: 'DELETE' });
+
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+          api.error(payload?.message ?? 'Не удалось удалить тариф');
+          return;
+        }
+
+        api.success('Тариф удалён');
+        await loadTariffs();
+      }
     });
-
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      api.error(payload?.message ?? 'Не удалось обновить пакет');
-      return;
-    }
-
-    api.success('Пакет обновлён');
-    await loadTariffs();
   };
 
   return (
@@ -307,10 +312,7 @@ export function TariffsTab() {
                       <Typography.Text>
                         {pkg.lessons_count} занятий x {formatRub(pkg.price_per_lesson_rub)} = {formatRub(pkg.total_price_rub)}
                       </Typography.Text>
-                      {pkg.is_active ? <Tag color="green">Активен</Tag> : <Tag>Архив</Tag>}
-                      <Button size="small" onClick={() => void togglePackageActive(pkg, !Boolean(pkg.is_active))}>
-                        {pkg.is_active ? 'В архив' : 'Активировать'}
-                      </Button>
+                      {pkg.is_active ? <Tag color="green">Активен</Tag> : <Tag>Неактивен</Tag>}
                     </Space>
                   ))}
                 </Space>
@@ -332,7 +334,8 @@ export function TariffsTab() {
                   menu={{
                     items: [
                       { key: 'rename', label: 'Переименовать' },
-                      { key: 'add-package', label: 'Добавить пакет' }
+                      { key: 'add-package', label: 'Добавить пакет' },
+                      { key: 'delete', label: 'Удалить тариф', danger: true }
                     ],
                     onClick: ({ key }) => {
                       if (key === 'rename') {
@@ -342,6 +345,11 @@ export function TariffsTab() {
 
                       if (key === 'add-package') {
                         openAddPackageModal(tariff);
+                        return;
+                      }
+
+                      if (key === 'delete') {
+                        void deleteTariffGrid(tariff);
                       }
                     }
                   }}

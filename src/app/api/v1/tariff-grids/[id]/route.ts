@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
-import { getTariffGridById, updateTariffGrid } from '@/lib/db';
+import { deleteTariffGrid, getTariffGridById, updateTariffGrid } from '@/lib/db';
 
 const patchSchema = z
   .object({
@@ -50,5 +50,31 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
 
     console.error(error);
     return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось обновить тариф' }, { status: 500 });
+  }
+}
+
+export async function DELETE(_: Request, context: { params: Promise<{ id: string }> }) {
+  const guard = await requireAdmin();
+  if (guard.error) return guard.error;
+
+  const { id } = await context.params;
+
+  try {
+    await deleteTariffGrid({ id, actorUserId: guard.session.id });
+    return new NextResponse(null, { status: 204 });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'TARIFF_GRID_IN_USE') {
+      return NextResponse.json(
+        { code: 'TARIFF_GRID_IN_USE', message: 'Нельзя удалить тариф: по нему уже созданы ссылки на оплату' },
+        { status: 409 }
+      );
+    }
+
+    if (error instanceof Error && error.message === 'TARIFF_GRID_NOT_FOUND') {
+      return NextResponse.json({ code: 'TARIFF_GRID_NOT_FOUND', message: 'Тариф не найден' }, { status: 404 });
+    }
+
+    console.error(error);
+    return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось удалить тариф' }, { status: 500 });
   }
 }
