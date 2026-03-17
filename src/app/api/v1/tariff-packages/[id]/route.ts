@@ -6,8 +6,7 @@ import { updateTariffPackage } from '@/lib/db';
 const patchSchema = z
   .object({
     lessonsCount: z.number().int().min(1).optional(),
-    pricePerLessonRub: z.number().positive().optional(),
-    isActive: z.boolean().optional()
+    pricePerLessonRub: z.number().positive().optional()
   })
   .strict();
 
@@ -27,8 +26,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     await updateTariffPackage({
       id,
       lessonsCount: parsed.data.lessonsCount,
-      pricePerLessonRub: parsed.data.pricePerLessonRub,
-      isActive: parsed.data.isActive
+      pricePerLessonRub: parsed.data.pricePerLessonRub
     });
 
     return new NextResponse(null, { status: 204 });

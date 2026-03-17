@@ -1279,7 +1279,6 @@ export async function updateTariffGrid(input: {
   id: string;
   actorUserId: string;
   name?: string;
-  isActive?: boolean;
 }): Promise<void> {
   const updates: string[] = [];
   const values: Array<string | number> = [];
@@ -1287,11 +1286,6 @@ export async function updateTariffGrid(input: {
   if (typeof input.name === 'string') {
     updates.push('name = ?');
     values.push(input.name);
-  }
-
-  if (typeof input.isActive === 'boolean') {
-    updates.push('is_active = ?');
-    values.push(input.isActive ? 1 : 0);
   }
 
   if (updates.length === 0) return;
@@ -1307,6 +1301,61 @@ export async function updateTariffGrid(input: {
 
   if (result.affectedRows === 0) {
     throw new Error('TARIFF_GRID_NOT_FOUND');
+  }
+}
+
+export async function deleteTariffGrid(input: { id: string; actorUserId: string }): Promise<void> {
+  const connection = await getPool().getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const [gridRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id, name
+        FROM tariff_grids
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [input.id]
+    );
+
+    if (gridRows.length === 0) {
+      throw new Error('TARIFF_GRID_NOT_FOUND');
+    }
+
+    const [inUseRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT 1
+        FROM student_payment_links
+        WHERE tariff_grid_id = ?
+        LIMIT 1
+      `,
+      [input.id]
+    );
+
+    if (inUseRows.length > 0) {
+      throw new Error('TARIFF_GRID_IN_USE');
+    }
+
+    await connection.query(`DELETE FROM tariff_grids WHERE id = ?`, [input.id]);
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'tariff_grid',
+      entityId: input.id,
+      action: 'delete',
+      diffBefore: {
+        name: String(gridRows[0].name)
+      }
+    });
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
   }
 }
 
@@ -1376,7 +1425,6 @@ export async function updateTariffPackage(input: {
   id: string;
   lessonsCount?: number;
   pricePerLessonRub?: number;
-  isActive?: boolean;
 }): Promise<void> {
   const [rows] = await getPool().query<mysql.RowDataPacket[]>(
     `
@@ -1403,11 +1451,6 @@ export async function updateTariffPackage(input: {
     'total_price_rub = ?'
   ];
   const values: Array<string | number> = [nextLessons, nextPrice, nextTotal];
-
-  if (typeof input.isActive === 'boolean') {
-    updates.push('is_active = ?');
-    values.push(input.isActive ? 1 : 0);
-  }
 
   const [result] = await getPool().query<mysql.ResultSetHeader>(
     `
