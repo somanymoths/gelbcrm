@@ -17,6 +17,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
   return (
     <html lang="ru">
+      <head>
+        <script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async />
+      </head>
       <body>
         <AntdRegistry>
           <AppProviders>

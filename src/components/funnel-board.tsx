@@ -1,8 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { CloseOutlined, CopyOutlined, DeleteOutlined, ExportOutlined, PlusOutlined, RedoOutlined } from '@ant-design/icons';
 import {
   Alert,
+  Avatar,
   Button,
   Card,
   Col,
@@ -87,9 +89,16 @@ type PaymentLink = {
   payment_url: string;
   amount: number;
   created_at: string;
+  expires_at: string | null;
 };
 
 type ArchivedCard = FunnelCard;
+type CardComment = {
+  id: number;
+  body: string;
+  author_login: string | null;
+  created_at: string;
+};
 
 type CreateFormState = {
   firstName: string;
@@ -118,18 +127,50 @@ function formatDate(value: string | null | undefined): string {
   return new Date(value).toLocaleString();
 }
 
-function statusLabel(status: PaymentLink['status']): string {
-  if (status === 'pending') return 'Ожидает оплату';
-  if (status === 'paid') return 'Оплачено';
-  if (status === 'failed') return 'Ошибка/отклонено';
-  return 'Истекла';
+function auditActionLabel(action: string): string {
+  if (action === 'manual_lessons_add') return 'Ручное добавление занятий';
+  if (action === 'add_comment') return 'Комментарий';
+  if (action === 'assign_teacher') return 'Назначение преподавателя';
+  if (action === 'move_stage') return 'Смена этапа';
+  if (action === 'archive') return 'Архивация';
+  if (action === 'restore') return 'Восстановление';
+  if (action === 'create') return 'Создание карточки';
+  if (action === 'update') return 'Обновление карточки';
+  return action;
 }
 
-function statusColor(status: PaymentLink['status']): string {
-  if (status === 'pending') return 'gold';
-  if (status === 'paid') return 'green';
-  if (status === 'failed') return 'red';
-  return 'default';
+function formatEventDate(value: string | null | undefined): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+
+  const now = new Date();
+  const isToday =
+    date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+
+  if (isToday) return 'Сегодня';
+  return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+}
+
+function formatCountdown(targetDate: string | null, nowTs: number): string {
+  if (!targetDate) return '—';
+  const targetTs = new Date(targetDate).getTime();
+  if (Number.isNaN(targetTs)) return '—';
+
+  const diff = targetTs - nowTs;
+  if (diff <= 0) return '00:00:00';
+
+  const totalSec = Math.floor(diff / 1000);
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+
+  const hh = String(hours).padStart(2, '0');
+  const mm = String(mins).padStart(2, '0');
+  const ss = String(secs).padStart(2, '0');
+
+  return days > 0 ? `${days}д ${hh}:${mm}:${ss}` : `${hh}:${mm}:${ss}`;
 }
 
 export function FunnelBoard() {
@@ -154,12 +195,22 @@ export function FunnelBoard() {
 
   const [auditItems, setAuditItems] = useState<FunnelAuditItem[]>([]);
   const [paymentLinks, setPaymentLinks] = useState<PaymentLink[]>([]);
+  const [cardComments, setCardComments] = useState<CardComment[]>([]);
 
   const [selectedTeacherId, setSelectedTeacherId] = useState<string | null>(null);
   const [teacherSaving, setTeacherSaving] = useState(false);
 
   const [selectedTariffPackageId, setSelectedTariffPackageId] = useState<string | null>(null);
   const [paymentLinkCreating, setPaymentLinkCreating] = useState(false);
+  const [paymentLinkDeleting, setPaymentLinkDeleting] = useState(false);
+  const [manualLessonsToAdd, setManualLessonsToAdd] = useState<number>(1);
+  const [manualLessonsComment, setManualLessonsComment] = useState('');
+  const [manualLessonsSaving, setManualLessonsSaving] = useState(false);
+  const [showFullHistory, setShowFullHistory] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [newNoteBody, setNewNoteBody] = useState('');
+  const [addingNote, setAddingNote] = useState(false);
+  const [nowTs, setNowTs] = useState(Date.now());
 
   const [archivedCards, setArchivedCards] = useState<ArchivedCard[]>([]);
   const [archiveModalOpen, setArchiveModalOpen] = useState(false);
@@ -219,6 +270,11 @@ export function FunnelBoard() {
     void loadBoard();
   }, [loadBoard]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const groupedCards = useMemo(() => {
     const map = new Map<string, FunnelCard[]>();
 
@@ -243,11 +299,58 @@ export function FunnelBoard() {
     );
   }, [tariffs]);
 
+  const recentEvents = useMemo(() => {
+    const events: Array<{ id: string; title: string; created_at: string; color: string }> = [];
+
+    for (const item of paymentLinks) {
+      if (item.status === 'paid') {
+        events.push({
+          id: `payment-${item.id}`,
+          title: 'Оплата подтверждена',
+          created_at: item.created_at,
+          color: '#b7ebd0'
+        });
+      }
+    }
+
+    for (const item of auditItems) {
+      let title = auditActionLabel(item.action);
+
+      if (item.action === 'manual_lessons_add') {
+        title = `+${Number(item.diff_after?.lessons_added ?? 0)} новых занятий`;
+      } else if (item.action === 'move_stage' && item.diff_after?.stage_code === 'last_lesson') {
+        title = 'Закончил занятие';
+      }
+
+      events.push({
+        id: `audit-${item.id}`,
+        title,
+        created_at: item.created_at,
+        color: item.action === 'manual_lessons_add' ? '#d9d9f3' : '#e6e7f5'
+      });
+    }
+
+    events.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    return events.slice(0, 3);
+  }, [auditItems, paymentLinks]);
+
+  const activePaymentLink = useMemo(() => {
+    return (
+      paymentLinks.find((item) => {
+        if (item.status !== 'pending') return false;
+        if (!item.expires_at) return false;
+        const expiresTs = new Date(item.expires_at).getTime();
+        return Number.isFinite(expiresTs) && expiresTs > nowTs;
+      }) ?? null
+    );
+  }, [paymentLinks, nowTs]);
+
   async function refreshSelectedCard(cardId: string) {
-    const [cardRes, auditRes, linksRes] = await Promise.allSettled([
+    const [cardRes, auditRes, linksRes, commentsRes] = await Promise.allSettled([
       fetch(`/api/v1/funnel/cards/${cardId}`, { cache: 'no-store' }),
       fetch(`/api/v1/funnel/cards/${cardId}/audit`, { cache: 'no-store' }),
-      fetch(`/api/v1/funnel/cards/${cardId}/payment-links`, { cache: 'no-store' })
+      fetch(`/api/v1/funnel/cards/${cardId}/payment-links`, { cache: 'no-store' }),
+      fetch(`/api/v1/funnel/cards/${cardId}/comments`, { cache: 'no-store' })
     ]);
 
     if (cardRes.status === 'fulfilled' && cardRes.value.ok) {
@@ -263,6 +366,10 @@ export function FunnelBoard() {
     if (linksRes.status === 'fulfilled' && linksRes.value.ok) {
       setPaymentLinks(((await linksRes.value.json()) as PaymentLink[]) ?? []);
     }
+
+    if (commentsRes.status === 'fulfilled' && commentsRes.value.ok) {
+      setCardComments(((await commentsRes.value.json()) as CardComment[]) ?? []);
+    }
   }
 
   async function openCard(cardId: string) {
@@ -271,6 +378,11 @@ export function FunnelBoard() {
       setSelectedCard(boardCard);
       setSelectedTeacherId(boardCard.assigned_teacher_id);
     }
+    setManualLessonsToAdd(1);
+    setManualLessonsComment('');
+    setShowFullHistory(false);
+    setEditMode(false);
+    setNewNoteBody('');
 
     setDrawerOpen(true);
     setDetailsLoading(true);
@@ -413,21 +525,35 @@ export function FunnelBoard() {
   async function onSaveDetails() {
     if (!selectedCard) return;
 
+    const firstName = selectedCard.first_name.trim();
+    const lastName = selectedCard.last_name.trim();
+
+    if (!firstName || !lastName) {
+      api.error('Имя и фамилия обязательны');
+      return;
+    }
+
+    const payload: Record<string, string | null> = {
+      firstName,
+      lastName
+    };
+
+    const phone = selectedCard.phone?.trim();
+    const contact = selectedCard.contact_link?.trim();
+    const email = selectedCard.email?.trim();
+    const leadSource = selectedCard.lead_source?.trim();
+
+    if (phone) payload.phone = phone;
+    if (contact) payload.contact = contact;
+    if (email) payload.email = email;
+    if (leadSource) payload.leadSource = leadSource;
+    if (selectedCard.start_lessons_at) payload.startLessonsAt = selectedCard.start_lessons_at;
+    if (selectedCard.last_lesson_at) payload.lastLessonAt = selectedCard.last_lesson_at;
+
     const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        firstName: selectedCard.first_name,
-        lastName: selectedCard.last_name,
-        phone: selectedCard.phone,
-        contact: selectedCard.contact_link,
-        email: selectedCard.email,
-        leadSource: selectedCard.lead_source,
-        comment: selectedCard.card_comment,
-        startLessonsAt: selectedCard.start_lessons_at,
-        lastLessonAt: selectedCard.last_lesson_at,
-        paidLessonsLeft: selectedCard.paid_lessons_left
-      })
+      body: JSON.stringify(payload)
     });
 
     if (!response.ok) {
@@ -438,6 +564,74 @@ export function FunnelBoard() {
 
     api.success('Карточка сохранена');
     await loadBoard();
+    await refreshSelectedCard(selectedCard.id);
+  }
+
+  async function onAddManualLessons() {
+    if (!selectedCard) return;
+
+    const lessonsToAdd = Math.trunc(manualLessonsToAdd);
+    const trimmedComment = manualLessonsComment.trim();
+
+    if (!Number.isInteger(lessonsToAdd) || lessonsToAdd < 1) {
+      api.error('Укажите положительное целое количество занятий');
+      return;
+    }
+
+    if (!trimmedComment) {
+      api.error('Комментарий обязателен');
+      return;
+    }
+
+    setManualLessonsSaving(true);
+
+    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/manual-lessons`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lessonsToAdd, comment: trimmedComment })
+    });
+
+    setManualLessonsSaving(false);
+
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+      api.error(payload?.message ?? 'Не удалось добавить занятия');
+      return;
+    }
+
+    api.success(`Добавлено ${lessonsToAdd} занятий`);
+    setManualLessonsToAdd(1);
+    setManualLessonsComment('');
+    await loadBoard();
+    await refreshSelectedCard(selectedCard.id);
+  }
+
+  async function onAddNote() {
+    if (!selectedCard) return;
+    const body = newNoteBody.trim();
+
+    if (!body) {
+      api.error('Введите текст заметки');
+      return;
+    }
+
+    setAddingNote(true);
+
+    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body })
+    });
+
+    setAddingNote(false);
+
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+      api.error(payload?.message ?? 'Не удалось добавить заметку');
+      return;
+    }
+
+    setNewNoteBody('');
     await refreshSelectedCard(selectedCard.id);
   }
 
@@ -479,7 +673,12 @@ export function FunnelBoard() {
     setPaymentLinkCreating(false);
 
     if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+      const payload = (await response.json().catch(() => null)) as { message?: string; code?: string } | null;
+      if (payload?.code === 'ACTIVE_PAYMENT_LINK_EXISTS') {
+        api.error(payload.message ?? 'У ученика уже есть активная ссылка');
+        await refreshSelectedCard(selectedCard.id);
+        return;
+      }
       api.error(payload?.message ?? 'Не удалось создать ссылку оплаты');
       return;
     }
@@ -491,6 +690,65 @@ export function FunnelBoard() {
       window.open(payload.confirmationUrl, '_blank', 'noopener,noreferrer');
     }
 
+    await refreshSelectedCard(selectedCard.id);
+  }
+
+  async function onCopyPaymentLink(url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+      api.success('Ссылка скопирована');
+    } catch {
+      api.error('Не удалось скопировать ссылку');
+    }
+  }
+
+  async function onRefreshPaymentLink() {
+    if (!selectedCard || !activePaymentLink) return;
+
+    setPaymentLinkCreating(true);
+
+    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/payment-links`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshActive: true })
+    });
+
+    setPaymentLinkCreating(false);
+
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+      api.error(payload?.message ?? 'Не удалось обновить ссылку оплаты');
+      return;
+    }
+
+    const payload = (await response.json()) as { confirmationUrl?: string };
+    api.success('Ссылка оплаты обновлена');
+
+    if (payload.confirmationUrl) {
+      window.open(payload.confirmationUrl, '_blank', 'noopener,noreferrer');
+    }
+
+    await refreshSelectedCard(selectedCard.id);
+  }
+
+  async function onDeleteActivePaymentLink() {
+    if (!selectedCard || !activePaymentLink) return;
+
+    setPaymentLinkDeleting(true);
+
+    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/payment-links`, {
+      method: 'DELETE'
+    });
+
+    setPaymentLinkDeleting(false);
+
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+      api.error(payload?.message ?? 'Не удалось удалить активную ссылку');
+      return;
+    }
+
+    api.success('Активная ссылка удалена');
     await refreshSelectedCard(selectedCard.id);
   }
 
@@ -664,12 +922,19 @@ export function FunnelBoard() {
       )}
 
       <Drawer
-        title={selectedCard ? `Карточка: ${selectedCard.full_name}` : 'Карточка'}
+        title={null}
+        closeIcon={null}
         open={drawerOpen}
-        size={720}
+        size={595}
+        styles={{ body: { padding: '28px 24px 20px' } }}
         onClose={() => {
           setDrawerOpen(false);
           setSelectedCard(null);
+          setManualLessonsToAdd(1);
+          setManualLessonsComment('');
+          setShowFullHistory(false);
+          setEditMode(false);
+          setNewNoteBody('');
         }}
       >
         {detailsLoading || !selectedCard ? (
@@ -677,128 +942,294 @@ export function FunnelBoard() {
             <Spin />
           </div>
         ) : (
-          <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-            <Card size="small" title="Данные карточки">
-              <Row gutter={12}>
-                <Col span={12}>
-                  <Typography.Text>Имя</Typography.Text>
-                  <Input value={selectedCard.first_name} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, first_name: event.target.value } : prev))} />
-                </Col>
-                <Col span={12}>
-                  <Typography.Text>Фамилия</Typography.Text>
-                  <Input value={selectedCard.last_name} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, last_name: event.target.value } : prev))} />
-                </Col>
-                <Col span={12}>
-                  <Typography.Text>Телефон</Typography.Text>
-                  <Input value={selectedCard.phone} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, phone: event.target.value } : prev))} />
-                </Col>
-                <Col span={12}>
-                  <Typography.Text>Email</Typography.Text>
-                  <Input value={selectedCard.email} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, email: event.target.value } : prev))} />
-                </Col>
-                <Col span={12}>
-                  <Typography.Text>Контакт</Typography.Text>
-                  <Input value={selectedCard.contact_link} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, contact_link: event.target.value } : prev))} />
-                </Col>
-                <Col span={12}>
-                  <Typography.Text>Источник</Typography.Text>
-                  <Input value={selectedCard.lead_source} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, lead_source: event.target.value } : prev))} />
-                </Col>
-                <Col span={12}>
-                  <Typography.Text>Дата следующего занятия</Typography.Text>
-                  <Input value={selectedCard.next_lesson_at ? formatDate(selectedCard.next_lesson_at) : 'Из расписания преподавателя'} readOnly />
-                </Col>
-                <Col span={6}>
-                  <Typography.Text>Осталось занятий</Typography.Text>
-                  <InputNumber min={0} style={{ width: '100%' }} value={selectedCard.paid_lessons_left} onChange={(value) => setSelectedCard((prev) => (prev ? { ...prev, paid_lessons_left: Number(value) || 0 } : prev))} />
-                </Col>
-                <Col span={24}>
-                  <Typography.Text>Комментарий</Typography.Text>
-                  <Input.TextArea rows={2} value={selectedCard.card_comment ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, card_comment: event.target.value } : prev))} />
-                </Col>
-                <Col span={24}>
-                  <Space>
-                    <Button type="primary" onClick={() => void onSaveDetails()}>
-                      Сохранить
-                    </Button>
-                    <Button danger onClick={() => void onArchiveSelectedCard()}>
-                      В архив
-                    </Button>
-                  </Space>
-                </Col>
-              </Row>
-            </Card>
-
-            <Card size="small" title="Назначить преподавателя">
-              <Space>
-                <Select
-                  style={{ minWidth: 260 }}
-                  value={selectedTeacherId}
-                  onChange={(value) => setSelectedTeacherId(value)}
-                  options={teachers.map((teacher) => ({ value: teacher.id, label: teacher.full_name }))}
+          <Space orientation="vertical" size={24} style={{ width: '100%' }}>
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Space size={14}>
+                <Button
+                  type="text"
+                  icon={<CloseOutlined />}
+                  onClick={() => {
+                    setDrawerOpen(false);
+                    setSelectedCard(null);
+                  }}
                 />
-                <Button type="primary" loading={teacherSaving} onClick={() => void onAssignTeacher()}>
-                  Назначить
-                </Button>
+                <Typography.Text style={{ fontSize: 20 }}>Карточка ученика</Typography.Text>
               </Space>
-            </Card>
+              <Button
+                type={editMode ? 'default' : 'primary'}
+                size="small"
+                style={!editMode ? { borderRadius: 20, background: '#000', borderColor: '#000' } : { borderRadius: 20 }}
+                onClick={() => setEditMode((prev) => !prev)}
+              >
+                {editMode ? 'Готово' : 'Редактировать'}
+              </Button>
+            </Space>
 
-            <Card size="small" title="Создать ссылку на оплату">
-              <Space orientation="vertical" style={{ width: '100%' }}>
+            <Space size={12} align="start">
+              <Avatar size={64}>{selectedCard.first_name?.[0] ?? 'У'}</Avatar>
+              <Space orientation="vertical" size={2}>
+                <Typography.Text strong style={{ fontSize: 20, lineHeight: 1.1 }}>
+                  {selectedCard.full_name}
+                </Typography.Text>
+                <Typography.Text style={{ fontSize: 20, color: 'rgba(0,0,0,0.64)', textDecoration: 'underline' }}>
+                  {selectedCard.contact_link || '@telegram'}
+                </Typography.Text>
+              </Space>
+            </Space>
+
+            {editMode ? (
+              <Card size="small" title="Редактирование данных">
+                <Row gutter={12}>
+                  <Col span={12}>
+                    <Typography.Text>Имя</Typography.Text>
+                    <Input value={selectedCard.first_name} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, first_name: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={12}>
+                    <Typography.Text>Фамилия</Typography.Text>
+                    <Input value={selectedCard.last_name} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, last_name: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={12}>
+                    <Typography.Text>Телефон</Typography.Text>
+                    <Input value={selectedCard.phone} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, phone: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={12}>
+                    <Typography.Text>Email</Typography.Text>
+                    <Input value={selectedCard.email} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, email: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={12}>
+                    <Typography.Text>Контакт</Typography.Text>
+                    <Input value={selectedCard.contact_link} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, contact_link: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={12}>
+                    <Typography.Text>Источник</Typography.Text>
+                    <Input value={selectedCard.lead_source} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, lead_source: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={24}>
+                    <Space>
+                      <Button type="primary" onClick={() => void onSaveDetails()}>
+                        Сохранить
+                      </Button>
+                      <Button danger onClick={() => void onArchiveSelectedCard()}>
+                        В архив
+                      </Button>
+                    </Space>
+                  </Col>
+                </Row>
+              </Card>
+            ) : null}
+
+            <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
                 <Space>
-                  <Select
-                    style={{ minWidth: 360 }}
-                    placeholder="Выберите тариф и пакет"
-                    value={selectedTariffPackageId}
-                    onChange={(value) => setSelectedTariffPackageId(value)}
-                    options={tariffPackageOptions}
-                  />
-                  <Button type="primary" loading={paymentLinkCreating} onClick={() => void onCreatePaymentLink()}>
-                    Создать ссылку
+                  <Typography.Text strong style={{ fontSize: 20 }}>
+                    Занятия
+                  </Typography.Text>
+                  <Button
+                    onClick={() => void onAddManualLessons()}
+                    loading={manualLessonsSaving}
+                    size="small"
+                    style={{ borderRadius: 20, background: '#000', color: '#fff', borderColor: '#000' }}
+                  >
+                    <PlusOutlined /> Добавить
                   </Button>
                 </Space>
+                <Typography.Text style={{ fontSize: 20, color: 'rgba(0,0,0,0.64)' }}>{`Осталось ${selectedCard.paid_lessons_left}`}</Typography.Text>
+              </Space>
 
-                {paymentLinks.length === 0 ? (
-                  <Typography.Text type="secondary">Ссылок оплаты пока нет</Typography.Text>
+              <Space style={{ width: '100%' }}>
+                <InputNumber
+                  min={1}
+                  precision={0}
+                  value={manualLessonsToAdd}
+                  onChange={(value) => setManualLessonsToAdd(Number(value) || 1)}
+                />
+                <Input
+                  value={manualLessonsComment}
+                  onChange={(event) => setManualLessonsComment(event.target.value)}
+                  placeholder="Комментарий к добавлению (обязательно)"
+                />
+              </Space>
+
+              <div style={{ width: '100%', position: 'relative', height: 12, borderRadius: 11, background: '#ddf8e9' }}>
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: 0,
+                    height: 12,
+                    borderRadius: 11,
+                    background: '#22c55e',
+                    width: `${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}%`
+                  }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: -3,
+                    left: `calc(${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}% - 10px)`,
+                    width: 20,
+                    height: 18,
+                    borderRadius: 11,
+                    background: '#000'
+                  }}
+                />
+              </div>
+
+              <Space style={{ width: '100%' }}>
+                <Select
+                  style={{ minWidth: 360, flex: 1 }}
+                  placeholder="Выберите тариф и пакет"
+                  value={selectedTariffPackageId}
+                  onChange={(value) => setSelectedTariffPackageId(value)}
+                  options={tariffPackageOptions}
+                  disabled={Boolean(activePaymentLink)}
+                />
+                <Button
+                  type="primary"
+                  loading={paymentLinkCreating}
+                  onClick={() => void onCreatePaymentLink()}
+                  style={{ borderRadius: 20 }}
+                  disabled={Boolean(activePaymentLink)}
+                >
+                  Создать ссылку
+                </Button>
+              </Space>
+
+              {activePaymentLink ? (
+                <Space orientation="vertical" style={{ width: '100%' }} size={6}>
+                  <Typography.Text type="secondary">
+                    Активная ссылка уже создана. Новую можно создать после окончания срока действия.
+                  </Typography.Text>
+                  <Space style={{ width: '100%' }}>
+                    <Input value={activePaymentLink.payment_url} readOnly />
+                    <Button icon={<CopyOutlined />} onClick={() => void onCopyPaymentLink(activePaymentLink.payment_url)} />
+                    <Button icon={<ExportOutlined />} onClick={() => window.open(activePaymentLink.payment_url, '_blank', 'noopener,noreferrer')} />
+                    <Button loading={paymentLinkCreating} icon={<RedoOutlined />} onClick={() => void onRefreshPaymentLink()}>
+                      Обновить
+                    </Button>
+                    <Button danger loading={paymentLinkDeleting} icon={<DeleteOutlined />} onClick={() => void onDeleteActivePaymentLink()}>
+                      Удалить
+                    </Button>
+                  </Space>
+                  <Typography.Text type="secondary">
+                    Срок действия: {formatCountdown(activePaymentLink.expires_at, nowTs)}
+                  </Typography.Text>
+                </Space>
+              ) : null}
+            </Space>
+
+            {editMode ? (
+              <Card size="small" title="Назначить преподавателя">
+                <Space>
+                  <Select
+                    style={{ minWidth: 260 }}
+                    value={selectedTeacherId}
+                    onChange={(value) => setSelectedTeacherId(value)}
+                    options={teachers.map((teacher) => ({ value: teacher.id, label: teacher.full_name }))}
+                  />
+                  <Button type="primary" loading={teacherSaving} onClick={() => void onAssignTeacher()}>
+                    Назначить
+                  </Button>
+                </Space>
+              </Card>
+            ) : null}
+
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Typography.Text strong style={{ fontSize: 20 }}>
+                Последние события
+              </Typography.Text>
+              <Button
+                type="link"
+                style={{ color: 'rgba(0,0,0,0.64)', textDecoration: 'underline', fontSize: 20, paddingInline: 0 }}
+                onClick={() => setShowFullHistory((prev) => !prev)}
+              >
+                Вся история
+              </Button>
+            </Space>
+
+            {recentEvents.length === 0 ? (
+              <Typography.Text type="secondary">Событий пока нет</Typography.Text>
+            ) : (
+              <Space orientation="vertical" size={14} style={{ width: '100%' }}>
+                {recentEvents.map((event) => (
+                  <Space key={event.id} align="start">
+                    <Avatar size={40} style={{ backgroundColor: event.color }} />
+                    <Space orientation="vertical" size={0}>
+                      <Typography.Text style={{ fontSize: 16 }}>{event.title}</Typography.Text>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {formatEventDate(event.created_at)}
+                      </Typography.Text>
+                    </Space>
+                  </Space>
+                ))}
+              </Space>
+            )}
+
+            {showFullHistory ? (
+              <Card size="small" title="Полная история">
+                {auditItems.length === 0 ? (
+                  <Typography.Text type="secondary">Лог пуст</Typography.Text>
                 ) : (
                   <Space orientation="vertical" style={{ width: '100%' }} size={8}>
-                    {paymentLinks.map((item) => (
+                    {auditItems.map((item) => (
                       <Card key={item.id} size="small">
-                        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                          <Space orientation="vertical" size={0}>
+                        <Space orientation="vertical" size={0}>
+                          <Typography.Text>
+                            {auditActionLabel(item.action)} • {item.actor_login ?? 'admin'}
+                          </Typography.Text>
+                          {item.action === 'manual_lessons_add' ? (
                             <Typography.Text>
-                              {item.amount} ₽ <Tag color={statusColor(item.status)}>{statusLabel(item.status)}</Tag>
+                              {`+${Number(item.diff_after?.lessons_added ?? 0)} занятий`}
+                              {typeof item.diff_after?.comment === 'string' ? ` • ${item.diff_after.comment}` : ''}
                             </Typography.Text>
-                            <Typography.Text type="secondary">{formatDate(item.created_at)}</Typography.Text>
-                          </Space>
-                          <a href={item.payment_url} target="_blank" rel="noreferrer">
-                            Открыть
-                          </a>
+                          ) : null}
+                          <Typography.Text type="secondary">{formatDate(item.created_at)}</Typography.Text>
                         </Space>
                       </Card>
                     ))}
                   </Space>
                 )}
-              </Space>
-            </Card>
+              </Card>
+            ) : null}
 
-            <Card size="small" title="Лог (история изменений)">
-              {auditItems.length === 0 ? (
-                <Typography.Text type="secondary">Лог пуст</Typography.Text>
-              ) : (
-                <Space orientation="vertical" style={{ width: '100%' }} size={8}>
-                  {auditItems.map((item) => (
-                    <Card key={item.id} size="small">
-                      <Space orientation="vertical" size={0}>
-                        <Typography.Text>
-                          {item.action} • {item.actor_login ?? 'admin'}
-                        </Typography.Text>
-                        <Typography.Text type="secondary">{formatDate(item.created_at)}</Typography.Text>
-                      </Space>
-                    </Card>
-                  ))}
+            <Card size="small">
+              <Space style={{ width: '100%', justifyContent: 'space-between', borderBottom: '1px solid #f0f0f0', paddingBottom: 8 }}>
+                <Space>
+                  <Typography.Text strong style={{ fontSize: 20 }}>
+                    Заметки
+                  </Typography.Text>
+                  <Tag color="default">{cardComments.length}</Tag>
                 </Space>
-              )}
+                <Button type="link" danger onClick={() => void onAddNote()} style={{ paddingInline: 0 }}>
+                  Добавить
+                </Button>
+              </Space>
+              <div style={{ height: 8 }} />
+              <Space orientation="vertical" style={{ width: '100%' }}>
+                <Input.TextArea
+                  rows={2}
+                  value={newNoteBody}
+                  onChange={(event) => setNewNoteBody(event.target.value)}
+                  placeholder="Текст заметки"
+                />
+                <Button loading={addingNote} onClick={() => void onAddNote()}>
+                  Добавить заметку
+                </Button>
+
+                {cardComments.length === 0 ? (
+                  <Typography.Text type="secondary">Заметок пока нет</Typography.Text>
+                ) : (
+                  <Card size="small">
+                    <Space orientation="vertical" size={6}>
+                      <Space style={{ justifyContent: 'space-between', width: '100%' }}>
+                        <Typography.Text strong>{`Заметка от ${cardComments[0].author_login ?? 'admin'}`}</Typography.Text>
+                        <Typography.Text type="secondary">{formatDate(cardComments[0].created_at)}</Typography.Text>
+                      </Space>
+                      <Typography.Text>{cardComments[0].body}</Typography.Text>
+                    </Space>
+                  </Card>
+                )}
+              </Space>
             </Card>
           </Space>
         )}

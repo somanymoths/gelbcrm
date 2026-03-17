@@ -3,6 +3,10 @@ import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
 import {
   createCardPaymentLinkRecord,
+  deleteActiveCardPaymentLink,
+  expireCardPaymentLink,
+  getActiveCardPaymentLink,
+  getActiveCardPaymentLinkForRefresh,
   getTariffPackageForPayment,
   listCardPaymentLinks
 } from '@/lib/funnel';
@@ -10,8 +14,12 @@ import { createYooKassaPayment } from '@/lib/payments/yookassa';
 import { upsertYookassaPayment } from '@/lib/db';
 
 const createSchema = z.object({
-  tariffPackageId: z.string().trim().uuid(),
-  returnUrl: z.string().trim().url().optional()
+  tariffPackageId: z.string().trim().uuid().optional(),
+  returnUrl: z.string().trim().url().optional(),
+  refreshActive: z.boolean().optional()
+}).refine((payload) => payload.refreshActive === true || Boolean(payload.tariffPackageId), {
+  message: 'tariffPackageId is required when refreshActive is false',
+  path: ['tariffPackageId']
 });
 
 function getYooKassaCredentials() {
@@ -58,15 +66,51 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     );
   }
 
-  const tariffPackage = await getTariffPackageForPayment({ tariffPackageId: parsed.data.tariffPackageId });
-
-  if (!tariffPackage) {
-    return NextResponse.json({ code: 'TARIFF_PACKAGE_NOT_FOUND', message: 'Пакет тарифа не найден' }, { status: 404 });
-  }
-
   const returnUrl = parsed.data.returnUrl ?? process.env.APP_URL ?? 'http://localhost:3000/funnel';
 
   try {
+    let tariffPackage:
+      | {
+          id: string;
+          tariff_grid_id: string;
+          tariff_name: string;
+          lessons_count: number;
+          total_price_rub: number;
+        }
+      | null = null;
+
+    if (parsed.data.refreshActive === true) {
+      const activeForRefresh = await getActiveCardPaymentLinkForRefresh({ cardId: id });
+      if (!activeForRefresh) {
+        return NextResponse.json(
+          { code: 'ACTIVE_PAYMENT_LINK_NOT_FOUND', message: 'Активная ссылка для обновления не найдена' },
+          { status: 404 }
+        );
+      }
+
+      await expireCardPaymentLink({ cardId: id, linkId: activeForRefresh.linkId });
+      tariffPackage = activeForRefresh.tariffPackage;
+    } else {
+      const activeLink = await getActiveCardPaymentLink({ cardId: id });
+      if (activeLink) {
+        return NextResponse.json(
+          {
+            code: 'ACTIVE_PAYMENT_LINK_EXISTS',
+            message: 'У ученика уже есть активная ссылка оплаты',
+            activeLink
+          },
+          { status: 409 }
+        );
+      }
+
+      tariffPackage = await getTariffPackageForPayment({ tariffPackageId: parsed.data.tariffPackageId! });
+      if (!tariffPackage) {
+        return NextResponse.json({ code: 'TARIFF_PACKAGE_NOT_FOUND', message: 'Пакет тарифа не найден' }, { status: 404 });
+      }
+    }
+
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
     const payment = await createYooKassaPayment({
       shopId: credentials.shopId,
       secretKey: credentials.secretKey,
@@ -89,7 +133,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         paymentUrl: payment.confirmationUrl,
         amount: tariffPackage.total_price_rub,
         currency: 'RUB',
-        expiresAt: null
+        expiresAt
       }),
       upsertYookassaPayment({
         providerPaymentId: payment.id,
@@ -111,7 +155,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       {
         paymentId: payment.id,
         status: payment.status,
-        confirmationUrl: payment.confirmationUrl
+        confirmationUrl: payment.confirmationUrl,
+        expiresAt
       },
       { status: 201 }
     );
@@ -126,5 +171,27 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
     console.error(error);
     return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось создать ссылку оплаты' }, { status: 500 });
+  }
+}
+
+export async function DELETE(_: Request, context: { params: Promise<{ id: string }> }) {
+  const guard = await requireAdmin();
+  if (guard.error) return guard.error;
+
+  const { id } = await context.params;
+
+  try {
+    await deleteActiveCardPaymentLink({ cardId: id, actorUserId: guard.session.id });
+    return new NextResponse(null, { status: 204 });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'ACTIVE_PAYMENT_LINK_NOT_FOUND') {
+      return NextResponse.json(
+        { code: 'ACTIVE_PAYMENT_LINK_NOT_FOUND', message: 'Активная ссылка не найдена' },
+        { status: 404 }
+      );
+    }
+
+    console.error(error);
+    return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось удалить активную ссылку' }, { status: 500 });
   }
 }

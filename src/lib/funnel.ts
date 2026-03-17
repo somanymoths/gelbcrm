@@ -402,21 +402,9 @@ export async function updateFunnelCard(input: {
   comment?: string | null;
   startLessonsAt?: string | null;
   lastLessonAt?: string | null;
-  paidLessonsLeft?: number;
 }): Promise<void> {
   const keys = Object.keys(input).filter((key) =>
-    [
-      'firstName',
-      'lastName',
-      'phone',
-      'contact',
-      'email',
-      'leadSource',
-      'comment',
-      'startLessonsAt',
-      'lastLessonAt',
-      'paidLessonsLeft'
-    ].includes(key)
+    ['firstName', 'lastName', 'phone', 'contact', 'email', 'leadSource', 'comment', 'startLessonsAt', 'lastLessonAt'].includes(key)
   );
 
   if (keys.length === 0) return;
@@ -520,13 +508,6 @@ export async function updateFunnelCard(input: {
       diffAfter.last_lesson_at = input.lastLessonAt ?? null;
     }
 
-    if (typeof input.paidLessonsLeft === 'number') {
-      setParts.push('paid_lessons_left = ?');
-      params.push(input.paidLessonsLeft);
-      diffBefore.paid_lessons_left = current.paid_lessons_left;
-      diffAfter.paid_lessons_left = input.paidLessonsLeft;
-    }
-
     if (setParts.length > 0) {
       await connection.query(`UPDATE students SET ${setParts.join(', ')} WHERE id = ?`, [...params, input.cardId]);
 
@@ -541,6 +522,60 @@ export async function updateFunnelCard(input: {
     }
 
     await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function addFunnelCardManualLessons(input: {
+  cardId: string;
+  lessonsToAdd: number;
+  comment: string;
+  actorUserId: string;
+}): Promise<number> {
+  const connection = await getPool().getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id, paid_lessons_left
+        FROM students
+        WHERE id = ? AND deleted_at IS NULL
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [input.cardId]
+    );
+
+    if (rows.length === 0) {
+      throw new Error('STUDENT_NOT_FOUND');
+    }
+
+    const currentPaidLessons = Number(rows[0].paid_lessons_left ?? 0);
+    const nextPaidLessons = currentPaidLessons + input.lessonsToAdd;
+
+    await connection.query(`UPDATE students SET paid_lessons_left = ? WHERE id = ?`, [nextPaidLessons, input.cardId]);
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'student',
+      entityId: input.cardId,
+      action: 'manual_lessons_add',
+      diffBefore: { paid_lessons_left: currentPaidLessons },
+      diffAfter: {
+        paid_lessons_left: nextPaidLessons,
+        lessons_added: input.lessonsToAdd,
+        comment: input.comment
+      }
+    });
+
+    await connection.commit();
+    return nextPaidLessons;
   } catch (error) {
     await connection.rollback();
     throw error;
@@ -1211,6 +1246,18 @@ export async function createCardPaymentLinkRecord(input: {
 }
 
 export async function listCardPaymentLinks(input: { cardId: string }): Promise<FunnelPaymentLink[]> {
+  await getPool().query(
+    `
+      UPDATE student_payment_links
+      SET status = 'expired'
+      WHERE student_id = ?
+        AND status = 'pending'
+        AND expires_at IS NOT NULL
+        AND expires_at <= NOW()
+    `,
+    [input.cardId]
+  );
+
   const [rows] = await getPool().query<mysql.RowDataPacket[]>(
     `
       SELECT
@@ -1243,6 +1290,188 @@ export async function listCardPaymentLinks(input: { cardId: string }): Promise<F
     updated_at: String(row.updated_at),
     expires_at: row.expires_at ? String(row.expires_at) : null
   }));
+}
+
+export async function getActiveCardPaymentLink(input: { cardId: string }): Promise<FunnelPaymentLink | null> {
+  await getPool().query(
+    `
+      UPDATE student_payment_links
+      SET status = 'expired'
+      WHERE student_id = ?
+        AND status = 'pending'
+        AND expires_at IS NOT NULL
+        AND expires_at <= NOW()
+    `,
+    [input.cardId]
+  );
+
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        id,
+        provider,
+        provider_payment_id,
+        payment_url,
+        status,
+        amount,
+        currency,
+        created_at,
+        updated_at,
+        expires_at
+      FROM student_payment_links
+      WHERE student_id = ?
+        AND status = 'pending'
+        AND expires_at IS NOT NULL
+        AND expires_at > NOW()
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [input.cardId]
+  );
+
+  if (rows.length === 0) return null;
+
+  return {
+    id: String(rows[0].id),
+    provider: String(rows[0].provider),
+    provider_payment_id: String(rows[0].provider_payment_id),
+    payment_url: String(rows[0].payment_url),
+    status: String(rows[0].status) as FunnelPaymentLink['status'],
+    amount: Number(rows[0].amount),
+    currency: String(rows[0].currency),
+    created_at: String(rows[0].created_at),
+    updated_at: String(rows[0].updated_at),
+    expires_at: rows[0].expires_at ? String(rows[0].expires_at) : null
+  };
+}
+
+export async function getActiveCardPaymentLinkForRefresh(input: {
+  cardId: string;
+}): Promise<{ linkId: string; tariffPackage: TariffPackageForPayment } | null> {
+  await getPool().query(
+    `
+      UPDATE student_payment_links
+      SET status = 'expired'
+      WHERE student_id = ?
+        AND status = 'pending'
+        AND expires_at IS NOT NULL
+        AND expires_at <= NOW()
+    `,
+    [input.cardId]
+  );
+
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        spl.id AS link_id,
+        tp.id AS tariff_package_id,
+        tp.tariff_grid_id,
+        tg.name AS tariff_name,
+        tp.lessons_count,
+        tp.total_price_rub
+      FROM student_payment_links spl
+      INNER JOIN tariff_packages tp ON tp.id = spl.tariff_package_id
+      INNER JOIN tariff_grids tg ON tg.id = tp.tariff_grid_id
+      WHERE spl.student_id = ?
+        AND spl.status = 'pending'
+        AND spl.expires_at IS NOT NULL
+        AND spl.expires_at > NOW()
+        AND tp.is_active = 1
+        AND tg.is_active = 1
+      ORDER BY spl.created_at DESC
+      LIMIT 1
+    `,
+    [input.cardId]
+  );
+
+  if (rows.length === 0) return null;
+
+  return {
+    linkId: String(rows[0].link_id),
+    tariffPackage: {
+      id: String(rows[0].tariff_package_id),
+      tariff_grid_id: String(rows[0].tariff_grid_id),
+      tariff_name: String(rows[0].tariff_name),
+      lessons_count: Number(rows[0].lessons_count),
+      total_price_rub: Number(rows[0].total_price_rub)
+    }
+  };
+}
+
+export async function expireCardPaymentLink(input: { cardId: string; linkId: string }): Promise<void> {
+  await getPool().query(
+    `
+      UPDATE student_payment_links
+      SET status = 'expired', expires_at = NOW()
+      WHERE id = ? AND student_id = ?
+    `,
+    [input.linkId, input.cardId]
+  );
+}
+
+export async function deleteActiveCardPaymentLink(input: { cardId: string; actorUserId: string }): Promise<void> {
+  const connection = await getPool().getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    await connection.query(
+      `
+        UPDATE student_payment_links
+        SET status = 'expired'
+        WHERE student_id = ?
+          AND status = 'pending'
+          AND expires_at IS NOT NULL
+          AND expires_at <= NOW()
+      `,
+      [input.cardId]
+    );
+
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id, provider_payment_id
+        FROM student_payment_links
+        WHERE student_id = ?
+          AND status = 'pending'
+          AND expires_at IS NOT NULL
+          AND expires_at > NOW()
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [input.cardId]
+    );
+
+    if (rows.length === 0) {
+      throw new Error('ACTIVE_PAYMENT_LINK_NOT_FOUND');
+    }
+
+    const linkId = String(rows[0].id);
+    const providerPaymentId = String(rows[0].provider_payment_id);
+
+    await connection.query(
+      `
+        UPDATE student_payment_links
+        SET status = 'expired', expires_at = NOW()
+        WHERE id = ? AND student_id = ?
+      `,
+      [linkId, input.cardId]
+    );
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'student',
+      entityId: input.cardId,
+      action: 'payment_link_delete',
+      diffAfter: { link_id: linkId, provider_payment_id: providerPaymentId }
+    });
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 function mapYookassaStatusToCardStatus(status: string): FunnelPaymentLink['status'] {
