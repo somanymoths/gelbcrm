@@ -170,6 +170,7 @@ export function FunnelBoard() {
   const [lossReasonIdForMove, setLossReasonIdForMove] = useState<number | null>(null);
 
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
+  const [dragOverStageCode, setDragOverStageCode] = useState<string | null>(null);
 
   const loadBoard = useCallback(async () => {
     setLoading(true);
@@ -323,6 +324,39 @@ export function FunnelBoard() {
   }
 
   async function moveStage(cardId: string, stageCode: string, reasonId?: number) {
+    const previousCard = cards.find((card) => card.id === cardId) ?? null;
+    const nextStage = stages.find((stage) => stage.code === stageCode) ?? null;
+
+    if (!previousCard || !nextStage || previousCard.stage_code === stageCode) {
+      return;
+    }
+
+    setCards((prev) =>
+      prev.map((card) =>
+        card.id === cardId
+          ? {
+              ...card,
+              stage_id: nextStage.id,
+              stage_code: nextStage.code,
+              stage_name: nextStage.name
+            }
+          : card
+      )
+    );
+
+    if (selectedCard?.id === cardId) {
+      setSelectedCard((prev) =>
+        prev
+          ? {
+              ...prev,
+              stage_id: nextStage.id,
+              stage_code: nextStage.code,
+              stage_name: nextStage.name
+            }
+          : prev
+      );
+    }
+
     const response = await fetch(`/api/v1/funnel/cards/${cardId}/stage`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -330,12 +364,36 @@ export function FunnelBoard() {
     });
 
     if (!response.ok) {
+      setCards((prev) =>
+        prev.map((card) =>
+          card.id === cardId
+            ? {
+                ...card,
+                stage_id: previousCard.stage_id,
+                stage_code: previousCard.stage_code,
+                stage_name: previousCard.stage_name
+              }
+            : card
+        )
+      );
+
+      if (selectedCard?.id === cardId) {
+        setSelectedCard((prev) =>
+          prev
+            ? {
+                ...prev,
+                stage_id: previousCard.stage_id,
+                stage_code: previousCard.stage_code,
+                stage_name: previousCard.stage_name
+              }
+            : prev
+        );
+      }
+
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
       api.error(payload?.message ?? 'Не удалось обновить этап');
       return;
     }
-
-    await loadBoard();
 
     if (selectedCard?.id === cardId) {
       await refreshSelectedCard(cardId);
@@ -506,7 +564,7 @@ export function FunnelBoard() {
         </Space>
       </Card>
 
-      {error ? <Alert type="error" message={error} showIcon /> : null}
+      {error ? <Alert type="error" title={error} showIcon /> : null}
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: 32 }}>
@@ -516,14 +574,24 @@ export function FunnelBoard() {
         <Row gutter={[12, 12]} wrap={false} style={{ overflowX: 'auto', paddingBottom: 4 }}>
           {stages.map((stage) => {
             const stageCards = groupedCards.get(stage.code) ?? [];
+            const isActiveDropZone = draggedCardId !== null && dragOverStageCode === stage.code;
 
             return (
               <Col key={stage.id} style={{ minWidth: 320 }}>
                 <Card
                   title={stage.name}
                   extra={<Typography.Text type="secondary">{stageCards.length}</Typography.Text>}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={() => {
+                  style={{
+                    borderColor: isActiveDropZone ? '#1677ff' : undefined,
+                    boxShadow: isActiveDropZone ? '0 0 0 2px rgba(22,119,255,0.15)' : undefined
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    if (dragOverStageCode !== stage.code) setDragOverStageCode(stage.code);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setDragOverStageCode(null);
                     if (draggedCardId) {
                       void onChangeStage(draggedCardId, stage.code);
                     }
@@ -535,7 +603,19 @@ export function FunnelBoard() {
                         key={card.id}
                         size="small"
                         draggable
-                        onDragStart={() => setDraggedCardId(card.id)}
+                        style={{
+                          cursor: 'grab',
+                          opacity: draggedCardId === card.id ? 0.5 : 1
+                        }}
+                        onDragStart={(event) => {
+                          event.dataTransfer.setData('text/plain', card.id);
+                          event.dataTransfer.effectAllowed = 'move';
+                          setDraggedCardId(card.id);
+                        }}
+                        onDragEnd={() => {
+                          setDraggedCardId(null);
+                          setDragOverStageCode(null);
+                        }}
                         onClick={() => void openCard(card.id)}
                         hoverable
                       >
@@ -556,7 +636,25 @@ export function FunnelBoard() {
                       </Card>
                     ))}
 
-                    {stageCards.length === 0 ? <Typography.Text type="secondary">Нет карточек</Typography.Text> : null}
+                    {stageCards.length === 0 ? (
+                      <div
+                        style={{
+                          minHeight: 120,
+                          border: isActiveDropZone ? '2px dashed #1677ff' : '1px dashed #d9d9d9',
+                          borderRadius: 8,
+                          background: isActiveDropZone ? 'rgba(22,119,255,0.08)' : 'transparent',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          textAlign: 'center',
+                          padding: 12
+                        }}
+                      >
+                        <Typography.Text type={isActiveDropZone ? undefined : 'secondary'}>
+                          {draggedCardId ? 'Отпустите карточку, чтобы переместить сюда' : 'Нет карточек'}
+                        </Typography.Text>
+                      </div>
+                    ) : null}
                   </Space>
                 </Card>
               </Col>
