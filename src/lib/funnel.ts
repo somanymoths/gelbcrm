@@ -704,7 +704,7 @@ export async function updateFunnelCardStage(input: {
 
 export async function assignTeacherToFunnelCard(input: {
   cardId: string;
-  teacherId: string;
+  teacherId: string | null;
   actorUserId: string;
 }): Promise<void> {
   const connection = await getPool().getConnection();
@@ -721,25 +721,33 @@ export async function assignTeacherToFunnelCard(input: {
       throw new Error('STUDENT_NOT_FOUND');
     }
 
-    const [teacherRows] = await connection.query<mysql.RowDataPacket[]>(
-      `SELECT id FROM teachers WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
-      [input.teacherId]
-    );
+    const oldTeacherId = studentRows[0].assigned_teacher_id ? String(studentRows[0].assigned_teacher_id) : null;
+    const nextTeacherId = input.teacherId ?? null;
 
-    if (teacherRows.length === 0) {
-      throw new Error('TEACHER_NOT_FOUND');
+    if (oldTeacherId === nextTeacherId) {
+      await connection.commit();
+      return;
     }
 
-    const oldTeacherId = studentRows[0].assigned_teacher_id ? String(studentRows[0].assigned_teacher_id) : null;
+    if (nextTeacherId) {
+      const [teacherRows] = await connection.query<mysql.RowDataPacket[]>(
+        `SELECT id FROM teachers WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+        [nextTeacherId]
+      );
 
-    await connection.query(`UPDATE students SET assigned_teacher_id = ? WHERE id = ?`, [input.teacherId, input.cardId]);
+      if (teacherRows.length === 0) {
+        throw new Error('TEACHER_NOT_FOUND');
+      }
+    }
+
+    await connection.query(`UPDATE students SET assigned_teacher_id = ? WHERE id = ?`, [nextTeacherId, input.cardId]);
 
     await connection.query(
       `
         INSERT INTO student_teacher_history (student_id, old_teacher_id, new_teacher_id, changed_by)
         VALUES (?, ?, ?, ?)
       `,
-      [input.cardId, oldTeacherId, input.teacherId, input.actorUserId]
+      [input.cardId, oldTeacherId, nextTeacherId, input.actorUserId]
     );
 
     await writeAuditLog(connection, {
@@ -748,7 +756,7 @@ export async function assignTeacherToFunnelCard(input: {
       entityId: input.cardId,
       action: 'assign_teacher',
       diffBefore: { assigned_teacher_id: oldTeacherId },
-      diffAfter: { assigned_teacher_id: input.teacherId }
+      diffAfter: { assigned_teacher_id: nextTeacherId }
     });
 
     await connection.commit();

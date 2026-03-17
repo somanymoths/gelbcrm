@@ -235,8 +235,18 @@ export function FunnelBoard() {
         fetch('/api/v1/funnel/payment-tariffs', { cache: 'no-store' })
       ]);
 
-      if (!boardRes.ok || !lossReasonsRes.ok || !teachersRes.ok || !tariffsRes.ok) {
-        throw new Error('Не удалось загрузить данные воронки');
+      const failedResponse = [boardRes, lossReasonsRes, teachersRes, tariffsRes].find((response) => !response.ok);
+      if (failedResponse) {
+        if (failedResponse.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
+        if (failedResponse.status === 403) {
+          window.location.href = '/forbidden';
+          return;
+        }
+        const payload = (await failedResponse.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(payload?.message ?? 'Не удалось загрузить данные воронки');
       }
 
       const board = (await boardRes.json()) as { stages: FunnelStage[]; cards: FunnelCard[] };
@@ -636,7 +646,9 @@ export function FunnelBoard() {
   }
 
   async function onAssignTeacher() {
-    if (!selectedCard || !selectedTeacherId) return;
+    if (!selectedCard) return;
+
+    if (selectedCard.assigned_teacher_id === selectedTeacherId) return;
 
     setTeacherSaving(true);
 
@@ -650,11 +662,11 @@ export function FunnelBoard() {
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      api.error(payload?.message ?? 'Не удалось назначить преподавателя');
+      api.error(payload?.message ?? 'Не удалось сохранить преподавателя');
       return;
     }
 
-    api.success('Преподаватель назначен');
+    api.success(selectedTeacherId ? 'Преподаватель назначен' : 'Преподаватель снят');
     await loadBoard();
     await refreshSelectedCard(selectedCard.id);
   }
@@ -1018,6 +1030,27 @@ export function FunnelBoard() {
               </Card>
             ) : null}
 
+            <Card size="small" title="Преподаватель">
+              <Space>
+                <Select
+                  style={{ minWidth: 260 }}
+                  placeholder="Не назначен"
+                  value={selectedTeacherId}
+                  onChange={(value) => setSelectedTeacherId(value ?? null)}
+                  options={teachers.map((teacher) => ({ value: teacher.id, label: teacher.full_name }))}
+                  allowClear
+                />
+                <Button
+                  type="primary"
+                  loading={teacherSaving}
+                  onClick={() => void onAssignTeacher()}
+                  disabled={!selectedCard || selectedCard.assigned_teacher_id === selectedTeacherId}
+                >
+                  Сохранить
+                </Button>
+              </Space>
+            </Card>
+
             <Space orientation="vertical" size={12} style={{ width: '100%' }}>
               <Space style={{ width: '100%', justifyContent: 'space-between' }}>
                 <Space>
@@ -1117,22 +1150,6 @@ export function FunnelBoard() {
                 </Space>
               ) : null}
             </Space>
-
-            {editMode ? (
-              <Card size="small" title="Назначить преподавателя">
-                <Space>
-                  <Select
-                    style={{ minWidth: 260 }}
-                    value={selectedTeacherId}
-                    onChange={(value) => setSelectedTeacherId(value)}
-                    options={teachers.map((teacher) => ({ value: teacher.id, label: teacher.full_name }))}
-                  />
-                  <Button type="primary" loading={teacherSaving} onClick={() => void onAssignTeacher()}>
-                    Назначить
-                  </Button>
-                </Space>
-              </Card>
-            ) : null}
 
             <Space style={{ width: '100%', justifyContent: 'space-between' }}>
               <Typography.Text strong style={{ fontSize: 20 }}>

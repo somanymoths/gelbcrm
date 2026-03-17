@@ -4,7 +4,7 @@ import { requireAdmin } from '@/lib/api-auth';
 import { assignTeacherToFunnelCard } from '@/lib/funnel';
 
 const bodySchema = z.object({
-  teacherId: z.string().trim().uuid()
+  teacherId: z.string().trim().uuid().nullable()
 });
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -38,7 +38,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     }
 
     console.error(error);
-    return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось назначить преподавателя' }, { status: 500 });
+    return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось сохранить преподавателя' }, { status: 500 });
   }
 }
 
