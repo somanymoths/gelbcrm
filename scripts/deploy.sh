@@ -23,11 +23,13 @@ ssh "$SSH_TARGET" "TARGET_DIR='$TARGET_DIR' bash -se" <<'REMOTE'
 set -euo pipefail
 cd "$TARGET_DIR"
 
+rm -rf .next
 npm ci --no-audit --no-fund
 npm run build
 npm run db:migrate
 
-if systemctl list-unit-files | grep -q '^gelbcrm\.service'; then
+if systemctl cat gelbcrm.service >/dev/null 2>&1; then
+  pm2 delete gelbcrm >/dev/null 2>&1 || true
   systemctl restart gelbcrm.service
   systemctl is-active --quiet gelbcrm.service
 else
