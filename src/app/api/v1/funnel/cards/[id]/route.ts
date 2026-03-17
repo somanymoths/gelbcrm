@@ -14,8 +14,7 @@ const patchSchema = z
     leadSource: z.string().trim().min(1).max(191).optional(),
     comment: z.string().trim().optional().nullable(),
     startLessonsAt: z.string().trim().optional().nullable(),
-    lastLessonAt: z.string().trim().optional().nullable(),
-    paidLessonsLeft: z.number().int().min(0).optional()
+    lastLessonAt: z.string().trim().optional().nullable()
   })
   .strict();
 
@@ -72,8 +71,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       leadSource: parsed.data.leadSource,
       comment: parsed.data.comment,
       startLessonsAt: parsed.data.startLessonsAt,
-      lastLessonAt: parsed.data.lastLessonAt,
-      paidLessonsLeft: parsed.data.paidLessonsLeft
+      lastLessonAt: parsed.data.lastLessonAt
     });
 
     return new NextResponse(null, { status: 204 });
