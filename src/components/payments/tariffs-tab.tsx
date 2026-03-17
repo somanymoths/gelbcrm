@@ -69,8 +69,6 @@ export function TariffsTab() {
   const [renameTarget, setRenameTarget] = useState<TariffGrid | null>(null);
   const [addPackageTarget, setAddPackageTarget] = useState<TariffGrid | null>(null);
 
-  const [modal, modalContextHolder] = Modal.useModal();
-
   const canCreate = useMemo(
     () => packages.length > 0 && packages.every((item) => item.lessonsCount > 0 && item.pricePerLesson > 0),
     [packages]
@@ -80,7 +78,7 @@ export function TariffsTab() {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/v1/tariff-grids?includeInactive=1', { cache: 'no-store' });
+      const response = await fetch('/api/v1/tariff-grids', { cache: 'no-store' });
       const data = (await response.json().catch(() => null)) as TariffGrid[] | null;
 
       if (!response.ok || !data) {
@@ -174,33 +172,6 @@ export function TariffsTab() {
     }
   };
 
-  const toggleTariffActive = (tariff: TariffGrid, nextActive: boolean) => {
-    modal.confirm({
-      title: nextActive ? 'Активировать тариф?' : 'Архивировать тариф?',
-      content: nextActive
-        ? `Тариф «${tariff.name}» снова станет доступен для оплаты.`
-        : `Тариф «${tariff.name}» будет скрыт из выбора для новых оплат.`,
-      okText: nextActive ? 'Активировать' : 'Архивировать',
-      cancelText: 'Отмена',
-      onOk: async () => {
-        const response = await fetch(`/api/v1/tariff-grids/${tariff.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ isActive: nextActive })
-        });
-
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-          api.error(payload?.message ?? 'Не удалось обновить тариф');
-          return;
-        }
-
-        api.success('Тариф обновлён');
-        await loadTariffs();
-      }
-    });
-  };
-
   const openAddPackageModal = (tariff: TariffGrid) => {
     setAddPackageTarget(tariff);
     addPackageForm.setFieldsValue({ lessonsCount: 4, pricePerLessonRub: 1000 });
@@ -252,7 +223,6 @@ export function TariffsTab() {
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       {contextHolder}
-      {modalContextHolder}
 
       <Card title="Новый тариф (серверный)">
         <Space orientation="vertical" size={12} style={{ width: '100%' }}>
@@ -324,12 +294,7 @@ export function TariffsTab() {
               title: 'Тариф',
               dataIndex: 'name',
               key: 'name',
-              render: (_, row) => (
-                <Space>
-                  <Typography.Text>{row.name}</Typography.Text>
-                  {row.is_active ? <Tag color="green">Активен</Tag> : <Tag>Архив</Tag>}
-                </Space>
-              )
+              render: (_, row) => <Typography.Text>{row.name}</Typography.Text>
             },
             {
               title: 'Пакеты',
@@ -367,12 +332,7 @@ export function TariffsTab() {
                   menu={{
                     items: [
                       { key: 'rename', label: 'Переименовать' },
-                      { key: 'add-package', label: 'Добавить пакет' },
-                      {
-                        key: 'archive',
-                        label: tariff.is_active ? 'В архив' : 'Активировать',
-                        danger: Boolean(tariff.is_active)
-                      }
+                      { key: 'add-package', label: 'Добавить пакет' }
                     ],
                     onClick: ({ key }) => {
                       if (key === 'rename') {
@@ -382,11 +342,6 @@ export function TariffsTab() {
 
                       if (key === 'add-package') {
                         openAddPackageModal(tariff);
-                        return;
-                      }
-
-                      if (key === 'archive') {
-                        toggleTariffActive(tariff, !Boolean(tariff.is_active));
                       }
                     }
                   }}

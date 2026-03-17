@@ -5,8 +5,7 @@ import { getTariffGridById, updateTariffGrid } from '@/lib/db';
 
 const patchSchema = z
   .object({
-    name: z.string().trim().min(1).max(191).optional(),
-    isActive: z.boolean().optional()
+    name: z.string().trim().min(1).max(191).optional()
   })
   .strict();
 
@@ -40,8 +39,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     await updateTariffGrid({
       id,
       actorUserId: guard.session.id,
-      name: parsed.data.name,
-      isActive: parsed.data.isActive
+      name: parsed.data.name
     });
 
     return new NextResponse(null, { status: 204 });

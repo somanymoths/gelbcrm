@@ -1279,7 +1279,6 @@ export async function updateTariffGrid(input: {
   id: string;
   actorUserId: string;
   name?: string;
-  isActive?: boolean;
 }): Promise<void> {
   const updates: string[] = [];
   const values: Array<string | number> = [];
@@ -1287,11 +1286,6 @@ export async function updateTariffGrid(input: {
   if (typeof input.name === 'string') {
     updates.push('name = ?');
     values.push(input.name);
-  }
-
-  if (typeof input.isActive === 'boolean') {
-    updates.push('is_active = ?');
-    values.push(input.isActive ? 1 : 0);
   }
 
   if (updates.length === 0) return;
