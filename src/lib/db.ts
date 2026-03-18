@@ -1873,6 +1873,52 @@ export async function updateTeacherLessonSlot(input: {
   }
 }
 
+export async function deleteTeacherLessonSlot(input: {
+  id: string;
+  teacherId: string;
+  actorUserId: string;
+}): Promise<void> {
+  const pool = getPool();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const current = await getLessonSlotByIdForUpdate(connection, input.id);
+    if (!current) throw new Error('SLOT_NOT_FOUND');
+    if (current.teacher_id !== input.teacherId) throw new Error('FORBIDDEN');
+
+    if (current.status === 'completed') {
+      await adjustStudentPaidLessons(connection, current.student_id, +1);
+    }
+
+    await connection.query(`DELETE FROM lesson_slots WHERE id = ?`, [input.id]);
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'lesson_slot',
+      entityId: input.id,
+      action: 'delete',
+      diffBefore: {
+        teacher_id: current.teacher_id,
+        student_id: current.student_id,
+        date: current.date,
+        start_time: current.start_time,
+        status: current.status,
+        source_weekly_slot_id: current.source_weekly_slot_id,
+        rescheduled_to_slot_id: current.rescheduled_to_slot_id
+      }
+    });
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 export async function updateTeacherLessonSlotStatus(input: {
   id: string;
   teacherId: string;
@@ -2056,7 +2102,16 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
 async function getLessonSlotByIdForUpdate(
   connection: mysql.PoolConnection,
   id: string
-): Promise<{ id: string; teacher_id: string; student_id: string | null; date: string; start_time: string; status: JournalLessonStatus; rescheduled_to_slot_id: string | null } | null> {
+): Promise<{
+  id: string;
+  teacher_id: string;
+  student_id: string | null;
+  date: string;
+  start_time: string;
+  status: JournalLessonStatus;
+  source_weekly_slot_id: string | null;
+  rescheduled_to_slot_id: string | null;
+} | null> {
   const [rows] = await connection.query<mysql.RowDataPacket[]>(
     `
       SELECT
@@ -2066,6 +2121,7 @@ async function getLessonSlotByIdForUpdate(
         DATE_FORMAT(date, '%Y-%m-%d') AS date,
         TIME_FORMAT(start_time, '%H:%i') AS start_time,
         status,
+        source_weekly_slot_id,
         rescheduled_to_slot_id
       FROM lesson_slots
       WHERE id = ?
@@ -2084,6 +2140,7 @@ async function getLessonSlotByIdForUpdate(
     date: String(rows[0].date),
     start_time: String(rows[0].start_time),
     status: String(rows[0].status) as JournalLessonStatus,
+    source_weekly_slot_id: rows[0].source_weekly_slot_id ? String(rows[0].source_weekly_slot_id) : null,
     rescheduled_to_slot_id: rows[0].rescheduled_to_slot_id ? String(rows[0].rescheduled_to_slot_id) : null
   };
 }
