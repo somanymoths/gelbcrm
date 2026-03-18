@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
-import { updateTeacherLessonSlot } from '@/lib/db';
+import { deleteTeacherLessonSlot, updateTeacherLessonSlot } from '@/lib/db';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const bodySchema = z.object({
@@ -41,6 +41,32 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     return NextResponse.json(updated);
   } catch (error) {
     return mapJournalError(error, 'Не удалось обновить слот');
+  }
+}
+
+export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
+  try {
+    const guard = await requireUser();
+    if (guard.error) return guard.error;
+
+    const { id } = await context.params;
+    if (!id) {
+      return NextResponse.json({ code: 'INVALID_SLOT_ID', message: 'Некорректный идентификатор слота' }, { status: 400 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const teacherId = searchParams.get('teacherId') ?? undefined;
+    const scope = await resolveJournalScope(guard.session, teacherId);
+
+    await deleteTeacherLessonSlot({
+      id,
+      teacherId: scope.teacherId,
+      actorUserId: guard.session.id
+    });
+
+    return new NextResponse(null, { status: 204 });
+  } catch (error) {
+    return mapJournalError(error, 'Не удалось удалить слот');
   }
 }
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Card, Col, Input, Modal, Row, Select, Space, Switch, Tag, Typography, message } from 'antd';
+import { Button, Card, Col, Input, Modal, Popconfirm, Row, Select, Space, Switch, Tag, Typography, message } from 'antd';
 
 type RoleUser = { id: string; role: 'admin' | 'teacher'; login: string };
 type TeacherItem = { id: string; full_name: string };
@@ -48,6 +48,7 @@ export function JournalSection() {
   const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()));
   const [dayDrafts, setDayDrafts] = useState<Record<number, DayDraft>>(() => createInitialDayDrafts());
   const [rescheduleState, setRescheduleState] = useState<{ slotId: string; date: string; time: string } | null>(null);
+  const [deletingSlotId, setDeletingSlotId] = useState<string | null>(null);
 
   const weekDays = useMemo(() => {
     return DAYS.map((item, index) => {
@@ -236,6 +237,22 @@ export function JournalSection() {
     }
   };
 
+  const deleteSlot = async (slot: LessonSlot) => {
+    if (!selectedTeacherId) return;
+    setDeletingSlotId(slot.id);
+    try {
+      await fetchJson(`/api/v1/journal/slots/${slot.id}?teacherId=${encodeURIComponent(selectedTeacherId)}`, {
+        method: 'DELETE'
+      });
+      await refreshWeekSlots();
+      api.success('Слот удалён');
+    } catch (error) {
+      api.error(error instanceof Error ? error.message : 'Не удалось удалить слот');
+    } finally {
+      setDeletingSlotId((prev) => (prev === slot.id ? null : prev));
+    }
+  };
+
   const templateKeySet = useMemo(
     () => new Set(weeklyTemplate.map((slot) => `${slot.weekday}-${slot.start_time}`)),
     [weeklyTemplate]
@@ -385,6 +402,20 @@ export function JournalSection() {
                               Сделать шаблоном
                             </Button>
                           )}
+                          {!slot.source_weekly_slot_id ? (
+                            <Popconfirm
+                              title="Удалить слот?"
+                              description="Действие нельзя отменить"
+                              okText="Удалить"
+                              cancelText="Отмена"
+                              okButtonProps={{ danger: true, loading: deletingSlotId === slot.id }}
+                              onConfirm={() => deleteSlot(slot)}
+                            >
+                              <Button size="small" danger loading={deletingSlotId === slot.id}>
+                                Удалить
+                              </Button>
+                            </Popconfirm>
+                          ) : null}
                         </Space>
                       </Space>
                     </Card>
