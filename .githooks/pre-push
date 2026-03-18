@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ ! -x "node_modules/.bin/tsc" ]; then
+  echo "TypeScript не найден. Установите зависимости: npm ci"
+  exit 1
+fi
+
 npm run typecheck
 npm run lint
