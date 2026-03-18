@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CloseOutlined, CopyOutlined, DeleteOutlined, ExportOutlined, PlusOutlined, RedoOutlined } from '@ant-design/icons';
 import {
   Alert,
@@ -234,8 +234,16 @@ export function FunnelBoard() {
 
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
   const [dragOverStageCode, setDragOverStageCode] = useState<string | null>(null);
+  const boardScrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const preservedScrollLeftRef = useRef<number>(0);
+  const shouldRestoreScrollRef = useRef(false);
 
   const loadBoard = useCallback(async () => {
+    if (boardScrollContainerRef.current) {
+      preservedScrollLeftRef.current = boardScrollContainerRef.current.scrollLeft;
+      shouldRestoreScrollRef.current = true;
+    }
+
     setLoading(true);
     setError(null);
 
@@ -276,6 +284,13 @@ export function FunnelBoard() {
       setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!loading && shouldRestoreScrollRef.current && boardScrollContainerRef.current) {
+      boardScrollContainerRef.current.scrollLeft = preservedScrollLeftRef.current;
+      shouldRestoreScrollRef.current = false;
+    }
+  }, [loading, cards, stages]);
 
   const loadArchived = useCallback(async () => {
     const response = await fetch('/api/v1/funnel/archived', { cache: 'no-store' });
@@ -861,7 +876,7 @@ export function FunnelBoard() {
           <Spin size="large" />
         </div>
       ) : (
-        <Row gutter={[12, 12]} wrap={false} style={{ overflowX: 'auto', paddingBottom: 4 }}>
+        <Row ref={boardScrollContainerRef} gutter={[12, 12]} wrap={false} style={{ overflowX: 'auto', paddingBottom: 4 }}>
           {stages.map((stage) => {
             const stageCards = groupedCards.get(stage.code) ?? [];
             const isActiveDropZone = draggedCardId !== null && dragOverStageCode === stage.code;

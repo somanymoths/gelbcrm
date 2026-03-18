@@ -674,7 +674,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
             value={languageId ?? undefined}
             options={languageOptions}
             onChange={(value) => setLanguageId((value as number | undefined) ?? null)}
-            dropdownRender={(menu) => (
+            popupRender={(menu) => (
               <>
                 {menu}
                 <div
@@ -791,7 +791,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
         }
         footer={null}
         destroyOnHidden
-        maskClosable
+        mask={{ closable: true }}
         keyboard
       >
         {detailLoading || !detail ? (
