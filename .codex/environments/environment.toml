@@ -6,8 +6,8 @@ name = "gelbcrm"
 script = ""
 
 [[actions]]
-name = "Деплой"
-icon = "run"
+name = "Пулл и деплой"
+icon = "tool"
 command = '''
 git checkout main
 git pull --ff-only origin main
@@ -15,6 +15,6 @@ npm run deploy
 '''
 
 [[actions]]
-name = "Локально"
-icon = "test"
+name = "Локальный сервер"
+icon = "run"
 command = "npm run dev"
