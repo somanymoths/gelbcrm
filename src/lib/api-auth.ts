@@ -13,3 +13,12 @@ export async function requireAdmin() {
 
   return { session };
 }
+
+export async function requireUser() {
+  const session = await getCurrentSession();
+  if (!session) {
+    return { error: NextResponse.json({ code: 'UNAUTHORIZED', message: 'Не авторизован' }, { status: 401 }) };
+  }
+
+  return { session };
+}
