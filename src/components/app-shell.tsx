@@ -35,7 +35,19 @@ export function AppShell({ children, session }: { children: React.ReactNode; ses
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider width={260} theme="light" breakpoint="lg" collapsedWidth={0} style={{ borderRight: '1px solid #e5e7eb' }}>
+      <Sider
+        width={260}
+        theme="light"
+        breakpoint="lg"
+        collapsedWidth={0}
+        style={{
+          borderRight: '1px solid #e5e7eb',
+          position: 'sticky',
+          top: 0,
+          height: '100vh',
+          overflowY: 'auto'
+        }}
+      >
         <div style={{ padding: 16 }}>
           <Space orientation="vertical" size={14} style={{ width: '100%' }}>
             <Space orientation="vertical" size={6} style={{ width: '100%' }}>

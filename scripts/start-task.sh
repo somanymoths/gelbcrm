@@ -60,6 +60,23 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+if ! git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "Run this script from inside a git repository."
+  exit 1
+fi
+
+if [ -n "$(git -C "${ROOT_DIR}" status --porcelain)" ]; then
+  echo "Working tree is not clean. Commit or stash changes first."
+  exit 1
+fi
+
+echo "Syncing main from origin/main..."
+CURRENT_BRANCH="$(git -C "${ROOT_DIR}" branch --show-current)"
+if [ "${CURRENT_BRANCH}" != "main" ]; then
+  git -C "${ROOT_DIR}" checkout main
+fi
+git -C "${ROOT_DIR}" pull --ff-only origin main
+
 BRANCH_OUTPUT="$("${SCRIPT_DIR}/new-task-branch.sh" "$TASK_TEXT" "${BRANCH_ARGS[@]}" 2>&1)"
 printf '%s\n' "$BRANCH_OUTPUT"
 
