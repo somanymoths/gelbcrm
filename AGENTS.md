@@ -33,3 +33,14 @@ Examples:
   Command: `scripts/start-task.sh "добавить фильтр по преподавателю" --type fix --push`
 
 If `scripts/start-task.sh` fails because the git tree is dirty, report that clearly and stop before making unrelated changes.
+
+## PR Language
+
+All pull request content must be generated in Russian:
+
+- PR title
+- PR description/body
+- Section headings and checklist items
+- Any auto-generated summaries or review notes inside the PR
+
+Do not mix English labels in PR text unless a technical term has no natural Russian equivalent.
