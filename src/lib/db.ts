@@ -1465,3 +1465,736 @@ export async function updateTariffPackage(input: {
     throw new Error('TARIFF_PACKAGE_NOT_FOUND');
   }
 }
+
+export type JournalLessonStatus = 'planned' | 'completed' | 'rescheduled' | 'canceled';
+
+export type JournalTeacherBasic = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  full_name: string;
+};
+
+export type WeeklyTemplateSlot = {
+  id: string;
+  weekday: number;
+  start_time: string;
+  is_active: 0 | 1;
+};
+
+export type JournalLessonSlot = {
+  id: string;
+  teacher_id: string;
+  student_id: string | null;
+  student_full_name: string | null;
+  student_paid_lessons_left: number | null;
+  date: string;
+  start_time: string;
+  status: JournalLessonStatus;
+  rescheduled_to_slot_id: string | null;
+  source_weekly_slot_id: string | null;
+};
+
+export async function findTeacherByUserId(userId: string): Promise<JournalTeacherBasic | null> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        id,
+        first_name,
+        last_name,
+        CONCAT_WS(' ', first_name, last_name) AS full_name
+      FROM teachers
+      WHERE user_id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `,
+    [userId]
+  );
+
+  if (rows.length === 0) return null;
+
+  return {
+    id: String(rows[0].id),
+    first_name: String(rows[0].first_name),
+    last_name: String(rows[0].last_name),
+    full_name: String(rows[0].full_name)
+  };
+}
+
+export async function listActiveTeachersForJournal(): Promise<JournalTeacherBasic[]> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        id,
+        first_name,
+        last_name,
+        CONCAT_WS(' ', first_name, last_name) AS full_name
+      FROM teachers
+      WHERE deleted_at IS NULL
+      ORDER BY last_name ASC, first_name ASC
+    `
+  );
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    first_name: String(row.first_name),
+    last_name: String(row.last_name),
+    full_name: String(row.full_name)
+  }));
+}
+
+export async function listTeacherStudentsForJournal(teacherId: string): Promise<Array<{
+  id: string;
+  first_name: string;
+  last_name: string;
+  full_name: string;
+  paid_lessons_left: number;
+}>> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        id,
+        first_name,
+        last_name,
+        CONCAT_WS(' ', first_name, last_name) AS full_name,
+        paid_lessons_left
+      FROM students
+      WHERE assigned_teacher_id = ? AND deleted_at IS NULL AND entity_type = 'student'
+      ORDER BY last_name ASC, first_name ASC
+    `,
+    [teacherId]
+  );
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    first_name: String(row.first_name),
+    last_name: String(row.last_name),
+    full_name: String(row.full_name),
+    paid_lessons_left: Number(row.paid_lessons_left ?? 0)
+  }));
+}
+
+export async function getTeacherWeeklyTemplate(teacherId: string): Promise<WeeklyTemplateSlot[]> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        id,
+        weekday,
+        TIME_FORMAT(start_time, '%H:%i') AS start_time,
+        is_active
+      FROM teacher_weekly_slots
+      WHERE teacher_id = ? AND is_active = 1
+      ORDER BY weekday ASC, start_time ASC
+    `,
+    [teacherId]
+  );
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    weekday: Number(row.weekday),
+    start_time: String(row.start_time),
+    is_active: Number(row.is_active) ? 1 : 0
+  }));
+}
+
+export async function replaceTeacherWeeklyTemplate(input: {
+  teacherId: string;
+  actorUserId: string;
+  slots: Array<{ weekday: number; startTime: string; isActive?: boolean }>;
+}): Promise<void> {
+  const pool = getPool();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const [teacherRows] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT id FROM teachers WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+      [input.teacherId]
+    );
+    if (teacherRows.length === 0) throw new Error('TEACHER_NOT_FOUND');
+
+    const [existingRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id, weekday, TIME_FORMAT(start_time, '%H:%i') AS start_time
+        FROM teacher_weekly_slots
+        WHERE teacher_id = ?
+      `,
+      [input.teacherId]
+    );
+
+    const existingByKey = new Map<string, { id: string; weekday: number; start_time: string }>();
+    for (const row of existingRows) {
+      const weekday = Number(row.weekday);
+      const startTime = String(row.start_time);
+      existingByKey.set(`${weekday}-${startTime}`, { id: String(row.id), weekday, start_time: startTime });
+    }
+
+    const nextKeys = new Set<string>();
+    const uniqueSlots: Array<{ weekday: number; startTime: string; isActive: boolean }> = [];
+    for (const slot of input.slots) {
+      const key = `${slot.weekday}-${slot.startTime}`;
+      if (nextKeys.has(key)) continue;
+      nextKeys.add(key);
+      uniqueSlots.push({
+        weekday: slot.weekday,
+        startTime: slot.startTime,
+        isActive: slot.isActive ?? true
+      });
+    }
+
+    for (const slot of uniqueSlots) {
+      const existing = existingByKey.get(`${slot.weekday}-${slot.startTime}`);
+      if (existing) {
+        await connection.query(`UPDATE teacher_weekly_slots SET is_active = ? WHERE id = ?`, [slot.isActive ? 1 : 0, existing.id]);
+        continue;
+      }
+
+      await connection.query(
+        `
+          INSERT INTO teacher_weekly_slots (id, teacher_id, weekday, start_time, is_active)
+          VALUES (?, ?, ?, ?, ?)
+        `,
+        [randomUUID(), input.teacherId, slot.weekday, `${slot.startTime}:00`, slot.isActive ? 1 : 0]
+      );
+    }
+
+    const idsToDelete: string[] = [];
+    for (const [key, value] of existingByKey.entries()) {
+      if (!nextKeys.has(key)) idsToDelete.push(value.id);
+    }
+
+    if (idsToDelete.length > 0) {
+      await connection.query(
+        `
+          DELETE FROM lesson_slots
+          WHERE teacher_id = ?
+            AND source_weekly_slot_id IN (${idsToDelete.map(() => '?').join(', ')})
+            AND date >= CURRENT_DATE()
+            AND status = 'planned'
+            AND student_id IS NULL
+        `,
+        [input.teacherId, ...idsToDelete]
+      );
+
+      await connection.query(`DELETE FROM teacher_weekly_slots WHERE id IN (${idsToDelete.map(() => '?').join(', ')})`, idsToDelete);
+    }
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'journal_weekly_template',
+      entityId: input.teacherId,
+      action: 'replace',
+      diffAfter: { slots: uniqueSlots }
+    });
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function listTeacherLessonSlots(input: {
+  teacherId: string;
+  dateFrom: string;
+  dateTo: string;
+}): Promise<JournalLessonSlot[]> {
+  const pool = getPool();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    await ensureTemplateSlotsForRange(connection, input.teacherId, input.dateFrom, input.dateTo);
+
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT
+          ls.id,
+          ls.teacher_id,
+          ls.student_id,
+          CONCAT_WS(' ', s.first_name, s.last_name) AS student_full_name,
+          s.paid_lessons_left AS student_paid_lessons_left,
+          DATE_FORMAT(ls.date, '%Y-%m-%d') AS date,
+          TIME_FORMAT(ls.start_time, '%H:%i') AS start_time,
+          ls.status,
+          ls.rescheduled_to_slot_id,
+          ls.source_weekly_slot_id
+        FROM lesson_slots ls
+        LEFT JOIN students s ON s.id = ls.student_id
+        WHERE ls.teacher_id = ? AND ls.date BETWEEN ? AND ?
+        ORDER BY ls.date ASC, ls.start_time ASC
+      `,
+      [input.teacherId, input.dateFrom, input.dateTo]
+    );
+
+    await connection.commit();
+
+    return rows.map((row) => ({
+      id: String(row.id),
+      teacher_id: String(row.teacher_id),
+      student_id: row.student_id ? String(row.student_id) : null,
+      student_full_name: row.student_full_name ? String(row.student_full_name) : null,
+      student_paid_lessons_left: row.student_paid_lessons_left !== null ? Number(row.student_paid_lessons_left) : null,
+      date: String(row.date),
+      start_time: String(row.start_time),
+      status: String(row.status) as JournalLessonStatus,
+      rescheduled_to_slot_id: row.rescheduled_to_slot_id ? String(row.rescheduled_to_slot_id) : null,
+      source_weekly_slot_id: row.source_weekly_slot_id ? String(row.source_weekly_slot_id) : null
+    }));
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function createTeacherLessonSlot(input: {
+  teacherId: string;
+  actorUserId: string;
+  date: string;
+  startTime: string;
+  studentId?: string | null;
+}): Promise<JournalLessonSlot> {
+  const pool = getPool();
+  const connection = await pool.getConnection();
+  const slotId = randomUUID();
+
+  try {
+    await connection.beginTransaction();
+
+    await assertTeacherExists(connection, input.teacherId);
+    await assertStudentBelongsToTeacher(connection, input.teacherId, input.studentId ?? null);
+
+    await connection.query(
+      `
+        INSERT INTO lesson_slots (id, teacher_id, student_id, date, start_time, status)
+        VALUES (?, ?, ?, ?, ?, 'planned')
+      `,
+      [slotId, input.teacherId, input.studentId ?? null, input.date, `${input.startTime}:00`]
+    );
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'lesson_slot',
+      entityId: slotId,
+      action: 'create',
+      diffAfter: {
+        teacher_id: input.teacherId,
+        student_id: input.studentId ?? null,
+        date: input.date,
+        start_time: input.startTime,
+        status: 'planned'
+      }
+    });
+
+    const slot = await getLessonSlotById(connection, slotId);
+    if (!slot) throw new Error('SLOT_NOT_FOUND');
+
+    await connection.commit();
+    return slot;
+  } catch (error) {
+    await connection.rollback();
+    if (isMysqlDuplicateError(error, 'uq_lesson_slots_teacher_datetime')) {
+      throw new Error('SLOT_ALREADY_EXISTS');
+    }
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function updateTeacherLessonSlot(input: {
+  id: string;
+  teacherId: string;
+  actorUserId: string;
+  date?: string;
+  startTime?: string;
+  studentId?: string | null;
+}): Promise<JournalLessonSlot> {
+  const pool = getPool();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const current = await getLessonSlotByIdForUpdate(connection, input.id);
+    if (!current) throw new Error('SLOT_NOT_FOUND');
+    if (current.teacher_id !== input.teacherId) throw new Error('FORBIDDEN');
+
+    const nextDate = input.date ?? current.date;
+    const nextStartTime = input.startTime ?? current.start_time;
+    const nextStudentId = input.studentId !== undefined ? input.studentId : current.student_id;
+
+    await assertStudentBelongsToTeacher(connection, input.teacherId, nextStudentId);
+
+    await connection.query(
+      `
+        UPDATE lesson_slots
+        SET student_id = ?, date = ?, start_time = ?
+        WHERE id = ?
+      `,
+      [nextStudentId, nextDate, `${nextStartTime}:00`, input.id]
+    );
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'lesson_slot',
+      entityId: input.id,
+      action: 'update',
+      diffBefore: {
+        student_id: current.student_id,
+        date: current.date,
+        start_time: current.start_time
+      },
+      diffAfter: {
+        student_id: nextStudentId,
+        date: nextDate,
+        start_time: nextStartTime
+      }
+    });
+
+    const slot = await getLessonSlotById(connection, input.id);
+    if (!slot) throw new Error('SLOT_NOT_FOUND');
+
+    await connection.commit();
+    return slot;
+  } catch (error) {
+    await connection.rollback();
+    if (isMysqlDuplicateError(error, 'uq_lesson_slots_teacher_datetime')) {
+      throw new Error('SLOT_ALREADY_EXISTS');
+    }
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function updateTeacherLessonSlotStatus(input: {
+  id: string;
+  teacherId: string;
+  actorUserId: string;
+  status: JournalLessonStatus;
+  rescheduleToDate?: string;
+  rescheduleToTime?: string;
+}): Promise<void> {
+  const pool = getPool();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const current = await getLessonSlotByIdForUpdate(connection, input.id);
+    if (!current) throw new Error('SLOT_NOT_FOUND');
+    if (current.teacher_id !== input.teacherId) throw new Error('FORBIDDEN');
+
+    if (input.status === 'completed' && !current.student_id) {
+      throw new Error('SLOT_STUDENT_REQUIRED');
+    }
+
+    if (input.status === 'rescheduled' && (!input.rescheduleToDate || !input.rescheduleToTime)) {
+      throw new Error('RESCHEDULE_TARGET_REQUIRED');
+    }
+
+    if (current.status !== 'completed' && input.status === 'completed') {
+      await adjustStudentPaidLessons(connection, current.student_id, -1);
+    }
+
+    if (current.status === 'completed' && input.status !== 'completed') {
+      await adjustStudentPaidLessons(connection, current.student_id, +1);
+    }
+
+    let rescheduledToSlotId: string | null = current.rescheduled_to_slot_id;
+    if (input.status === 'rescheduled') {
+      rescheduledToSlotId = await upsertRescheduledTargetSlot(connection, {
+        teacherId: current.teacher_id,
+        studentId: current.student_id,
+        date: input.rescheduleToDate!,
+        startTime: input.rescheduleToTime!
+      });
+    } else if (current.status === 'rescheduled') {
+      rescheduledToSlotId = null;
+    }
+
+    await connection.query(
+      `
+        UPDATE lesson_slots
+        SET status = ?, rescheduled_to_slot_id = ?
+        WHERE id = ?
+      `,
+      [input.status, rescheduledToSlotId, input.id]
+    );
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'lesson_slot',
+      entityId: input.id,
+      action: 'status_update',
+      diffBefore: {
+        status: current.status,
+        rescheduled_to_slot_id: current.rescheduled_to_slot_id
+      },
+      diffAfter: {
+        status: input.status,
+        rescheduled_to_slot_id: rescheduledToSlotId
+      }
+    });
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+async function ensureTemplateSlotsForRange(
+  connection: mysql.PoolConnection,
+  teacherId: string,
+  dateFrom: string,
+  dateTo: string
+): Promise<void> {
+  const [templateRows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT id, weekday, TIME_FORMAT(start_time, '%H:%i') AS start_time
+      FROM teacher_weekly_slots
+      WHERE teacher_id = ? AND is_active = 1
+    `,
+    [teacherId]
+  );
+
+  if (templateRows.length === 0) return;
+
+  const candidates: Array<{ id: string; date: string; startTime: string; weeklySlotId: string }> = [];
+  const startDate = parseIsoDate(dateFrom);
+  const endDate = parseIsoDate(dateTo);
+  const templates = templateRows.map((row) => ({
+    id: String(row.id),
+    weekday: Number(row.weekday),
+    startTime: String(row.start_time)
+  }));
+
+  for (const date of iterateDatesInclusive(startDate, endDate)) {
+    const weekday = isoWeekday(date);
+    for (const slot of templates) {
+      if (slot.weekday !== weekday) continue;
+      candidates.push({
+        id: randomUUID(),
+        date: formatIsoDate(date),
+        startTime: slot.startTime,
+        weeklySlotId: slot.id
+      });
+    }
+  }
+
+  if (candidates.length === 0) return;
+
+  const valuesSql = candidates.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
+  const values = candidates.flatMap((candidate) => [
+    candidate.id,
+    teacherId,
+    null,
+    candidate.weeklySlotId,
+    candidate.date,
+    `${candidate.startTime}:00`,
+    'planned'
+  ]);
+
+  await connection.query(
+    `
+      INSERT INTO lesson_slots (id, teacher_id, student_id, source_weekly_slot_id, date, start_time, status)
+      VALUES ${valuesSql}
+      ON DUPLICATE KEY UPDATE id = id
+    `,
+    values
+  );
+}
+
+async function getLessonSlotById(connection: mysql.PoolConnection, id: string): Promise<JournalLessonSlot | null> {
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        ls.id,
+        ls.teacher_id,
+        ls.student_id,
+        CONCAT_WS(' ', s.first_name, s.last_name) AS student_full_name,
+        s.paid_lessons_left AS student_paid_lessons_left,
+        DATE_FORMAT(ls.date, '%Y-%m-%d') AS date,
+        TIME_FORMAT(ls.start_time, '%H:%i') AS start_time,
+        ls.status,
+        ls.rescheduled_to_slot_id,
+        ls.source_weekly_slot_id
+      FROM lesson_slots ls
+      LEFT JOIN students s ON s.id = ls.student_id
+      WHERE ls.id = ?
+      LIMIT 1
+    `,
+    [id]
+  );
+
+  if (rows.length === 0) return null;
+
+  const row = rows[0];
+  return {
+    id: String(row.id),
+    teacher_id: String(row.teacher_id),
+    student_id: row.student_id ? String(row.student_id) : null,
+    student_full_name: row.student_full_name ? String(row.student_full_name) : null,
+    student_paid_lessons_left: row.student_paid_lessons_left !== null ? Number(row.student_paid_lessons_left) : null,
+    date: String(row.date),
+    start_time: String(row.start_time),
+    status: String(row.status) as JournalLessonStatus,
+    rescheduled_to_slot_id: row.rescheduled_to_slot_id ? String(row.rescheduled_to_slot_id) : null,
+    source_weekly_slot_id: row.source_weekly_slot_id ? String(row.source_weekly_slot_id) : null
+  };
+}
+
+async function getLessonSlotByIdForUpdate(
+  connection: mysql.PoolConnection,
+  id: string
+): Promise<{ id: string; teacher_id: string; student_id: string | null; date: string; start_time: string; status: JournalLessonStatus; rescheduled_to_slot_id: string | null } | null> {
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        id,
+        teacher_id,
+        student_id,
+        DATE_FORMAT(date, '%Y-%m-%d') AS date,
+        TIME_FORMAT(start_time, '%H:%i') AS start_time,
+        status,
+        rescheduled_to_slot_id
+      FROM lesson_slots
+      WHERE id = ?
+      LIMIT 1
+      FOR UPDATE
+    `,
+    [id]
+  );
+
+  if (rows.length === 0) return null;
+
+  return {
+    id: String(rows[0].id),
+    teacher_id: String(rows[0].teacher_id),
+    student_id: rows[0].student_id ? String(rows[0].student_id) : null,
+    date: String(rows[0].date),
+    start_time: String(rows[0].start_time),
+    status: String(rows[0].status) as JournalLessonStatus,
+    rescheduled_to_slot_id: rows[0].rescheduled_to_slot_id ? String(rows[0].rescheduled_to_slot_id) : null
+  };
+}
+
+async function assertTeacherExists(connection: mysql.PoolConnection, teacherId: string): Promise<void> {
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `SELECT id FROM teachers WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+    [teacherId]
+  );
+  if (rows.length === 0) throw new Error('TEACHER_NOT_FOUND');
+}
+
+async function assertStudentBelongsToTeacher(
+  connection: mysql.PoolConnection,
+  teacherId: string,
+  studentId: string | null
+): Promise<void> {
+  if (!studentId) return;
+
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT id
+      FROM students
+      WHERE id = ? AND assigned_teacher_id = ? AND deleted_at IS NULL AND entity_type = 'student'
+      LIMIT 1
+    `,
+    [studentId, teacherId]
+  );
+  if (rows.length === 0) throw new Error('STUDENT_NOT_ASSIGNED_TO_TEACHER');
+}
+
+async function adjustStudentPaidLessons(connection: mysql.PoolConnection, studentId: string | null, diff: number): Promise<void> {
+  if (!studentId || diff === 0) return;
+
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT paid_lessons_left
+      FROM students
+      WHERE id = ? AND deleted_at IS NULL
+      LIMIT 1
+      FOR UPDATE
+    `,
+    [studentId]
+  );
+
+  if (rows.length === 0) throw new Error('STUDENT_NOT_FOUND');
+  const current = Number(rows[0].paid_lessons_left ?? 0);
+  const next = current + diff;
+  if (next < 0) throw new Error('STUDENT_BALANCE_EMPTY');
+
+  await connection.query(`UPDATE students SET paid_lessons_left = ? WHERE id = ?`, [next, studentId]);
+}
+
+async function upsertRescheduledTargetSlot(
+  connection: mysql.PoolConnection,
+  input: { teacherId: string; studentId: string | null; date: string; startTime: string }
+): Promise<string> {
+  const createdId = randomUUID();
+  try {
+    await connection.query(
+      `
+        INSERT INTO lesson_slots (id, teacher_id, student_id, date, start_time, status)
+        VALUES (?, ?, ?, ?, ?, 'planned')
+      `,
+      [createdId, input.teacherId, input.studentId, input.date, `${input.startTime}:00`]
+    );
+    return createdId;
+  } catch (error) {
+    if (!isMysqlDuplicateError(error, 'uq_lesson_slots_teacher_datetime')) throw error;
+
+    const [existingRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id
+        FROM lesson_slots
+        WHERE teacher_id = ? AND date = ? AND start_time = ?
+        LIMIT 1
+      `,
+      [input.teacherId, input.date, `${input.startTime}:00`]
+    );
+    if (existingRows.length === 0) throw error;
+    return String(existingRows[0].id);
+  }
+}
+
+function isMysqlDuplicateError(error: unknown, indexName: string): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as { code?: string; message?: string };
+  return candidate.code === 'ER_DUP_ENTRY' && Boolean(candidate.message?.includes(indexName));
+}
+
+function parseIsoDate(value: string): Date {
+  const [year, month, day] = value.split('-').map((item) => Number(item));
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function formatIsoDate(value: Date): string {
+  const year = value.getUTCFullYear();
+  const month = String(value.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(value.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function* iterateDatesInclusive(start: Date, end: Date): Generator<Date> {
+  const cursor = new Date(start.getTime());
+  while (cursor.getTime() <= end.getTime()) {
+    yield new Date(cursor.getTime());
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+}
+
+function isoWeekday(date: Date): number {
+  const day = date.getUTCDay();
+  return day === 0 ? 7 : day;
+}
