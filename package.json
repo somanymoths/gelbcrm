@@ -5,6 +5,11 @@
   "scripts": {
     "dev": "next dev",
     "task:new": "bash scripts/new-task-branch.sh",
+    "task:start": "bash scripts/start-task.sh",
+    "task:init": "bash scripts/task-init.sh",
+    "task:summary": "bash scripts/task-summary.sh",
+    "task:checkpoint": "bash scripts/task-checkpoint.sh",
+    "task:review": "bash scripts/task-final-review.sh --run-checks",
     "build": "next build",
     "start": "next start",
     "deploy": "bash scripts/deploy.sh",

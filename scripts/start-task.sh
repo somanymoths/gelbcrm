@@ -87,6 +87,11 @@ if [ -z "$BRANCH_NAME" ]; then
   exit 1
 fi
 
+if [ -x "${SCRIPT_DIR}/task-init.sh" ]; then
+  echo "Initializing task docs..."
+  "${SCRIPT_DIR}/task-init.sh" "$TASK_TEXT" --branch "$BRANCH_NAME" --base origin/main
+fi
+
 if [ "$CREATE_NOTION" -eq 1 ]; then
   if [ -n "$NOTION_DB_ENV" ]; then
     NOTION_DB_ID="${!NOTION_DB_ENV:-}"
