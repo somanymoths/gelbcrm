@@ -77,7 +77,11 @@ export function getTariffs(): Tariff[] {
     return [];
   }
 
-  return parseArray<Tariff>(window.localStorage.getItem(TARIFFS_KEY));
+  try {
+    return parseArray<Tariff>(window.localStorage.getItem(TARIFFS_KEY));
+  } catch {
+    return [];
+  }
 }
 
 export function saveTariff(input: { name: string; packages: Array<{ lessonsCount: number; pricePerLesson: number }> }): Tariff {
@@ -94,7 +98,11 @@ export function saveTariff(input: { name: string; packages: Array<{ lessonsCount
   };
 
   const tariffs = getTariffs();
-  window.localStorage.setItem(TARIFFS_KEY, JSON.stringify([tariff, ...tariffs]));
+  try {
+    window.localStorage.setItem(TARIFFS_KEY, JSON.stringify([tariff, ...tariffs]));
+  } catch {
+    // Ignore storage write errors, keep in-memory flow functional for this session.
+  }
   broadcastStoreUpdate();
 
   return tariff;
@@ -121,7 +129,11 @@ export function renameTariff(input: { tariffId: string; name: string }): Tariff 
   const nextTariffs = [...tariffs];
   nextTariffs[index] = updated;
 
-  window.localStorage.setItem(TARIFFS_KEY, JSON.stringify(nextTariffs));
+  try {
+    window.localStorage.setItem(TARIFFS_KEY, JSON.stringify(nextTariffs));
+  } catch {
+    // Ignore storage write errors, keep in-memory flow functional for this session.
+  }
   broadcastStoreUpdate();
 
   return updated;
@@ -135,7 +147,11 @@ export function removeTariff(tariffId: string): boolean {
     return false;
   }
 
-  window.localStorage.setItem(TARIFFS_KEY, JSON.stringify(nextTariffs));
+  try {
+    window.localStorage.setItem(TARIFFS_KEY, JSON.stringify(nextTariffs));
+  } catch {
+    // Ignore storage write errors, keep in-memory flow functional for this session.
+  }
   broadcastStoreUpdate();
   return true;
 }
@@ -150,7 +166,11 @@ export function getPayments(): PaymentRecord[] {
     return [];
   }
 
-  return parseArray<PaymentRecord>(window.localStorage.getItem(PAYMENTS_KEY));
+  try {
+    return parseArray<PaymentRecord>(window.localStorage.getItem(PAYMENTS_KEY));
+  } catch {
+    return [];
+  }
 }
 
 export function savePayment(input: {
@@ -176,7 +196,11 @@ export function savePayment(input: {
   };
 
   const payments = getPayments();
-  window.localStorage.setItem(PAYMENTS_KEY, JSON.stringify([payment, ...payments]));
+  try {
+    window.localStorage.setItem(PAYMENTS_KEY, JSON.stringify([payment, ...payments]));
+  } catch {
+    // Ignore storage write errors, keep in-memory flow functional for this session.
+  }
   broadcastStoreUpdate();
 
   return payment;

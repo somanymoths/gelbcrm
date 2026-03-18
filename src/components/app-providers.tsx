@@ -22,15 +22,26 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   const [preset, setPresetState] = useState<ThemePresetKey>('sost');
 
   useEffect(() => {
-    const stored = localStorage.getItem(THEME_STORAGE_KEY);
-    if (stored && stored in THEME_PRESETS) {
-      setPresetState(stored as ThemePresetKey);
+    try {
+      const stored = localStorage.getItem(THEME_STORAGE_KEY);
+      if (stored && stored in THEME_PRESETS) {
+        setPresetState(stored as ThemePresetKey);
+      }
+    } catch {
+      // Ignore browser storage read errors (privacy mode, blocked storage, etc.)
     }
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(THEME_STORAGE_KEY, preset);
-    document.documentElement.setAttribute('data-theme-preset', preset);
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, preset);
+    } catch {
+      // Ignore browser storage write errors (privacy mode, blocked storage, etc.)
+    }
+
+    if (typeof document !== 'undefined') {
+      document.documentElement.setAttribute('data-theme-preset', preset);
+    }
   }, [preset]);
 
   const value = useMemo(
