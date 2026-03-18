@@ -9,7 +9,7 @@ import type { SessionUser } from '@/lib/session';
 const { Sider, Content } = Layout;
 
 export function AppShell({ children, session }: { children: React.ReactNode; session: SessionUser | null }) {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? '';
   const isPublicPaymentPage = pathname.startsWith('/payment-links/');
 
   if (isPublicPaymentPage) {
