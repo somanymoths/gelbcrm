@@ -1658,25 +1658,26 @@ export async function replaceTeacherWeeklyTemplate(input: {
       );
     }
 
-    const idsToDelete: string[] = [];
+    const idsToDeactivate: string[] = [];
     for (const [key, value] of existingByKey.entries()) {
-      if (!nextKeys.has(key)) idsToDelete.push(value.id);
+      if (!nextKeys.has(key)) idsToDeactivate.push(value.id);
     }
 
-    if (idsToDelete.length > 0) {
+    if (idsToDeactivate.length > 0) {
       await connection.query(
         `
           DELETE FROM lesson_slots
           WHERE teacher_id = ?
-            AND source_weekly_slot_id IN (${idsToDelete.map(() => '?').join(', ')})
+            AND source_weekly_slot_id IN (${idsToDeactivate.map(() => '?').join(', ')})
             AND date >= CURRENT_DATE()
-            AND status = 'planned'
-            AND student_id IS NULL
         `,
-        [input.teacherId, ...idsToDelete]
+        [input.teacherId, ...idsToDeactivate]
       );
 
-      await connection.query(`DELETE FROM teacher_weekly_slots WHERE id IN (${idsToDelete.map(() => '?').join(', ')})`, idsToDelete);
+      await connection.query(
+        `UPDATE teacher_weekly_slots SET is_active = 0 WHERE id IN (${idsToDeactivate.map(() => '?').join(', ')})`,
+        idsToDeactivate
+      );
     }
 
     await writeAuditLog(connection, {
@@ -1887,10 +1888,7 @@ export async function deleteTeacherLessonSlot(input: {
     const current = await getLessonSlotByIdForUpdate(connection, input.id);
     if (!current) throw new Error('SLOT_NOT_FOUND');
     if (current.teacher_id !== input.teacherId) throw new Error('FORBIDDEN');
-
-    if (current.status === 'completed') {
-      await adjustStudentPaidLessons(connection, current.student_id, +1);
-    }
+    if (current.status !== 'planned') throw new Error('SLOT_DELETE_ONLY_PLANNED');
 
     await connection.query(`DELETE FROM lesson_slots WHERE id = ?`, [input.id]);
 
@@ -1907,6 +1905,64 @@ export async function deleteTeacherLessonSlot(input: {
         status: current.status,
         source_weekly_slot_id: current.source_weekly_slot_id,
         rescheduled_to_slot_id: current.rescheduled_to_slot_id
+      }
+    });
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function deleteTeacherWeeklySeriesFromSlot(input: {
+  id: string;
+  teacherId: string;
+  actorUserId: string;
+}): Promise<void> {
+  const pool = getPool();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const current = await getLessonSlotByIdForUpdate(connection, input.id);
+    if (!current) throw new Error('SLOT_NOT_FOUND');
+    if (current.teacher_id !== input.teacherId) throw new Error('FORBIDDEN');
+    if (!current.source_weekly_slot_id) throw new Error('WEEKLY_SLOT_REQUIRED');
+    if (current.status !== 'planned') throw new Error('SLOT_DELETE_COMPLETED');
+
+    await connection.query(
+      `
+        UPDATE teacher_weekly_slots
+        SET is_active = 0
+        WHERE id = ? AND teacher_id = ?
+      `,
+      [current.source_weekly_slot_id, input.teacherId]
+    );
+
+    await connection.query(
+      `
+        DELETE FROM lesson_slots
+        WHERE teacher_id = ?
+          AND source_weekly_slot_id = ?
+          AND date >= ?
+          AND status = 'planned'
+      `,
+      [input.teacherId, current.source_weekly_slot_id, current.date]
+    );
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'lesson_slot',
+      entityId: input.id,
+      action: 'delete_series',
+      diffBefore: {
+        teacher_id: current.teacher_id,
+        source_weekly_slot_id: current.source_weekly_slot_id,
+        from_date: current.date
       }
     });
 

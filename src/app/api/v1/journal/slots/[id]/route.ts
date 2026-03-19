@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
-import { deleteTeacherLessonSlot, updateTeacherLessonSlot } from '@/lib/db';
+import { deleteTeacherLessonSlot, deleteTeacherWeeklySeriesFromSlot, updateTeacherLessonSlot } from '@/lib/db';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const bodySchema = z.object({
@@ -56,13 +56,22 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
 
     const { searchParams } = new URL(request.url);
     const teacherId = searchParams.get('teacherId') ?? undefined;
+    const deleteMode = searchParams.get('deleteMode');
     const scope = await resolveJournalScope(guard.session, teacherId);
 
-    await deleteTeacherLessonSlot({
-      id,
-      teacherId: scope.teacherId,
-      actorUserId: guard.session.id
-    });
+    if (deleteMode === 'series') {
+      await deleteTeacherWeeklySeriesFromSlot({
+        id,
+        teacherId: scope.teacherId,
+        actorUserId: guard.session.id
+      });
+    } else {
+      await deleteTeacherLessonSlot({
+        id,
+        teacherId: scope.teacherId,
+        actorUserId: guard.session.id
+      });
+    }
 
     return new NextResponse(null, { status: 204 });
   } catch (error) {
@@ -81,6 +90,15 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   }
   if (message === 'SLOT_NOT_FOUND') {
     return NextResponse.json({ code: 'SLOT_NOT_FOUND', message: 'Слот не найден' }, { status: 404 });
+  }
+  if (message === 'SLOT_DELETE_ONLY_PLANNED') {
+    return NextResponse.json({ code: 'SLOT_DELETE_ONLY_PLANNED', message: 'Удалять можно только запланированные занятия' }, { status: 422 });
+  }
+  if (message === 'SLOT_DELETE_COMPLETED') {
+    return NextResponse.json({ code: 'SLOT_DELETE_COMPLETED', message: 'Завершенные занятия удалить нельзя' }, { status: 422 });
+  }
+  if (message === 'WEEKLY_SLOT_REQUIRED') {
+    return NextResponse.json({ code: 'WEEKLY_SLOT_REQUIRED', message: 'Это не еженедельный слот' }, { status: 422 });
   }
   if (message === 'SLOT_ALREADY_EXISTS') {
     return NextResponse.json({ code: 'SLOT_ALREADY_EXISTS', message: 'Слот с этим временем уже существует' }, { status: 409 });
