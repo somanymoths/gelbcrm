@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Alert, Button, Space } from 'antd';
+import { Alert, AlertDescription, AlertTitle, Button } from '@/components/ui';
 
 export default function GlobalError({
   error
@@ -14,19 +14,17 @@ export default function GlobalError({
 
   return (
     <html lang="ru">
-      <body style={{ margin: 0 }}>
-        <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 16 }}>
-          <Space direction="vertical" size={16} style={{ width: '100%', maxWidth: 560 }}>
-            <Alert
-              type="error"
-              showIcon
-              message="Приложение временно недоступно"
-              description="Произошла непредвиденная ошибка. Попробуйте перезагрузить страницу."
-            />
-            <Button type="primary" onClick={() => window.location.reload()}>
+      <body className="m-0">
+        <div className="grid min-h-screen place-items-center p-4">
+          <div className="w-full max-w-[560px] space-y-4">
+            <Alert variant="destructive">
+              <AlertTitle>Приложение временно недоступно</AlertTitle>
+              <AlertDescription>Произошла непредвиденная ошибка. Попробуйте перезагрузить страницу.</AlertDescription>
+            </Alert>
+            <Button onClick={() => window.location.reload()}>
               Перезагрузить
             </Button>
-          </Space>
+          </div>
         </div>
       </body>
     </html>

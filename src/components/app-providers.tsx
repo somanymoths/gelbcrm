@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { ConfigProvider, App as AntApp } from 'antd';
+import { Toaster } from 'sonner';
 import { THEME_PRESETS, THEME_STORAGE_KEY, type ThemePresetKey } from '@/lib/ui/theme-presets';
 
 type ThemePresetContextValue = {
@@ -54,9 +54,8 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
   return (
     <ThemePresetContext.Provider value={value}>
-      <ConfigProvider theme={THEME_PRESETS[preset].theme}>
-        <AntApp>{children}</AntApp>
-      </ConfigProvider>
+      {children}
+      <Toaster position="top-right" richColors />
     </ThemePresetContext.Provider>
   );
 }

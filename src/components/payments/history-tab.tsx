@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { Card, Table, Tag } from 'antd';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { type ColumnDef, flexRender, getCoreRowModel, useReactTable } from '@tanstack/react-table';
+import { Badge, Card, CardContent, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui';
 import { formatDateTime, formatRub } from '@/lib/payments/format';
 
 type PaymentHistoryItem = {
@@ -18,20 +19,20 @@ type PaymentHistoryItem = {
   paid_at: string | null;
 };
 
-function getStatusTag(status: string) {
+function getStatusBadge(status: string) {
   if (status === 'succeeded') {
-    return <Tag color="success">Оплачено</Tag>;
+    return <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">Оплачено</Badge>;
   }
 
   if (status === 'pending') {
-    return <Tag color="processing">Ожидает оплату</Tag>;
+    return <Badge className="bg-sky-600 text-white hover:bg-sky-600">Ожидает оплату</Badge>;
   }
 
   if (status === 'canceled') {
-    return <Tag color="error">Отменено</Tag>;
+    return <Badge variant="destructive">Отменено</Badge>;
   }
 
-  return <Tag>{status}</Tag>;
+  return <Badge variant="outline">{status}</Badge>;
 }
 
 export function PaymentsHistoryTab() {
@@ -60,64 +61,97 @@ export function PaymentsHistoryTab() {
     void loadHistory();
   }, [loadHistory]);
 
+  const columns = useMemo<ColumnDef<PaymentHistoryItem>[]>(
+    () => [
+      {
+        header: 'Дата создания',
+        accessorKey: 'created_at',
+        cell: ({ row }) => formatDateTime(row.original.created_at)
+      },
+      {
+        header: 'Ученик',
+        accessorKey: 'payer_name',
+        cell: ({ row }) => row.original.payer_name ?? '—'
+      },
+      {
+        header: 'E-mail',
+        accessorKey: 'payer_email',
+        cell: ({ row }) => row.original.payer_email ?? '—'
+      },
+      {
+        header: 'Тариф',
+        accessorKey: 'tariff_name',
+        cell: ({ row }) => row.original.tariff_name ?? '—'
+      },
+      {
+        header: 'Пакет',
+        accessorKey: 'lessons_count',
+        cell: ({ row }) => (row.original.lessons_count ? `${row.original.lessons_count} занятий` : '—')
+      },
+      {
+        header: 'Сумма',
+        accessorKey: 'amount',
+        cell: ({ row }) => formatRub(Number(row.original.amount))
+      },
+      {
+        header: 'Статус',
+        accessorKey: 'status',
+        cell: ({ row }) => getStatusBadge(row.original.status)
+      },
+      {
+        header: 'ID платежа',
+        accessorKey: 'provider_payment_id'
+      }
+    ],
+    []
+  );
+
+  const table = useReactTable({
+    data: rows,
+    columns,
+    getCoreRowModel: getCoreRowModel()
+  });
+
   return (
     <Card>
-      <Table<PaymentHistoryItem>
-        rowKey="id"
-        loading={loading}
-        pagination={false}
-        dataSource={rows}
-        locale={{ emptyText: 'Платежей пока нет' }}
-        columns={[
-          {
-            title: 'Дата создания',
-            dataIndex: 'created_at',
-            key: 'created_at',
-            render: (value: string) => formatDateTime(value)
-          },
-          {
-            title: 'Ученик',
-            dataIndex: 'payer_name',
-            key: 'payer_name',
-            render: (value: string | null) => value ?? '—'
-          },
-          {
-            title: 'E-mail',
-            dataIndex: 'payer_email',
-            key: 'payer_email',
-            render: (value: string | null) => value ?? '—'
-          },
-          {
-            title: 'Тариф',
-            dataIndex: 'tariff_name',
-            key: 'tariff_name',
-            render: (value: string | null) => value ?? '—'
-          },
-          {
-            title: 'Пакет',
-            dataIndex: 'lessons_count',
-            key: 'lessons_count',
-            render: (value: number | null) => (value ? `${value} занятий` : '—')
-          },
-          {
-            title: 'Сумма',
-            dataIndex: 'amount',
-            key: 'amount',
-            render: (value: number) => formatRub(Number(value))
-          },
-          {
-            title: 'Статус',
-            dataIndex: 'status',
-            key: 'status',
-            render: (value: string) => getStatusTag(value)
-          },
-          {
-            title: 'ID платежа',
-            dataIndex: 'provider_payment_id',
-            key: 'provider_payment_id'
-          }
-        ]}
-      />
+      <CardContent className="pt-6">
+        <Table>
+          <TableHeader>
+            {table.getHeaderGroups().map((headerGroup) => (
+              <TableRow key={headerGroup.id}>
+                {headerGroup.headers.map((header) => (
+                  <TableHead key={header.id}>
+                    {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                  </TableHead>
+                ))}
+              </TableRow>
+            ))}
+          </TableHeader>
+          <TableBody>
+            {loading ? (
+              <TableRow>
+                <TableCell colSpan={columns.length} className="text-center text-muted-foreground">
+                  Загрузка...
+                </TableCell>
+              </TableRow>
+            ) : table.getRowModel().rows.length ? (
+              table.getRowModel().rows.map((row) => (
+                <TableRow key={row.id}>
+                  {row.getVisibleCells().map((cell) => (
+                    <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
+                  ))}
+                </TableRow>
+              ))
+            ) : (
+              <TableRow>
+                <TableCell colSpan={columns.length} className="text-center text-muted-foreground">
+                  Платежей пока нет
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </CardContent>
     </Card>
   );
 }

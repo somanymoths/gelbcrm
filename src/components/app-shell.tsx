@@ -2,11 +2,9 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Layout, Space, Tag, Typography } from 'antd';
 import { AppNav } from '@/components/nav';
+import { Badge } from '@/components/ui';
 import type { SessionUser } from '@/lib/session';
-
-const { Sider, Content } = Layout;
 
 export function AppShell({ children, session }: { children: React.ReactNode; session: SessionUser | null }) {
   const pathname = usePathname() ?? '';
@@ -14,57 +12,41 @@ export function AppShell({ children, session }: { children: React.ReactNode; ses
 
   if (isPublicPaymentPage) {
     return (
-      <Layout style={{ minHeight: '100vh' }}>
-        <Content style={{ maxWidth: 960, width: '100%', margin: '0 auto', padding: 20 }}>{children}</Content>
-      </Layout>
+      <div className="min-h-screen">
+        <main className="mx-auto w-full max-w-[960px] p-5">{children}</main>
+      </div>
     );
   }
 
   if (!session) {
     return (
-      <Layout style={{ minHeight: '100vh' }}>
-        <Content style={{ maxWidth: 1280, width: '100%', margin: '0 auto', padding: 20 }}>
-          <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-            <Link href="/login">Войти</Link>
-            {children}
-          </Space>
-        </Content>
-      </Layout>
+      <div className="min-h-screen">
+        <main className="mx-auto flex w-full max-w-[1280px] flex-col gap-3 p-5">
+          <Link href="/login" className="text-sm underline">
+            Войти
+          </Link>
+          {children}
+        </main>
+      </div>
     );
   }
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider
-        width={260}
-        theme="light"
-        breakpoint="lg"
-        collapsedWidth={0}
-        style={{
-          borderRight: '1px solid #e5e7eb',
-          position: 'sticky',
-          top: 0,
-          height: '100vh',
-          overflowY: 'auto'
-        }}
-      >
-        <div style={{ padding: 16 }}>
-          <Space orientation="vertical" size={14} style={{ width: '100%' }}>
-            <Space orientation="vertical" size={6} style={{ width: '100%' }}>
-              <Typography.Title level={4} style={{ margin: 0 }}>
-                GelbCRM
-              </Typography.Title>
-              <Tag color="geekblue">{session.role === 'admin' ? 'Администратор' : 'Преподаватель'}: {session.login}</Tag>
-            </Space>
+    <div className="min-h-screen lg:grid lg:grid-cols-[260px_1fr]">
+      <aside className="sticky top-0 h-screen overflow-y-auto border-r bg-card p-4">
+        <div className="flex w-full flex-col gap-4">
+          <div className="flex w-full flex-col gap-1.5">
+            <h1 className="text-2xl font-semibold">GelbCRM</h1>
+            <Badge variant="secondary" className="w-fit">
+              {session.role === 'admin' ? 'Администратор' : 'Преподаватель'}: {session.login}
+            </Badge>
+          </div>
 
-            <AppNav role={session.role} pathname={pathname} mode="inline" />
-          </Space>
+          <AppNav role={session.role} pathname={pathname} />
         </div>
-      </Sider>
+      </aside>
 
-      <Layout>
-        <Content style={{ maxWidth: 1280, width: '100%', margin: '0 auto', padding: 20 }}>{children}</Content>
-      </Layout>
-    </Layout>
+      <main className="mx-auto w-full max-w-[1280px] p-5">{children}</main>
+    </div>
   );
 }
