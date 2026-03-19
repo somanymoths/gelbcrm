@@ -287,6 +287,14 @@ export function JournalSection() {
     await createSlotForDay(nextState.weekday, nextState.date);
   };
 
+  const submitCreateSlot = async () => {
+    if (!createSlotState) return;
+    const isCreated = await createSlotForDay(createSlotState.weekday, createSlotState.date);
+    if (isCreated) {
+      setCreateSlotState(null);
+    }
+  };
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       {contextHolder}
