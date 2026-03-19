@@ -169,7 +169,7 @@ export function JournalSection() {
         if (generated && draft.studentId) {
           await assignStudent(generated, draft.studentId);
         }
-        api.success('Слот добавлен в шаблон и на неделю');
+        api.success('Еженедельный слот создан');
       } else {
         await fetchJson('/api/v1/journal/slots', {
           method: 'POST',
@@ -258,6 +258,31 @@ export function JournalSection() {
     }
   };
 
+  const deleteWeeklySlot = async (slot: LessonSlot) => {
+    if (!slot.source_weekly_slot_id) {
+      await deleteSlot(slot);
+      return;
+    }
+
+    const exists = weeklyTemplate.some((item) => item.id === slot.source_weekly_slot_id);
+    if (!exists) {
+      await deleteSlot(slot);
+      return;
+    }
+
+    setDeletingSlotId(slot.id);
+    try {
+      const nextTemplate = weeklyTemplate.filter((item) => item.id !== slot.source_weekly_slot_id);
+      await saveTemplate(nextTemplate);
+      await refreshWeekSlots();
+      api.success('Еженедельный слот удалён');
+    } catch (error) {
+      api.error(error instanceof Error ? error.message : 'Не удалось удалить еженедельный слот');
+    } finally {
+      setDeletingSlotId((prev) => (prev === slot.id ? null : prev));
+    }
+  };
+
   const slotMapByDate = useMemo(() => {
     const map = new Map<string, LessonSlot[]>();
     for (const slot of slots) {
@@ -287,14 +312,6 @@ export function JournalSection() {
     await createSlotForDay(nextState.weekday, nextState.date);
   };
 
-  const submitCreateSlot = async () => {
-    if (!createSlotState) return;
-    const isCreated = await createSlotForDay(createSlotState.weekday, createSlotState.date);
-    if (isCreated) {
-      setCreateSlotState(null);
-    }
-  };
-
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       {contextHolder}
@@ -302,7 +319,7 @@ export function JournalSection() {
         <Typography.Title level={3} style={{ margin: 0 }}>
           Журнал занятий
         </Typography.Title>
-        <Typography.Text type="secondary">Недельный шаблон, свободные слоты, переносы и статусы.</Typography.Text>
+        <Typography.Text type="secondary">Еженедельные и разовые слоты, переносы и статусы.</Typography.Text>
       </div>
 
       <Space wrap>
@@ -381,7 +398,11 @@ export function JournalSection() {
                                 Удалить
                               </Button>
                             </Popconfirm>
-                          ) : null}
+                          ) : (
+                            <Button size="small" danger loading={deletingSlotId === slot.id} onClick={() => void deleteWeeklySlot(slot)}>
+                              Удалить
+                            </Button>
+                          )}
                         </Space>
                       </Space>
                     </Card>
