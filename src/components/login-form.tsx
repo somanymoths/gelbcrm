@@ -1,39 +1,33 @@
 'use client';
 
-import { useState } from 'react';
+import { FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm } from 'react-hook-form';
-import { z } from 'zod';
-import { Alert, AlertDescription, AlertTitle, Button, Input } from '@/components/ui';
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
-
-const loginSchema = z.object({
-  login: z.string().min(1, 'Введите логин'),
-  password: z.string().min(1, 'Введите пароль')
-});
-
-type LoginFormValues = z.infer<typeof loginSchema>;
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 export function LoginForm() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
-  const form = useForm<LoginFormValues>({
-    resolver: zodResolver(loginSchema),
-    defaultValues: {
-      login: '',
-      password: ''
-    }
-  });
+  const [loading, setLoading] = useState(false);
+  const [form, setForm] = useState({ login: '', password: '' });
 
-  async function onSubmit(values: LoginFormValues) {
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!form.login.trim() || !form.password) {
+      setError('Введите логин и пароль');
+      return;
+    }
+
     setError(null);
+    setLoading(true);
 
     try {
       const response = await fetch('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(values)
+        body: JSON.stringify({ login: form.login.trim(), password: form.password })
       });
 
       if (!response.ok) {
@@ -52,51 +46,45 @@ export function LoginForm() {
       router.refresh();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Ошибка входа');
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
-    <Form {...form}>
-      <form className="space-y-4" onSubmit={form.handleSubmit(onSubmit)}>
-        <FormField
-          control={form.control}
-          name="login"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Логин</FormLabel>
-              <FormControl>
-                <Input autoComplete="username" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
+    <form className="flex w-full flex-col gap-4" onSubmit={onSubmit}>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="login">Логин</Label>
+        <Input
+          id="login"
+          autoComplete="username"
+          value={form.login}
+          onChange={(event) => setForm((prev) => ({ ...prev, login: event.target.value }))}
+          disabled={loading}
         />
-
-        <FormField
-          control={form.control}
-          name="password"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Пароль</FormLabel>
-              <FormControl>
-                <Input type="password" autoComplete="current-password" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
+      </div>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="password">Пароль</Label>
+        <Input
+          id="password"
+          type="password"
+          autoComplete="current-password"
+          value={form.password}
+          onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))}
+          disabled={loading}
         />
+      </div>
 
-        {error ? (
-          <Alert variant="destructive">
-            <AlertTitle>Ошибка входа</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        ) : null}
+      {error ? (
+        <Alert variant="destructive">
+          <AlertTitle>Ошибка входа</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
 
-        <Button type="submit" disabled={form.formState.isSubmitting} className="w-full">
-          {form.formState.isSubmitting ? 'Входим...' : 'Войти'}
-        </Button>
-      </form>
-    </Form>
+      <Button type="submit" disabled={loading}>
+        {loading ? 'Вход...' : 'Войти'}
+      </Button>
+    </form>
   );
 }

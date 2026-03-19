@@ -1,26 +1,22 @@
 'use client';
 
 import { useMemo } from 'react';
-import Link from 'next/link';
-import { BookOpen, CreditCard, GraduationCap, KanbanSquare } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import { NAV_ITEMS } from '@/lib/types';
 import type { AppRole } from '@/lib/types';
-import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar';
-
-const ITEM_ICONS: Record<string, React.ReactNode> = {
-  '/funnel': <KanbanSquare className="h-4 w-4" />,
-  '/teachers': <GraduationCap className="h-4 w-4" />,
-  '/payments': <CreditCard className="h-4 w-4" />,
-  '/journal': <BookOpen className="h-4 w-4" />
-};
 
 export function AppNav({
   role,
-  pathname
+  pathname,
+  mode = 'inline'
 }: {
   role: AppRole;
   pathname: string;
+  mode?: 'inline' | 'horizontal';
 }) {
+  const router = useRouter();
   const allowed = NAV_ITEMS.filter((item) => item.roles.includes(role));
 
   const selectedKey = useMemo(() => {
@@ -29,20 +25,24 @@ export function AppNav({
   }, [allowed, pathname]);
 
   return (
-    <SidebarMenu>
+    <nav
+      className={cn('flex gap-2', mode === 'horizontal' ? 'flex-row flex-wrap items-center' : 'flex-col items-stretch')}
+      aria-label="Основная навигация"
+    >
       {allowed.map((item) => {
-        const active = selectedKey === item.href;
+        const isActive = selectedKey === item.href;
         return (
-          <SidebarMenuItem key={item.href}>
-            <SidebarMenuButton asChild isActive={active} tooltip={item.label}>
-              <Link href={item.href}>
-                {ITEM_ICONS[item.href]}
-                <span>{item.label}</span>
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
+          <Button
+            key={item.href}
+            type="button"
+            variant={isActive ? 'default' : 'ghost'}
+            className={cn('justify-start', mode === 'inline' ? 'w-full' : '')}
+            onClick={() => router.push(item.href)}
+          >
+            {item.label}
+          </Button>
         );
       })}
-    </SidebarMenu>
+    </nav>
   );
 }

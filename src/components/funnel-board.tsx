@@ -1,31 +1,33 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Copy, ExternalLink, Plus, RefreshCw, Trash2, X } from 'lucide-react';
-import { toast } from 'sonner';
 import {
   Alert,
-  AlertDescription,
-  AlertTitle,
-  Badge,
+  Avatar,
   Button,
   Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  Col,
+  Divider,
+  Drawer,
+  Form,
   Input,
+  InputNumber,
+  Modal,
+  Row,
   Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Textarea
-} from '@/components/ui';
+  Space,
+  Spin,
+  Tag,
+  Typography,
+  message
+} from '@/components/ui/legacy-kit';
+
+const CloseOutlined = () => <span>✕</span>;
+const CopyOutlined = () => <span>⧉</span>;
+const DeleteOutlined = () => <span>🗑</span>;
+const ExportOutlined = () => <span>↗</span>;
+const PlusOutlined = () => <span>＋</span>;
+const RedoOutlined = () => <span>↻</span>;
 
 type FunnelStage = {
   id: number;
@@ -190,6 +192,8 @@ function formatCountdown(targetDate: string | null, nowTs: number): string {
 }
 
 export function FunnelBoard() {
+  const [api, contextHolder] = message.useMessage();
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -297,13 +301,13 @@ export function FunnelBoard() {
   const loadArchived = useCallback(async () => {
     const response = await fetch('/api/v1/funnel/archived', { cache: 'no-store' });
     if (!response.ok) {
-      toast.error('Не удалось загрузить архив');
+      api.error('Не удалось загрузить архив');
       return;
     }
 
     const data = (await response.json()) as ArchivedCard[];
     setArchivedCards(data);
-  }, []);
+  }, [api]);
 
   useEffect(() => {
     void loadBoard();
@@ -473,10 +477,10 @@ export function FunnelBoard() {
 
       setCreateForm(INITIAL_CREATE_FORM);
       setCreateModalOpen(false);
-      toast.success('Карточка создана');
+      api.success('Карточка создана');
       await loadBoard();
     } catch (createError) {
-      toast.error(createError instanceof Error ? createError.message : 'Ошибка создания карточки');
+      api.error(createError instanceof Error ? createError.message : 'Ошибка создания карточки');
     } finally {
       setCreating(false);
     }
@@ -550,7 +554,7 @@ export function FunnelBoard() {
       }
 
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось обновить этап');
+      api.error(payload?.message ?? 'Не удалось обновить этап');
       return;
     }
 
@@ -576,7 +580,7 @@ export function FunnelBoard() {
     const lastName = selectedCard.last_name.trim();
 
     if (!firstName || !lastName) {
-      toast.error('Имя и фамилия обязательны');
+      api.error('Имя и фамилия обязательны');
       return;
     }
 
@@ -605,11 +609,11 @@ export function FunnelBoard() {
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось сохранить карточку');
+      api.error(payload?.message ?? 'Не удалось сохранить карточку');
       return;
     }
 
-    toast.success('Карточка сохранена');
+    api.success('Карточка сохранена');
     await loadBoard();
     await refreshSelectedCard(selectedCard.id);
   }
@@ -621,12 +625,12 @@ export function FunnelBoard() {
     const trimmedComment = manualLessonsComment.trim();
 
     if (!Number.isInteger(lessonsToAdd) || lessonsToAdd < 1) {
-      toast.error('Укажите положительное целое количество занятий');
+      api.error('Укажите положительное целое количество занятий');
       return;
     }
 
     if (!trimmedComment) {
-      toast.error('Комментарий обязателен');
+      api.error('Комментарий обязателен');
       return;
     }
 
@@ -642,11 +646,11 @@ export function FunnelBoard() {
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось добавить занятия');
+      api.error(payload?.message ?? 'Не удалось добавить занятия');
       return;
     }
 
-    toast.success(`Добавлено ${lessonsToAdd} занятий`);
+    api.success(`Добавлено ${lessonsToAdd} занятий`);
     setManualLessonsToAdd(1);
     setManualLessonsComment('');
     await loadBoard();
@@ -658,7 +662,7 @@ export function FunnelBoard() {
     const body = newNoteBody.trim();
 
     if (!body) {
-      toast.error('Введите текст заметки');
+      api.error('Введите текст заметки');
       return;
     }
 
@@ -674,7 +678,7 @@ export function FunnelBoard() {
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось добавить заметку');
+      api.error(payload?.message ?? 'Не удалось добавить заметку');
       return;
     }
 
@@ -699,11 +703,11 @@ export function FunnelBoard() {
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось сохранить преподавателя');
+      api.error(payload?.message ?? 'Не удалось сохранить преподавателя');
       return;
     }
 
-    toast.success(selectedTeacherId ? 'Преподаватель назначен' : 'Преподаватель снят');
+    api.success(selectedTeacherId ? 'Преподаватель назначен' : 'Преподаватель снят');
     await loadBoard();
     await refreshSelectedCard(selectedCard.id);
   }
@@ -724,16 +728,16 @@ export function FunnelBoard() {
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string; code?: string } | null;
       if (payload?.code === 'ACTIVE_PAYMENT_LINK_EXISTS') {
-        toast.error(payload.message ?? 'У ученика уже есть активная ссылка');
+        api.error(payload.message ?? 'У ученика уже есть активная ссылка');
         await refreshSelectedCard(selectedCard.id);
         return;
       }
-      toast.error(payload?.message ?? 'Не удалось создать ссылку оплаты');
+      api.error(payload?.message ?? 'Не удалось создать ссылку оплаты');
       return;
     }
 
     const payload = (await response.json()) as { confirmationUrl: string };
-    toast.success('Ссылка на оплату создана');
+    api.success('Ссылка на оплату создана');
 
     if (payload.confirmationUrl) {
       window.open(payload.confirmationUrl, '_blank', 'noopener,noreferrer');
@@ -745,9 +749,9 @@ export function FunnelBoard() {
   async function onCopyPaymentLink(url: string) {
     try {
       await navigator.clipboard.writeText(url);
-      toast.success('Ссылка скопирована');
+      api.success('Ссылка скопирована');
     } catch {
-      toast.error('Не удалось скопировать ссылку');
+      api.error('Не удалось скопировать ссылку');
     }
   }
 
@@ -766,12 +770,12 @@ export function FunnelBoard() {
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось обновить ссылку оплаты');
+      api.error(payload?.message ?? 'Не удалось обновить ссылку оплаты');
       return;
     }
 
     const payload = (await response.json()) as { confirmationUrl?: string };
-    toast.success('Ссылка оплаты обновлена');
+    api.success('Ссылка оплаты обновлена');
 
     if (payload.confirmationUrl) {
       window.open(payload.confirmationUrl, '_blank', 'noopener,noreferrer');
@@ -793,11 +797,11 @@ export function FunnelBoard() {
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось удалить активную ссылку');
+      api.error(payload?.message ?? 'Не удалось удалить активную ссылку');
       return;
     }
 
-    toast.success('Активная ссылка удалена');
+    api.success('Активная ссылка удалена');
     await refreshSelectedCard(selectedCard.id);
   }
 
@@ -808,11 +812,11 @@ export function FunnelBoard() {
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось архивировать карточку');
+      api.error(payload?.message ?? 'Не удалось архивировать карточку');
       return;
     }
 
-    toast.success('Карточка архивирована');
+    api.success('Карточка архивирована');
     setDrawerOpen(false);
     setSelectedCard(null);
     await loadBoard();
@@ -827,7 +831,7 @@ export function FunnelBoard() {
 
   async function onRestoreCard() {
     if (!restoreCardId || !restoreStageCode) {
-      toast.error('Выберите карточку и этап восстановления');
+      api.error('Выберите карточку и этап восстановления');
       return;
     }
 
@@ -839,593 +843,613 @@ export function FunnelBoard() {
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось восстановить карточку');
+      api.error(payload?.message ?? 'Не удалось восстановить карточку');
       return;
     }
 
-    toast.success('Карточка восстановлена');
+    api.success('Карточка восстановлена');
     setArchiveModalOpen(false);
     await loadBoard();
   }
 
-  function closeDetailsDrawer() {
-    setDrawerOpen(false);
-    setSelectedCard(null);
-    setManualLessonsToAdd(1);
-    setManualLessonsComment('');
-    setShowFullHistory(false);
-    setEditMode(false);
-    setNewNoteBody('');
-  }
-
   return (
-    <div className="flex w-full flex-col gap-4">
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
+      {contextHolder}
+
       <div>
-        <h2 className="mb-2 text-2xl font-semibold">Воронка</h2>
-        <p className="text-sm text-muted-foreground">Управление лидами/учениками по этапам с учётом оплат, истории изменений и архива.</p>
+        <Typography.Title level={2} style={{ marginBottom: 8 }}>
+          Воронка
+        </Typography.Title>
+        <Typography.Text type="secondary">
+          Управление лидами/учениками по этапам с учётом оплат, истории изменений и архива.
+        </Typography.Text>
       </div>
 
       <Card>
-        <CardContent className="flex flex-wrap gap-2 pt-6">
-          <Button onClick={() => setCreateModalOpen(true)}>Создать карточку</Button>
-          <Button variant="outline" onClick={() => void loadBoard()}>
-            Обновить
+        <Space>
+          <Button type="primary" onClick={() => setCreateModalOpen(true)}>
+            Создать карточку
           </Button>
-          <Button variant="outline" onClick={() => void onOpenArchive()}>
-            Архив карточек
-          </Button>
-        </CardContent>
+          <Button onClick={() => void loadBoard()}>Обновить</Button>
+          <Button onClick={() => void onOpenArchive()}>Архив карточек</Button>
+        </Space>
       </Card>
 
-      {error ? (
-        <Alert variant="destructive">
-          <AlertTitle>Ошибка</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      ) : null}
+      {error ? <Alert type="error" title={error} showIcon /> : null}
 
       {loading ? (
-        <div className="flex justify-center py-8">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+        <div style={{ textAlign: 'center', padding: 32 }}>
+          <Spin size="large" />
         </div>
       ) : (
-        <div ref={boardScrollContainerRef} className="flex gap-3 overflow-x-auto pb-1">
+        <Row ref={boardScrollContainerRef} gutter={[12, 12]} wrap={false} style={{ overflowX: 'auto', paddingBottom: 4 }}>
           {stages.map((stage) => {
             const stageCards = groupedCards.get(stage.code) ?? [];
             const isActiveDropZone = draggedCardId !== null && dragOverStageCode === stage.code;
 
             return (
-              <Card
-                key={stage.id}
-                className={`min-w-[320px] ${isActiveDropZone ? 'border-primary shadow-[0_0_0_2px_rgba(59,130,246,0.15)]' : ''}`}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  if (dragOverStageCode !== stage.code) setDragOverStageCode(stage.code);
-                }}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  setDragOverStageCode(null);
-                  if (draggedCardId) {
-                    void onChangeStage(draggedCardId, stage.code);
-                  }
-                }}
-              >
-                <CardHeader className="flex-row items-center justify-between space-y-0">
-                  <CardTitle className="text-base">{stage.name}</CardTitle>
-                  <span className="text-sm text-muted-foreground">{stageCards.length}</span>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-2">
-                  {stageCards.map((card) => (
-                    <Card
-                      key={card.id}
-                      className="cursor-grab border-border/70 p-3 transition hover:border-border"
-                      draggable
-                      style={{ opacity: draggedCardId === card.id ? 0.5 : 1 }}
-                      onDragStart={(event) => {
-                        event.dataTransfer.setData('text/plain', card.id);
-                        event.dataTransfer.effectAllowed = 'move';
-                        setDraggedCardId(card.id);
-                      }}
-                      onDragEnd={() => {
-                        setDraggedCardId(null);
-                        setDragOverStageCode(null);
-                      }}
-                      onClick={() => void openCard(card.id)}
-                    >
-                      <div className="flex flex-col gap-1.5">
-                        <p className="text-sm font-semibold">
-                          {formatPersonName({
-                            firstName: card.first_name,
-                            lastName: card.last_name,
-                            fallbackFullName: card.full_name
-                          })}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          Преподаватель:{' '}
-                          {card.assigned_teacher_id ? teacherNameById.get(card.assigned_teacher_id) ?? card.teacher_full_name ?? 'Не назначен' : 'Не назначен'}
-                        </p>
-                        <p className="text-xs text-muted-foreground">Следующее занятие: {formatDate(card.next_lesson_at)}</p>
-                        <p className="text-xs text-muted-foreground">Осталось занятий: {card.paid_lessons_left}</p>
-                        <Badge variant={card.entity_type === 'student' ? 'secondary' : 'outline'} className="w-fit">
-                          {card.entity_type === 'student' ? 'Ученик' : 'Лид'}
-                        </Badge>
-                        <div onClick={(event) => event.stopPropagation()}>
-                          <Select value={card.stage_code} onValueChange={(value) => void onChangeStage(card.id, value)}>
-                            <SelectTrigger className="h-8 text-xs">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {stages.map((item) => (
-                                <SelectItem key={item.code} value={item.code}>
-                                  {item.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-                    </Card>
-                  ))}
+              <Col key={stage.id} style={{ minWidth: 320 }}>
+                <Card
+                  title={stage.name}
+                  extra={<Typography.Text type="secondary">{stageCards.length}</Typography.Text>}
+                  style={{
+                    borderColor: isActiveDropZone ? '#1677ff' : undefined,
+                    boxShadow: isActiveDropZone ? '0 0 0 2px rgba(22,119,255,0.15)' : undefined
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    if (dragOverStageCode !== stage.code) setDragOverStageCode(stage.code);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setDragOverStageCode(null);
+                    if (draggedCardId) {
+                      void onChangeStage(draggedCardId, stage.code);
+                    }
+                  }}
+                >
+                  <Space orientation="vertical" size={10} style={{ width: '100%' }}>
+                    {stageCards.map((card) => (
+                      <Card
+                        key={card.id}
+                        size="small"
+                        draggable
+                        style={{
+                          cursor: 'grab',
+                          opacity: draggedCardId === card.id ? 0.5 : 1
+                        }}
+                        onDragStart={(event) => {
+                          event.dataTransfer.setData('text/plain', card.id);
+                          event.dataTransfer.effectAllowed = 'move';
+                          setDraggedCardId(card.id);
+                        }}
+                        onDragEnd={() => {
+                          setDraggedCardId(null);
+                          setDragOverStageCode(null);
+                        }}
+                        onClick={() => void openCard(card.id)}
+                        hoverable
+                      >
+                        <Space orientation="vertical" size={4} style={{ width: '100%' }}>
+                          <Typography.Text strong>
+                            {formatPersonName({
+                              firstName: card.first_name,
+                              lastName: card.last_name,
+                              fallbackFullName: card.full_name
+                            })}
+                          </Typography.Text>
+                          <Typography.Text type="secondary">
+                            Преподаватель:{' '}
+                            {card.assigned_teacher_id
+                              ? teacherNameById.get(card.assigned_teacher_id) ?? card.teacher_full_name ?? 'Не назначен'
+                              : 'Не назначен'}
+                          </Typography.Text>
+                          <Typography.Text type="secondary">Следующее занятие: {formatDate(card.next_lesson_at)}</Typography.Text>
+                          <Typography.Text type="secondary">Осталось занятий: {card.paid_lessons_left}</Typography.Text>
+                          <Tag color={card.entity_type === 'student' ? 'green' : 'blue'}>{card.entity_type === 'student' ? 'Ученик' : 'Лид'}</Tag>
+                          <Select
+                            size="small"
+                            value={card.stage_code}
+                            options={stages.map((item) => ({ value: item.code, label: item.name }))}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(value) => void onChangeStage(card.id, value)}
+                          />
+                        </Space>
+                      </Card>
+                    ))}
 
-                  {stageCards.length === 0 ? (
-                    <div
-                      className={`flex min-h-[120px] items-center justify-center rounded-md border border-dashed px-3 text-center text-sm ${
-                        isActiveDropZone ? 'border-primary bg-primary/10 text-foreground' : 'border-border text-muted-foreground'
-                      }`}
-                    >
-                      {draggedCardId ? 'Отпустите карточку, чтобы переместить сюда' : 'Нет карточек'}
-                    </div>
-                  ) : null}
-                </CardContent>
-              </Card>
+                    {stageCards.length === 0 ? (
+                      <div
+                        style={{
+                          minHeight: 120,
+                          border: isActiveDropZone ? '2px dashed #1677ff' : '1px dashed #d9d9d9',
+                          borderRadius: 8,
+                          background: isActiveDropZone ? 'rgba(22,119,255,0.08)' : 'transparent',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          textAlign: 'center',
+                          padding: 12
+                        }}
+                      >
+                        <Typography.Text type={isActiveDropZone ? undefined : 'secondary'}>
+                          {draggedCardId ? 'Отпустите карточку, чтобы переместить сюда' : 'Нет карточек'}
+                        </Typography.Text>
+                      </div>
+                    ) : null}
+                  </Space>
+                </Card>
+              </Col>
             );
           })}
-        </div>
+        </Row>
       )}
 
-      <Dialog open={drawerOpen} onOpenChange={(open) => (!open ? closeDetailsDrawer() : undefined)}>
-        <DialogContent className="!left-auto !right-0 !top-0 !h-screen !max-w-[595px] !translate-x-0 !translate-y-0 overflow-y-auto rounded-none p-6">
-          {detailsLoading || !selectedCard ? (
-            <div className="flex justify-center py-6">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted border-t-foreground" />
-            </div>
-          ) : (
-            <div className="flex w-full flex-col gap-6">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <Button variant="ghost" size="icon" onClick={closeDetailsDrawer}>
-                    <X className="h-4 w-4" />
-                  </Button>
-                  <p className="text-lg font-medium">Карточка ученика</p>
-                </div>
-                <Button variant={editMode ? 'outline' : 'default'} size="sm" className="rounded-full" onClick={() => setEditMode((prev) => !prev)}>
-                  {editMode ? 'Готово' : 'Редактировать'}
-                </Button>
-              </div>
+      <Drawer
+        title={null}
+        closeIcon={null}
+        open={drawerOpen}
+        size={595}
+        styles={{ body: { padding: '28px 24px 20px' } }}
+        onClose={() => {
+          setDrawerOpen(false);
+          setSelectedCard(null);
+          setManualLessonsToAdd(1);
+          setManualLessonsComment('');
+          setShowFullHistory(false);
+          setEditMode(false);
+          setNewNoteBody('');
+        }}
+      >
+        {detailsLoading || !selectedCard ? (
+          <div style={{ textAlign: 'center', padding: 24 }}>
+            <Spin />
+          </div>
+        ) : (
+          <Space orientation="vertical" size={24} style={{ width: '100%' }}>
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Space size={14}>
+                <Button
+                  type="text"
+                  icon={<CloseOutlined />}
+                  onClick={() => {
+                    setDrawerOpen(false);
+                    setSelectedCard(null);
+                  }}
+                />
+                <Typography.Text style={{ fontSize: 20 }}>Карточка ученика</Typography.Text>
+              </Space>
+              <Button
+                type={editMode ? 'default' : 'primary'}
+                size="small"
+                style={!editMode ? { borderRadius: 20, background: '#000', borderColor: '#000' } : { borderRadius: 20 }}
+                onClick={() => setEditMode((prev) => !prev)}
+              >
+                {editMode ? 'Готово' : 'Редактировать'}
+              </Button>
+            </Space>
 
-              <div className="flex items-start gap-3">
-                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted text-xl font-semibold">
-                  {selectedCard.first_name?.[0] ?? 'У'}
-                </div>
-                <div className="flex flex-col">
-                  <p className="text-xl font-semibold leading-tight">
-                    {formatPersonName({
-                      firstName: selectedCard.first_name,
-                      lastName: selectedCard.last_name,
-                      fallbackFullName: selectedCard.full_name
-                    })}
-                  </p>
-                  <p className="text-lg text-muted-foreground underline">{selectedCard.contact_link || '@telegram'}</p>
-                </div>
-              </div>
+            <Space size={12} align="start">
+              <Avatar size={64}>{selectedCard.first_name?.[0] ?? 'У'}</Avatar>
+              <Space orientation="vertical" size={2}>
+                <Typography.Text strong style={{ fontSize: 20, lineHeight: 1.1 }}>
+                  {formatPersonName({
+                    firstName: selectedCard.first_name,
+                    lastName: selectedCard.last_name,
+                    fallbackFullName: selectedCard.full_name
+                  })}
+                </Typography.Text>
+                <Typography.Text style={{ fontSize: 20, color: 'rgba(0,0,0,0.64)', textDecoration: 'underline' }}>
+                  {selectedCard.contact_link || '@telegram'}
+                </Typography.Text>
+              </Space>
+            </Space>
 
-              {editMode ? (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Редактирование данных</CardTitle>
-                  </CardHeader>
-                  <CardContent className="grid grid-cols-2 gap-3">
-                    <div>
-                      <p className="mb-1 text-sm">Имя</p>
-                      <Input value={selectedCard.first_name} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, first_name: event.target.value } : prev))} />
-                    </div>
-                    <div>
-                      <p className="mb-1 text-sm">Фамилия</p>
-                      <Input value={selectedCard.last_name} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, last_name: event.target.value } : prev))} />
-                    </div>
-                    <div>
-                      <p className="mb-1 text-sm">Телефон</p>
-                      <Input value={selectedCard.phone} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, phone: event.target.value } : prev))} />
-                    </div>
-                    <div>
-                      <p className="mb-1 text-sm">Email</p>
-                      <Input value={selectedCard.email} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, email: event.target.value } : prev))} />
-                    </div>
-                    <div>
-                      <p className="mb-1 text-sm">Контакт</p>
-                      <Input value={selectedCard.contact_link} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, contact_link: event.target.value } : prev))} />
-                    </div>
-                    <div>
-                      <p className="mb-1 text-sm">Источник</p>
-                      <Input value={selectedCard.lead_source} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, lead_source: event.target.value } : prev))} />
-                    </div>
-                    <div className="col-span-2 flex gap-2 pt-1">
-                      <Button onClick={() => void onSaveDetails()}>Сохранить</Button>
-                      <Button variant="destructive" onClick={() => void onArchiveSelectedCard()}>
+            {editMode ? (
+              <Card size="small" title="Редактирование данных">
+                <Row gutter={12}>
+                  <Col span={12}>
+                    <Typography.Text>Имя</Typography.Text>
+                    <Input value={selectedCard.first_name} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, first_name: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={12}>
+                    <Typography.Text>Фамилия</Typography.Text>
+                    <Input value={selectedCard.last_name} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, last_name: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={12}>
+                    <Typography.Text>Телефон</Typography.Text>
+                    <Input value={selectedCard.phone} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, phone: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={12}>
+                    <Typography.Text>Email</Typography.Text>
+                    <Input value={selectedCard.email} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, email: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={12}>
+                    <Typography.Text>Контакт</Typography.Text>
+                    <Input value={selectedCard.contact_link} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, contact_link: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={12}>
+                    <Typography.Text>Источник</Typography.Text>
+                    <Input value={selectedCard.lead_source} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, lead_source: event.target.value } : prev))} />
+                  </Col>
+                  <Col span={24}>
+                    <Space>
+                      <Button type="primary" onClick={() => void onSaveDetails()}>
+                        Сохранить
+                      </Button>
+                      <Button danger onClick={() => void onArchiveSelectedCard()}>
                         В архив
                       </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ) : null}
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Преподаватель</CardTitle>
-                </CardHeader>
-                <CardContent className="flex flex-wrap gap-2">
-                  <Select
-                    value={selectedTeacherId ?? '__none__'}
-                    onValueChange={(value) => setSelectedTeacherId(value === '__none__' ? null : value)}
-                  >
-                    <SelectTrigger className="min-w-[260px] flex-1">
-                      <SelectValue placeholder="Не назначен" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">Не назначен</SelectItem>
-                      {teachers.map((teacher) => (
-                        <SelectItem key={teacher.id} value={teacher.id}>
-                          {teacherNameById.get(teacher.id) ?? teacher.full_name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button onClick={() => void onAssignTeacher()} disabled={!selectedCard || selectedCard.assigned_teacher_id === selectedTeacherId}>
-                    {teacherSaving ? 'Сохранение...' : 'Сохранить'}
-                  </Button>
-                </CardContent>
+                    </Space>
+                  </Col>
+                </Row>
               </Card>
+            ) : null}
 
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <p className="text-xl font-semibold">Занятия</p>
-                    <Button variant="outline" size="sm" onClick={() => void onAddManualLessons()} disabled={manualLessonsSaving}>
-                      <Plus className="mr-1 h-4 w-4" />
-                      {manualLessonsSaving ? 'Сохранение...' : 'Добавить'}
-                    </Button>
-                  </div>
-                  <p className="text-lg text-muted-foreground">{`Осталось ${selectedCard.paid_lessons_left}`}</p>
-                </div>
-
-                <div className="flex gap-2">
-                  <Input
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={manualLessonsToAdd}
-                    onChange={(event) => setManualLessonsToAdd(Math.max(1, Number(event.target.value) || 1))}
-                    className="max-w-[120px]"
-                  />
-                  <Input value={manualLessonsComment} onChange={(event) => setManualLessonsComment(event.target.value)} placeholder="Комментарий к добавлению (обязательно)" />
-                </div>
-
-                <div className="relative h-3 w-full rounded-full bg-emerald-100">
-                  <div
-                    className="absolute left-0 top-0 h-3 rounded-full bg-emerald-500"
-                    style={{ width: `${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}%` }}
-                  />
-                  <div
-                    className="absolute top-[-3px] h-[18px] w-5 rounded-full bg-black"
-                    style={{ left: `calc(${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}% - 10px)` }}
-                  />
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  <Select
-                    value={selectedTariffPackageId ?? undefined}
-                    onValueChange={setSelectedTariffPackageId}
-                    disabled={Boolean(activePaymentLink)}
-                  >
-                    <SelectTrigger className="min-w-[360px] flex-1">
-                      <SelectValue placeholder="Выберите тариф и пакет" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {tariffPackageOptions.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button onClick={() => void onCreatePaymentLink()} disabled={Boolean(activePaymentLink) || paymentLinkCreating}>
-                    {paymentLinkCreating ? 'Создание...' : 'Создать ссылку'}
-                  </Button>
-                </div>
-
-                {activePaymentLink ? (
-                  <div className="flex w-full flex-col gap-2">
-                    <p className="text-sm text-muted-foreground">Активная ссылка уже создана. Новую можно создать после окончания срока действия.</p>
-                    <div className="flex flex-wrap gap-2">
-                      <Input value={activePaymentLink.payment_url} readOnly />
-                      <Button variant="outline" size="icon" onClick={() => void onCopyPaymentLink(activePaymentLink.payment_url)}>
-                        <Copy className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={() => window.open(activePaymentLink.payment_url, '_blank', 'noopener,noreferrer')}
-                      >
-                        <ExternalLink className="h-4 w-4" />
-                      </Button>
-                      <Button variant="outline" onClick={() => void onRefreshPaymentLink()} disabled={paymentLinkCreating}>
-                        <RefreshCw className="mr-1 h-4 w-4" />
-                        {paymentLinkCreating ? '...' : 'Обновить'}
-                      </Button>
-                      <Button variant="destructive" onClick={() => void onDeleteActivePaymentLink()} disabled={paymentLinkDeleting}>
-                        <Trash2 className="mr-1 h-4 w-4" />
-                        {paymentLinkDeleting ? '...' : 'Удалить'}
-                      </Button>
-                    </div>
-                    <p className="text-sm text-muted-foreground">Срок действия: {formatCountdown(activePaymentLink.expires_at, nowTs)}</p>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="flex items-center justify-between">
-                <p className="text-xl font-semibold">Последние события</p>
-                <Button variant="link" className="px-0 text-base text-muted-foreground underline" onClick={() => setShowFullHistory((prev) => !prev)}>
-                  Вся история
+            <Card size="small" title="Преподаватель">
+              <Space>
+                <Select
+                  style={{ minWidth: 260 }}
+                  placeholder="Не назначен"
+                  value={selectedTeacherId}
+                  onChange={(value) => setSelectedTeacherId(value ?? null)}
+                  options={teachers.map((teacher) => ({ value: teacher.id, label: teacherNameById.get(teacher.id) ?? teacher.full_name }))}
+                  allowClear
+                />
+                <Button
+                  type="primary"
+                  loading={teacherSaving}
+                  onClick={() => void onAssignTeacher()}
+                  disabled={!selectedCard || selectedCard.assigned_teacher_id === selectedTeacherId}
+                >
+                  Сохранить
                 </Button>
+              </Space>
+            </Card>
+
+            <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                <Space>
+                  <Typography.Text strong style={{ fontSize: 20 }}>
+                    Занятия
+                  </Typography.Text>
+                  <Button
+                    onClick={() => void onAddManualLessons()}
+                    loading={manualLessonsSaving}
+                    size="small"
+                    style={{ borderRadius: 20, background: '#000', color: '#fff', borderColor: '#000' }}
+                  >
+                    <PlusOutlined /> Добавить
+                  </Button>
+                </Space>
+                <Typography.Text style={{ fontSize: 20, color: 'rgba(0,0,0,0.64)' }}>{`Осталось ${selectedCard.paid_lessons_left}`}</Typography.Text>
+              </Space>
+
+              <Space style={{ width: '100%' }}>
+                <InputNumber
+                  min={1}
+                  precision={0}
+                  value={manualLessonsToAdd}
+                  onChange={(value) => setManualLessonsToAdd(Number(value) || 1)}
+                />
+                <Input
+                  value={manualLessonsComment}
+                  onChange={(event) => setManualLessonsComment(event.target.value)}
+                  placeholder="Комментарий к добавлению (обязательно)"
+                />
+              </Space>
+
+              <div style={{ width: '100%', position: 'relative', height: 12, borderRadius: 11, background: '#ddf8e9' }}>
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: 0,
+                    height: 12,
+                    borderRadius: 11,
+                    background: '#22c55e',
+                    width: `${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}%`
+                  }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: -3,
+                    left: `calc(${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}% - 10px)`,
+                    width: 20,
+                    height: 18,
+                    borderRadius: 11,
+                    background: '#000'
+                  }}
+                />
               </div>
 
-              {recentEvents.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Событий пока нет</p>
-              ) : (
-                <div className="flex flex-col gap-3">
-                  {recentEvents.map((event) => (
-                    <div key={event.id} className="flex items-start gap-3">
-                      <div className="h-10 w-10 rounded-full" style={{ backgroundColor: event.color }} />
-                      <div className="flex flex-col">
-                        <p className="text-base">{event.title}</p>
-                        <p className="text-xs text-muted-foreground">{formatEventDate(event.created_at)}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <Space style={{ width: '100%' }}>
+                <Select
+                  style={{ minWidth: 360, flex: 1 }}
+                  placeholder="Выберите тариф и пакет"
+                  value={selectedTariffPackageId}
+                  onChange={(value) => setSelectedTariffPackageId(value)}
+                  options={tariffPackageOptions}
+                  disabled={Boolean(activePaymentLink)}
+                />
+                <Button
+                  type="primary"
+                  loading={paymentLinkCreating}
+                  onClick={() => void onCreatePaymentLink()}
+                  style={{ borderRadius: 20 }}
+                  disabled={Boolean(activePaymentLink)}
+                >
+                  Создать ссылку
+                </Button>
+              </Space>
 
-              {showFullHistory ? (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Полная история</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {auditItems.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">Лог пуст</p>
-                    ) : (
-                      <div className="flex w-full flex-col gap-2">
-                        {auditItems.map((item) => (
-                          <Card key={item.id} className="p-3">
-                            <div className="flex flex-col gap-0.5">
-                              <p className="text-sm">
-                                {auditActionLabel(item.action)} • {item.actor_login ?? 'admin'}
-                              </p>
-                              {item.action === 'manual_lessons_add' ? (
-                                <p className="text-sm">
-                                  {`+${Number(item.diff_after?.lessons_added ?? 0)} занятий`}
-                                  {typeof item.diff_after?.comment === 'string' ? ` • ${item.diff_after.comment}` : ''}
-                                </p>
-                              ) : null}
-                              <p className="text-xs text-muted-foreground">{formatDate(item.created_at)}</p>
-                            </div>
-                          </Card>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+              {activePaymentLink ? (
+                <Space orientation="vertical" style={{ width: '100%' }} size={6}>
+                  <Typography.Text type="secondary">
+                    Активная ссылка уже создана. Новую можно создать после окончания срока действия.
+                  </Typography.Text>
+                  <Space style={{ width: '100%' }}>
+                    <Input value={activePaymentLink.payment_url} readOnly />
+                    <Button icon={<CopyOutlined />} onClick={() => void onCopyPaymentLink(activePaymentLink.payment_url)} />
+                    <Button icon={<ExportOutlined />} onClick={() => window.open(activePaymentLink.payment_url, '_blank', 'noopener,noreferrer')} />
+                    <Button loading={paymentLinkCreating} icon={<RedoOutlined />} onClick={() => void onRefreshPaymentLink()}>
+                      Обновить
+                    </Button>
+                    <Button danger loading={paymentLinkDeleting} icon={<DeleteOutlined />} onClick={() => void onDeleteActivePaymentLink()}>
+                      Удалить
+                    </Button>
+                  </Space>
+                  <Typography.Text type="secondary">
+                    Срок действия: {formatCountdown(activePaymentLink.expires_at, nowTs)}
+                  </Typography.Text>
+                </Space>
               ) : null}
+            </Space>
 
-              <Card>
-                <CardHeader className="flex-row items-center justify-between border-b pb-3">
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-xl">Заметки</CardTitle>
-                    <Badge variant="outline">{cardComments.length}</Badge>
-                  </div>
-                  <Button variant="link" className="px-0 text-destructive" onClick={() => void onAddNote()}>
-                    Добавить
-                  </Button>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-3 pt-3">
-                  <Textarea rows={2} value={newNoteBody} onChange={(event) => setNewNoteBody(event.target.value)} placeholder="Текст заметки" />
-                  <Button onClick={() => void onAddNote()} disabled={addingNote}>
-                    {addingNote ? 'Сохранение...' : 'Добавить заметку'}
-                  </Button>
-
-                  {cardComments.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">Заметок пока нет</p>
-                  ) : (
-                    <Card className="p-3">
-                      <div className="flex flex-col gap-1">
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm font-semibold">{`Заметка от ${cardComments[0].author_login ?? 'admin'}`}</p>
-                          <p className="text-xs text-muted-foreground">{formatDate(cardComments[0].created_at)}</p>
-                        </div>
-                        <p className="text-sm">{cardComments[0].body}</p>
-                      </div>
-                    </Card>
-                  )}
-                </CardContent>
-              </Card>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={createModalOpen} onOpenChange={setCreateModalOpen}>
-        <DialogContent className="max-h-[90vh] max-w-4xl overflow-auto">
-          <DialogHeader>
-            <DialogTitle>Создать карточку</DialogTitle>
-          </DialogHeader>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void onCreateCard();
-            }}
-            className="grid grid-cols-12 gap-3"
-          >
-            <div className="col-span-12 md:col-span-6 lg:col-span-3">
-              <p className="mb-1 text-sm">Имя</p>
-              <Input value={createForm.firstName} onChange={(event) => setCreateForm((prev) => ({ ...prev, firstName: event.target.value }))} />
-            </div>
-            <div className="col-span-12 md:col-span-6 lg:col-span-3">
-              <p className="mb-1 text-sm">Фамилия</p>
-              <Input value={createForm.lastName} onChange={(event) => setCreateForm((prev) => ({ ...prev, lastName: event.target.value }))} />
-            </div>
-            <div className="col-span-12 md:col-span-6 lg:col-span-3">
-              <p className="mb-1 text-sm">Телефон</p>
-              <Input value={createForm.phone} onChange={(event) => setCreateForm((prev) => ({ ...prev, phone: event.target.value }))} />
-            </div>
-            <div className="col-span-12 md:col-span-6 lg:col-span-3">
-              <p className="mb-1 text-sm">Email</p>
-              <Input value={createForm.email} onChange={(event) => setCreateForm((prev) => ({ ...prev, email: event.target.value }))} />
-            </div>
-            <div className="col-span-12 md:col-span-6 lg:col-span-4">
-              <p className="mb-1 text-sm">Контакт</p>
-              <Input value={createForm.contact} onChange={(event) => setCreateForm((prev) => ({ ...prev, contact: event.target.value }))} />
-            </div>
-            <div className="col-span-12 md:col-span-6 lg:col-span-4">
-              <p className="mb-1 text-sm">Источник лида</p>
-              <Input value={createForm.leadSource} onChange={(event) => setCreateForm((prev) => ({ ...prev, leadSource: event.target.value }))} />
-            </div>
-            <div className="col-span-12 md:col-span-6 lg:col-span-3">
-              <p className="mb-1 text-sm">Дата начала занятий</p>
-              <Input type="date" value={createForm.startLessonsAt} onChange={(event) => setCreateForm((prev) => ({ ...prev, startLessonsAt: event.target.value }))} />
-            </div>
-            <div className="col-span-12 lg:col-span-6">
-              <p className="mb-1 text-sm">Комментарий</p>
-              <Textarea rows={2} value={createForm.comment} onChange={(event) => setCreateForm((prev) => ({ ...prev, comment: event.target.value }))} />
-            </div>
-            <div className="col-span-12 flex gap-2">
-              <Button type="button" variant="outline" onClick={() => setCreateModalOpen(false)}>
-                Отмена
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Typography.Text strong style={{ fontSize: 20 }}>
+                Последние события
+              </Typography.Text>
+              <Button
+                type="link"
+                style={{ color: 'rgba(0,0,0,0.64)', textDecoration: 'underline', fontSize: 20, paddingInline: 0 }}
+                onClick={() => setShowFullHistory((prev) => !prev)}
+              >
+                Вся история
               </Button>
-              <Button type="submit" disabled={creating}>
-                {creating ? 'Создание...' : 'Создать карточку'}
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
+            </Space>
 
-      <Dialog open={Boolean(lossStageModal)} onOpenChange={(open) => (!open ? setLossStageModal(null) : undefined)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Выберите причину потери</DialogTitle>
-          </DialogHeader>
-          <Select value={lossReasonIdForMove ? String(lossReasonIdForMove) : undefined} onValueChange={(value) => setLossReasonIdForMove(Number(value))}>
-            <SelectTrigger>
-              <SelectValue placeholder="Причина потери" />
-            </SelectTrigger>
-            <SelectContent>
-              {lossReasons.map((reason) => (
-                <SelectItem key={reason.id} value={String(reason.id)}>
-                  {reason.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setLossStageModal(null)}>
-              Отмена
-            </Button>
-            <Button
-              onClick={() => {
-                if (!lossStageModal || !lossReasonIdForMove) {
-                  toast.error('Выберите причину');
-                  return;
-                }
-                void moveStage(lossStageModal.cardId, lossStageModal.stageCode, lossReasonIdForMove);
-                setLossStageModal(null);
-                setLossReasonIdForMove(null);
-              }}
-            >
-              Сохранить
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={archiveModalOpen} onOpenChange={setArchiveModalOpen}>
-        <DialogContent className="max-h-[90vh] overflow-auto">
-          <DialogHeader>
-            <DialogTitle>Архив карточек</DialogTitle>
-          </DialogHeader>
-
-          <div className="flex flex-col gap-3">
-            <Select value={restoreCardId ?? undefined} onValueChange={setRestoreCardId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Выберите карточку" />
-              </SelectTrigger>
-              <SelectContent>
-                {archivedCards.map((card) => (
-                  <SelectItem key={card.id} value={card.id}>
-                    {`${formatPersonName({
-                      firstName: card.first_name,
-                      lastName: card.last_name,
-                      fallbackFullName: card.full_name
-                    })} (${card.stage_name})`}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Select value={restoreStageCode ?? undefined} onValueChange={setRestoreStageCode}>
-              <SelectTrigger>
-                <SelectValue placeholder="Выберите этап восстановления" />
-              </SelectTrigger>
-              <SelectContent>
-                {stages.map((stage) => (
-                  <SelectItem key={stage.code} value={stage.code}>
-                    {stage.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <div className="h-px bg-border" />
-
-            {archivedCards.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Архив пуст</p>
+            {recentEvents.length === 0 ? (
+              <Typography.Text type="secondary">Событий пока нет</Typography.Text>
             ) : (
-              <div className="flex flex-col gap-2">
-                {archivedCards.map((item) => (
-                  <Card key={item.id} className="p-3">
-                    <div className="flex flex-col gap-0.5">
-                      <p className="text-sm">
-                        {formatPersonName({
-                          firstName: item.first_name,
-                          lastName: item.last_name,
-                          fallbackFullName: item.full_name
-                        })}
-                      </p>
-                      <p className="text-xs text-muted-foreground">{item.stage_name}</p>
-                    </div>
-                  </Card>
+              <Space orientation="vertical" size={14} style={{ width: '100%' }}>
+                {recentEvents.map((event) => (
+                  <Space key={event.id} align="start">
+                    <Avatar size={40} style={{ backgroundColor: event.color }} />
+                    <Space orientation="vertical" size={0}>
+                      <Typography.Text style={{ fontSize: 16 }}>{event.title}</Typography.Text>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {formatEventDate(event.created_at)}
+                      </Typography.Text>
+                    </Space>
+                  </Space>
                 ))}
-              </div>
+              </Space>
             )}
-          </div>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setArchiveModalOpen(false)}>
-              Отмена
-            </Button>
-            <Button onClick={() => void onRestoreCard()}>Восстановить</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+            {showFullHistory ? (
+              <Card size="small" title="Полная история">
+                {auditItems.length === 0 ? (
+                  <Typography.Text type="secondary">Лог пуст</Typography.Text>
+                ) : (
+                  <Space orientation="vertical" style={{ width: '100%' }} size={8}>
+                    {auditItems.map((item) => (
+                      <Card key={item.id} size="small">
+                        <Space orientation="vertical" size={0}>
+                          <Typography.Text>
+                            {auditActionLabel(item.action)} • {item.actor_login ?? 'admin'}
+                          </Typography.Text>
+                          {item.action === 'manual_lessons_add' ? (
+                            <Typography.Text>
+                              {`+${Number(item.diff_after?.lessons_added ?? 0)} занятий`}
+                              {typeof item.diff_after?.comment === 'string' ? ` • ${item.diff_after.comment}` : ''}
+                            </Typography.Text>
+                          ) : null}
+                          <Typography.Text type="secondary">{formatDate(item.created_at)}</Typography.Text>
+                        </Space>
+                      </Card>
+                    ))}
+                  </Space>
+                )}
+              </Card>
+            ) : null}
+
+            <Card size="small">
+              <Space style={{ width: '100%', justifyContent: 'space-between', borderBottom: '1px solid #f0f0f0', paddingBottom: 8 }}>
+                <Space>
+                  <Typography.Text strong style={{ fontSize: 20 }}>
+                    Заметки
+                  </Typography.Text>
+                  <Tag color="default">{cardComments.length}</Tag>
+                </Space>
+                <Button type="link" danger onClick={() => void onAddNote()} style={{ paddingInline: 0 }}>
+                  Добавить
+                </Button>
+              </Space>
+              <div style={{ height: 8 }} />
+              <Space orientation="vertical" style={{ width: '100%' }}>
+                <Input.TextArea
+                  rows={2}
+                  value={newNoteBody}
+                  onChange={(event) => setNewNoteBody(event.target.value)}
+                  placeholder="Текст заметки"
+                />
+                <Button loading={addingNote} onClick={() => void onAddNote()}>
+                  Добавить заметку
+                </Button>
+
+                {cardComments.length === 0 ? (
+                  <Typography.Text type="secondary">Заметок пока нет</Typography.Text>
+                ) : (
+                  <Card size="small">
+                    <Space orientation="vertical" size={6}>
+                      <Space style={{ justifyContent: 'space-between', width: '100%' }}>
+                        <Typography.Text strong>{`Заметка от ${cardComments[0].author_login ?? 'admin'}`}</Typography.Text>
+                        <Typography.Text type="secondary">{formatDate(cardComments[0].created_at)}</Typography.Text>
+                      </Space>
+                      <Typography.Text>{cardComments[0].body}</Typography.Text>
+                    </Space>
+                  </Card>
+                )}
+              </Space>
+            </Card>
+          </Space>
+        )}
+      </Drawer>
+
+      <Modal
+        title="Создать карточку"
+        open={createModalOpen}
+        onCancel={() => setCreateModalOpen(false)}
+        footer={null}
+        width={960}
+      >
+        <Form layout="vertical" onFinish={() => void onCreateCard()}>
+          <Row gutter={12}>
+            <Col xs={24} md={12} lg={6}>
+              <Form.Item label="Имя" required>
+                <Input value={createForm.firstName} onChange={(event) => setCreateForm((prev) => ({ ...prev, firstName: event.target.value }))} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12} lg={6}>
+              <Form.Item label="Фамилия" required>
+                <Input value={createForm.lastName} onChange={(event) => setCreateForm((prev) => ({ ...prev, lastName: event.target.value }))} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12} lg={6}>
+              <Form.Item label="Телефон">
+                <Input value={createForm.phone} onChange={(event) => setCreateForm((prev) => ({ ...prev, phone: event.target.value }))} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12} lg={6}>
+              <Form.Item label="Email">
+                <Input value={createForm.email} onChange={(event) => setCreateForm((prev) => ({ ...prev, email: event.target.value }))} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12} lg={8}>
+              <Form.Item label="Контакт">
+                <Input value={createForm.contact} onChange={(event) => setCreateForm((prev) => ({ ...prev, contact: event.target.value }))} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12} lg={8}>
+              <Form.Item label="Источник лида">
+                <Input value={createForm.leadSource} onChange={(event) => setCreateForm((prev) => ({ ...prev, leadSource: event.target.value }))} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12} lg={6}>
+              <Form.Item label="Дата начала занятий">
+                <Input
+                  type="date"
+                  value={createForm.startLessonsAt}
+                  onChange={(event) => setCreateForm((prev) => ({ ...prev, startLessonsAt: event.target.value }))}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} lg={12}>
+              <Form.Item label="Комментарий">
+                <Input.TextArea rows={1} value={createForm.comment} onChange={(event) => setCreateForm((prev) => ({ ...prev, comment: event.target.value }))} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} lg={24}>
+              <Space>
+                <Button onClick={() => setCreateModalOpen(false)}>Отмена</Button>
+                <Button type="primary" htmlType="submit" loading={creating}>
+                  Создать карточку
+                </Button>
+              </Space>
+            </Col>
+          </Row>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="Выберите причину потери"
+        open={Boolean(lossStageModal)}
+        onCancel={() => setLossStageModal(null)}
+        onOk={() => {
+          if (!lossStageModal || !lossReasonIdForMove) {
+            api.error('Выберите причину');
+            return;
+          }
+
+          void moveStage(lossStageModal.cardId, lossStageModal.stageCode, lossReasonIdForMove);
+          setLossStageModal(null);
+          setLossReasonIdForMove(null);
+        }}
+      >
+        <Select
+          style={{ width: '100%' }}
+          placeholder="Причина потери"
+          value={lossReasonIdForMove}
+          onChange={(value) => setLossReasonIdForMove(value ? Number(value) : null)}
+          options={lossReasons.map((reason) => ({ value: reason.id, label: reason.name }))}
+        />
+      </Modal>
+
+      <Modal
+        title="Архив карточек"
+        open={archiveModalOpen}
+        onCancel={() => setArchiveModalOpen(false)}
+        onOk={() => void onRestoreCard()}
+        okText="Восстановить"
+      >
+        <Space orientation="vertical" style={{ width: '100%' }}>
+          <Select
+            placeholder="Выберите карточку"
+            value={restoreCardId}
+            onChange={(value) => setRestoreCardId(value)}
+            options={archivedCards.map((card) => ({
+              value: card.id,
+              label: `${formatPersonName({
+                firstName: card.first_name,
+                lastName: card.last_name,
+                fallbackFullName: card.full_name
+              })} (${card.stage_name})`
+            }))}
+          />
+
+          <Select
+            placeholder="Выберите этап восстановления"
+            value={restoreStageCode}
+            onChange={(value) => setRestoreStageCode(value)}
+            options={stages.map((stage) => ({ value: stage.code, label: stage.name }))}
+          />
+
+          <Divider />
+
+          {archivedCards.length === 0 ? (
+            <Typography.Text type="secondary">Архив пуст</Typography.Text>
+          ) : (
+            <Space orientation="vertical" style={{ width: '100%' }} size={8}>
+              {archivedCards.map((item) => (
+                <Card key={item.id} size="small">
+                  <Space orientation="vertical" size={0}>
+                    <Typography.Text>
+                      {formatPersonName({
+                        firstName: item.first_name,
+                        lastName: item.last_name,
+                        fallbackFullName: item.full_name
+                      })}
+                    </Typography.Text>
+                    <Typography.Text type="secondary">{item.stage_name}</Typography.Text>
+                  </Space>
+                </Card>
+              ))}
+            </Space>
+          )}
+        </Space>
+      </Modal>
+    </Space>
   );
 }

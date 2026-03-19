@@ -2,9 +2,11 @@
 
 import { useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { CheckCircle2 } from 'lucide-react';
-import { toast } from 'sonner';
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input } from '@/components/ui';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { formatRub } from '@/lib/payments/format';
 import { getPackageTotal, getTariffBySlug } from '@/lib/payments/store';
 
@@ -21,6 +23,7 @@ export default function PaymentLinkPage() {
   const [payerEmail, setPayerEmail] = useState('');
   const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorText, setErrorText] = useState<string | null>(null);
 
   const tariff = useMemo(() => getTariffBySlug(params.slug), [params.slug]);
 
@@ -28,6 +31,7 @@ export default function PaymentLinkPage() {
     () => tariff?.packages.find((item) => item.id === selectedPackageId) ?? null,
     [selectedPackageId, tariff]
   );
+
   const mostExpensiveLessonPrice = useMemo(
     () => (tariff ? Math.max(...tariff.packages.map((item) => item.pricePerLesson)) : 0),
     [tariff]
@@ -36,34 +40,40 @@ export default function PaymentLinkPage() {
   if (!tariff) {
     return (
       <Card>
-        <CardContent className="py-10 text-center text-muted-foreground">Ссылка оплаты не найдена или устарела</CardContent>
+        <CardHeader>
+          <CardTitle>Ссылка не найдена</CardTitle>
+          <CardDescription>Ссылка оплаты не найдена или устарела.</CardDescription>
+        </CardHeader>
       </Card>
     );
   }
 
   const handlePay = async () => {
-    if (!payerName.trim()) {
-      toast.error('Введите имя ученика.');
+    const name = payerName.trim();
+    const email = payerEmail.trim();
+
+    if (!name) {
+      setErrorText('Введите имя ученика.');
       return;
     }
 
-    if (!payerEmail.trim()) {
-      toast.error('Введите e-mail ученика.');
+    if (!email) {
+      setErrorText('Введите e-mail ученика.');
       return;
     }
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payerEmail.trim())) {
-      toast.error('Введите корректный e-mail.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setErrorText('Введите корректный e-mail.');
       return;
     }
 
     if (!selectedPackage) {
-      toast.error('Выберите пакет.');
+      setErrorText('Выберите пакет.');
       return;
     }
 
+    setErrorText(null);
     const amount = getPackageTotal(selectedPackage);
-
     setIsSubmitting(true);
 
     try {
@@ -78,8 +88,8 @@ export default function PaymentLinkPage() {
           amount,
           tariffName: tariff.name,
           lessonsCount: selectedPackage.lessonsCount,
-          payerName,
-          payerEmail,
+          payerName: name,
+          payerEmail: email,
           returnUrl,
           metadata: {
             tariff_id: tariff.id,
@@ -94,33 +104,44 @@ export default function PaymentLinkPage() {
         | null;
 
       if (!response.ok || !result?.confirmationUrl) {
-        toast.error(result?.message ?? 'Не удалось инициализировать платеж');
+        setErrorText(result?.message ?? 'Не удалось инициализировать платеж');
         return;
       }
 
       window.location.href = result.confirmationUrl;
     } catch {
-      toast.error('Ошибка сети при создании платежа');
+      setErrorText('Ошибка сети при создании платежа');
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+      {errorText ? (
+        <Alert variant="destructive">
+          <AlertTitle>Ошибка</AlertTitle>
+          <AlertDescription>{errorText}</AlertDescription>
+        </Alert>
+      ) : null}
+
       <Card>
         <CardHeader>
-          <CardTitle className="text-2xl">Оплата тарифа: {tariff.name}</CardTitle>
-          <p className="text-sm text-muted-foreground">Выберите пакет и завершите оплату.</p>
+          <CardTitle>Оплата тарифа: {tariff.name}</CardTitle>
+          <CardDescription>Выберите пакет и завершите оплату.</CardDescription>
         </CardHeader>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Данные ученика</CardTitle>
+          <CardTitle>Данные ученика</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          <Input placeholder="Имя ученика" value={payerName} onChange={(event) => setPayerName(event.target.value)} />
+        <CardContent className="flex flex-col gap-3">
+          <Input
+            placeholder="Имя ученика"
+            value={payerName}
+            onChange={(event) => setPayerName(event.target.value)}
+          />
           <Input
             placeholder="E-mail ученика"
             type="email"
@@ -132,7 +153,7 @@ export default function PaymentLinkPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Пакеты</CardTitle>
+          <CardTitle>Пакеты</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-2">
           {tariff.packages.map((pkg) => {
@@ -144,22 +165,17 @@ export default function PaymentLinkPage() {
               <button
                 key={pkg.id}
                 type="button"
-                className={`rounded-lg border p-3 text-left transition ${
-                  selected ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40'
+                className={`flex w-full flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors ${
+                  selected ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
                 }`}
                 onClick={() => setSelectedPackageId(pkg.id)}
               >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium">{`${pkg.lessonsCount} занятий`}</span>
-                    {selected ? <CheckCircle2 className="h-4 w-4 text-primary" /> : null}
-                  </div>
-                  <span className="text-sm text-muted-foreground">{`${formatRub(pkg.pricePerLesson)} за занятие`}</span>
-                  <div className="flex items-center gap-2">
-                    {savings > 0 ? <Badge variant="secondary">{`Экономия ${formatRub(savings)}`}</Badge> : null}
-                    <span className="font-semibold">{formatRub(total)}</span>
-                  </div>
-                </div>
+                <span className="font-medium">{pkg.lessonsCount} занятий</span>
+                <span className="text-sm text-muted-foreground">{formatRub(pkg.pricePerLesson)} за занятие</span>
+                <span className="flex items-center gap-2">
+                  {savings > 0 ? <Badge>{`Экономия ${formatRub(savings)}`}</Badge> : null}
+                  <span className="font-semibold">{formatRub(total)}</span>
+                </span>
               </button>
             );
           })}
@@ -167,15 +183,15 @@ export default function PaymentLinkPage() {
       </Card>
 
       <Card>
-        <CardContent className="flex flex-col gap-2 pt-6">
-          <p className="text-sm">
+        <CardContent className="flex flex-col gap-3">
+          <p>
             К оплате:{' '}
             <span className="font-semibold">
               {selectedPackage ? formatRub(getPackageTotal(selectedPackage)) : 'Выберите пакет'}
             </span>
           </p>
-          <Button size="lg" onClick={handlePay} disabled={isSubmitting}>
-            {isSubmitting ? 'Создание платежа...' : 'Перейти к оплате'}
+          <Button onClick={handlePay} disabled={isSubmitting}>
+            {isSubmitting ? 'Переходим к оплате...' : 'Перейти к оплате'}
           </Button>
         </CardContent>
       </Card>

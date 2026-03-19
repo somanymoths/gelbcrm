@@ -1,11 +1,15 @@
 'use client';
 
 import { useMemo } from 'react';
-import { useRouter } from 'next/navigation';
 import { useSearchParams } from 'next/navigation';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui';
 import { PaymentsHistoryTab } from '@/components/payments/history-tab';
 import { TariffsTab } from '@/components/payments/tariffs-tab';
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger
+} from '@/components/ui/tabs';
 
 const TABS = {
   tariffs: 'tariffs',
@@ -13,7 +17,6 @@ const TABS = {
 } as const;
 
 export default function PaymentsPage() {
-  const router = useRouter();
   const searchParams = useSearchParams();
 
   const defaultTab = useMemo(() => {
@@ -29,14 +32,8 @@ export default function PaymentsPage() {
   return (
     <>
       <h1 className="mt-0">Оплаты</h1>
-      <p className="text-muted-foreground">Управление тарифами и история платежей.</p>
-      <Tabs
-        defaultValue={defaultTab}
-        onValueChange={(value) => {
-          const next = value === TABS.history ? TABS.history : TABS.tariffs;
-          router.replace(`/payments?tab=${next}`);
-        }}
-      >
+      <p className="text-sm text-muted-foreground">Управление тарифами и история платежей.</p>
+      <Tabs defaultValue={defaultTab}>
         <TabsList>
           <TabsTrigger value={TABS.tariffs}>Тарифы</TabsTrigger>
           <TabsTrigger value={TABS.history}>История оплат</TabsTrigger>

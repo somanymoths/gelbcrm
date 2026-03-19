@@ -4,6 +4,28 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer utilities {
+  .border-border {
+    border-color: var(--border);
+  }
+
+  .outline-ring\/50 {
+    outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
+  }
+
+  .bg-background {
+    background-color: var(--background);
+  }
+
+  .text-foreground {
+    color: var(--foreground);
+  }
+
+  .font-sans {
+    font-family: var(--font-sans), sans-serif;
+  }
+}
+
 @layer base {
   :root {
     --background: oklch(1 0 0);
@@ -21,20 +43,15 @@
     --accent: oklch(0.97 0 0);
     --accent-foreground: oklch(0.205 0 0);
     --destructive: oklch(0.577 0.245 27.325);
-    --destructive-foreground: 0 0% 100%;
     --border: oklch(0.922 0 0);
     --input: oklch(0.922 0 0);
     --ring: oklch(0.708 0 0);
-    --radius: 0.625rem;
-
-    --bg: #f6f8ff;
-    --text: #111827;
-    --bg-gradient: radial-gradient(circle at top right, #dbeafe 0%, #f6f8ff 45%);
     --chart-1: oklch(0.785 0.115 274.713);
     --chart-2: oklch(0.585 0.233 277.117);
     --chart-3: oklch(0.511 0.262 276.966);
     --chart-4: oklch(0.457 0.24 277.023);
     --chart-5: oklch(0.398 0.195 277.366);
+    --radius: 0.625rem;
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
     --sidebar-primary: oklch(0.511 0.262 276.966);
@@ -43,30 +60,6 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
-  }
-
-  * {
-    box-sizing: border-box;
-    @apply border-border outline-ring/50;
-  }
-
-  html,
-  body {
-    margin: 0;
-    padding: 0;
-    background: var(--bg-gradient);
-    color: var(--text);
-  }
-
-  html[data-theme-preset='sost'] {
-    --primary: 217 91% 60%;
-    --ring: 217 91% 60%;
-    --border: 214 61% 91%;
-    --bg-gradient: radial-gradient(circle at top right, #dbeafe 0%, #f6f8ff 45%);
-  }
-
-  a {
-    color: inherit;
   }
   .dark {
     --background: oklch(0.145 0 0);
@@ -103,6 +96,9 @@
   }
   .theme {
     --font-sans: var(--font-sans);
+  }
+  * {
+    @apply border-border outline-ring/50;
   }
   body {
     @apply bg-background text-foreground;

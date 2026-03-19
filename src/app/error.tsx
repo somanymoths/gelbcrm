@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Alert, AlertDescription, AlertTitle, Button } from '@/components/ui';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 
 export default function Error({
   error,
@@ -16,12 +17,12 @@ export default function Error({
 
   return (
     <div className="grid min-h-[60vh] place-items-center p-4">
-      <div className="w-full max-w-[560px] space-y-4">
+      <div className="flex w-full max-w-xl flex-col gap-4">
         <Alert variant="destructive">
           <AlertTitle>Не удалось открыть страницу</AlertTitle>
           <AlertDescription>Возникла ошибка при загрузке. Нажмите кнопку ниже, чтобы повторить попытку.</AlertDescription>
         </Alert>
-        <Button onClick={reset}>
+        <Button className="w-fit" onClick={reset}>
           Повторить
         </Button>
       </div>
