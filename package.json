@@ -14,6 +14,7 @@
     "start": "next start",
     "deploy": "bash scripts/deploy.sh",
     "lint": "next lint",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit --incremental false",
     "db:migrate": "node scripts/migrate.cjs",
     "db:seed:admin": "node scripts/seed-admin.cjs"
@@ -37,6 +38,7 @@
     "@types/react-dom": "19.0.4",
     "eslint": "9.21.0",
     "eslint-config-next": "^15.5.12",
-    "typescript": "5.8.2"
+    "typescript": "5.8.2",
+    "vitest": "^4.1.0"
   }
 }

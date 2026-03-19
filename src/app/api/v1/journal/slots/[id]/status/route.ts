@@ -5,7 +5,7 @@ import { updateTeacherLessonSlotStatus, type JournalLessonStatus } from '@/lib/d
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const bodySchema = z.object({
-  teacherId: z.string().uuid().optional(),
+  teacherId: z.string().trim().optional(),
   status: z.enum(['planned', 'completed', 'rescheduled', 'canceled']),
   rescheduleToDate: z.string().trim().optional(),
   rescheduleToTime: z.string().trim().optional()

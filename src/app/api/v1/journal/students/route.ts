@@ -5,7 +5,7 @@ import { listTeacherStudentsForJournal } from '@/lib/db';
 import { resolveJournalScope } from '@/lib/journal';
 
 const querySchema = z.object({
-  teacherId: z.string().uuid().optional()
+  teacherId: z.string().trim().optional()
 });
 
 export async function GET(request: Request) {

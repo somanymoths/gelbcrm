@@ -5,7 +5,7 @@ import { getTeacherWeeklyTemplate, replaceTeacherWeeklyTemplate } from '@/lib/db
 import { normalizeHmTime, resolveJournalScope } from '@/lib/journal';
 
 const querySchema = z.object({
-  teacherId: z.string().uuid().optional()
+  teacherId: z.string().trim().optional()
 });
 
 const bodySchema = z.object({
