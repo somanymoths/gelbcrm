@@ -2,11 +2,20 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Layout, Space, Tag, Typography } from 'antd';
 import { AppNav } from '@/components/nav';
+import { Badge } from '@/components/ui';
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarHeader,
+  SidebarInset,
+  SidebarProvider,
+  SidebarRail,
+  SidebarSeparator,
+  SidebarTrigger
+} from '@/components/ui/sidebar';
 import type { SessionUser } from '@/lib/session';
-
-const { Sider, Content } = Layout;
 
 export function AppShell({ children, session }: { children: React.ReactNode; session: SessionUser | null }) {
   const pathname = usePathname() ?? '';
@@ -14,57 +23,53 @@ export function AppShell({ children, session }: { children: React.ReactNode; ses
 
   if (isPublicPaymentPage) {
     return (
-      <Layout style={{ minHeight: '100vh' }}>
-        <Content style={{ maxWidth: 960, width: '100%', margin: '0 auto', padding: 20 }}>{children}</Content>
-      </Layout>
+      <div className="min-h-screen">
+        <main className="mx-auto w-full max-w-[960px] p-5">{children}</main>
+      </div>
     );
   }
 
   if (!session) {
     return (
-      <Layout style={{ minHeight: '100vh' }}>
-        <Content style={{ maxWidth: 1280, width: '100%', margin: '0 auto', padding: 20 }}>
-          <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-            <Link href="/login">Войти</Link>
-            {children}
-          </Space>
-        </Content>
-      </Layout>
+      <div className="min-h-screen">
+        <main className="mx-auto flex w-full max-w-[1280px] flex-col gap-3 p-5">
+          <Link href="/login" className="text-sm underline">
+            Войти
+          </Link>
+          {children}
+        </main>
+      </div>
     );
   }
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider
-        width={260}
-        theme="light"
-        breakpoint="lg"
-        collapsedWidth={0}
-        style={{
-          borderRight: '1px solid #e5e7eb',
-          position: 'sticky',
-          top: 0,
-          height: '100vh',
-          overflowY: 'auto'
-        }}
-      >
-        <div style={{ padding: 16 }}>
-          <Space orientation="vertical" size={14} style={{ width: '100%' }}>
-            <Space orientation="vertical" size={6} style={{ width: '100%' }}>
-              <Typography.Title level={4} style={{ margin: 0 }}>
-                GelbCRM
-              </Typography.Title>
-              <Tag color="geekblue">{session.role === 'admin' ? 'Администратор' : 'Преподаватель'}: {session.login}</Tag>
-            </Space>
+    <SidebarProvider defaultOpen>
+      <Sidebar collapsible="icon" variant="sidebar">
+        <SidebarHeader className="gap-1.5 p-4">
+          <h1 className="text-2xl font-semibold group-data-[collapsible=icon]:hidden">GelbCRM</h1>
+          <Badge variant="secondary" className="w-fit group-data-[collapsible=icon]:hidden">
+            {session.role === 'admin' ? 'Администратор' : 'Преподаватель'}: {session.login}
+          </Badge>
+        </SidebarHeader>
 
-            <AppNav role={session.role} pathname={pathname} mode="inline" />
-          </Space>
-        </div>
-      </Sider>
+        <SidebarSeparator />
 
-      <Layout>
-        <Content style={{ maxWidth: 1280, width: '100%', margin: '0 auto', padding: 20 }}>{children}</Content>
-      </Layout>
-    </Layout>
+        <SidebarContent>
+          <SidebarGroup>
+            <AppNav role={session.role} pathname={pathname} />
+          </SidebarGroup>
+        </SidebarContent>
+
+        <SidebarRail />
+      </Sidebar>
+
+      <SidebarInset>
+        <header className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b bg-background/90 px-4 backdrop-blur-sm">
+          <SidebarTrigger />
+          <span className="text-sm text-muted-foreground">Навигация</span>
+        </header>
+        <main className="mx-auto w-full max-w-[1280px] p-5">{children}</main>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }
