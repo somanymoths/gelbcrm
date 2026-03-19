@@ -25,6 +25,11 @@ type DayDraft = {
   repeatWeekly: boolean;
 };
 
+type CreateSlotState = {
+  weekday: number;
+  date: string;
+};
+
 const DAYS: Array<{ weekday: number; short: string; full: string }> = [
   { weekday: 1, short: 'Пн', full: 'Понедельник' },
   { weekday: 2, short: 'Вт', full: 'Вторник' },
@@ -47,6 +52,8 @@ export function JournalSection() {
   const [slots, setSlots] = useState<LessonSlot[]>([]);
   const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()));
   const [dayDrafts, setDayDrafts] = useState<Record<number, DayDraft>>(() => createInitialDayDrafts());
+  const [createSlotState, setCreateSlotState] = useState<CreateSlotState | null>(null);
+  const [creatingSlot, setCreatingSlot] = useState(false);
   const [rescheduleState, setRescheduleState] = useState<{ slotId: string; date: string; time: string } | null>(null);
   const [deletingSlotId, setDeletingSlotId] = useState<string | null>(null);
 
@@ -155,11 +162,12 @@ export function JournalSection() {
     await refreshWeekSlots();
   };
 
-  const createSlotForDay = async (weekday: number, date: string) => {
-    if (!selectedTeacherId) return;
+  const createSlotForDay = async (weekday: number, date: string): Promise<boolean> => {
+    if (!selectedTeacherId) return false;
     const draft = dayDrafts[weekday];
-    if (!draft || !draft.time) return;
+    if (!draft || !draft.time) return false;
 
+    setCreatingSlot(true);
     try {
       if (draft.repeatWeekly) {
         await ensureTemplateSlot(weekday, draft.time);
@@ -182,8 +190,12 @@ export function JournalSection() {
         api.success('Слот создан');
         await refreshWeekSlots();
       }
+      return true;
     } catch (error) {
       api.error(error instanceof Error ? error.message : 'Не удалось создать слот');
+      return false;
+    } finally {
+      setCreatingSlot(false);
     }
   };
 
@@ -270,6 +282,14 @@ export function JournalSection() {
     return map;
   }, [slots]);
 
+  const submitCreateSlot = async () => {
+    if (!createSlotState) return;
+    const isCreated = await createSlotForDay(createSlotState.weekday, createSlotState.date);
+    if (isCreated) {
+      setCreateSlotState(null);
+    }
+  };
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       {contextHolder}
@@ -301,55 +321,9 @@ export function JournalSection() {
           <Col key={day.dateIso} xs={24} md={12} xl={8}>
             <Card title={`${day.short}, ${day.dateLabel}`} loading={loading}>
               <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                <Card size="small">
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    <Typography.Text strong>Новый слот</Typography.Text>
-                    <Space wrap>
-                      <Input
-                        type="time"
-                        value={dayDrafts[day.weekday]?.time ?? '10:00'}
-                        onChange={(event) =>
-                          setDayDrafts((prev) => ({
-                            ...prev,
-                            [day.weekday]: { ...(prev[day.weekday] ?? createDayDraft()), time: event.target.value }
-                          }))
-                        }
-                        style={{ width: 130 }}
-                      />
-                      <Select
-                        allowClear
-                        style={{ width: 290 }}
-                        value={dayDrafts[day.weekday]?.studentId ?? undefined}
-                        options={students.map((item) => ({
-                          value: item.id,
-                          label: `${item.full_name} (остаток: ${item.paid_lessons_left})`
-                        }))}
-                        placeholder="Ученик (опционально)"
-                        onChange={(value) =>
-                          setDayDrafts((prev) => ({
-                            ...prev,
-                            [day.weekday]: { ...(prev[day.weekday] ?? createDayDraft()), studentId: value ?? null }
-                          }))
-                        }
-                      />
-                    </Space>
-                    <Space wrap>
-                      <Switch
-                        checked={dayDrafts[day.weekday]?.repeatWeekly ?? false}
-                        onChange={(checked) =>
-                          setDayDrafts((prev) => ({
-                            ...prev,
-                            [day.weekday]: { ...(prev[day.weekday] ?? createDayDraft()), repeatWeekly: checked }
-                          }))
-                        }
-                      />
-                      <Typography.Text type="secondary">Повторять каждую неделю (шаблон)</Typography.Text>
-                      <Button type="primary" onClick={() => void createSlotForDay(day.weekday, day.dateIso)} disabled={!selectedTeacherId}>
-                        Добавить
-                      </Button>
-                    </Space>
-                  </Space>
-                </Card>
+                <Button type="primary" onClick={() => setCreateSlotState({ weekday: day.weekday, date: day.dateIso })} disabled={!selectedTeacherId}>
+                  Добавить слот
+                </Button>
                 {(slotMapByDate.get(day.dateIso) ?? []).length === 0 ? (
                   <Typography.Text type="secondary">Нет слотов</Typography.Text>
                 ) : (
@@ -426,6 +400,76 @@ export function JournalSection() {
           </Col>
         ))}
       </Row>
+
+      <Modal
+        open={Boolean(createSlotState)}
+        title={
+          createSlotState
+            ? `Новый слот: ${DAYS.find((item) => item.weekday === createSlotState.weekday)?.full ?? ''}, ${new Date(
+                `${createSlotState.date}T00:00:00`
+              ).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}`
+            : 'Новый слот'
+        }
+        onCancel={() => setCreateSlotState(null)}
+        onOk={() => void submitCreateSlot()}
+        okText="Добавить"
+        okButtonProps={{
+          loading: creatingSlot,
+          disabled: !selectedTeacherId || !createSlotState || !(dayDrafts[createSlotState.weekday]?.time ?? '')
+        }}
+      >
+        {createSlotState ? (
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            <Input
+              type="time"
+              value={dayDrafts[createSlotState.weekday]?.time ?? '10:00'}
+              onChange={(event) =>
+                setDayDrafts((prev) => ({
+                  ...prev,
+                  [createSlotState.weekday]: {
+                    ...(prev[createSlotState.weekday] ?? createDayDraft()),
+                    time: event.target.value
+                  }
+                }))
+              }
+              style={{ width: 130 }}
+            />
+            <Select
+              allowClear
+              value={dayDrafts[createSlotState.weekday]?.studentId ?? undefined}
+              options={students.map((item) => ({
+                value: item.id,
+                label: `${item.full_name} (остаток: ${item.paid_lessons_left})`
+              }))}
+              placeholder="Ученик (опционально)"
+              onChange={(value) =>
+                setDayDrafts((prev) => ({
+                  ...prev,
+                  [createSlotState.weekday]: {
+                    ...(prev[createSlotState.weekday] ?? createDayDraft()),
+                    studentId: value ?? null
+                  }
+                }))
+              }
+            />
+            <Space>
+              <Switch
+                checked={dayDrafts[createSlotState.weekday]?.repeatWeekly ?? false}
+                onChange={(checked) =>
+                  setDayDrafts((prev) => ({
+                    ...prev,
+                    [createSlotState.weekday]: {
+                      ...(prev[createSlotState.weekday] ?? createDayDraft()),
+                      repeatWeekly: checked
+                    }
+                  }))
+                }
+              />
+              <Typography.Text type="secondary">Повторять каждую неделю (шаблон)</Typography.Text>
+            </Space>
+          </Space>
+        ) : null}
+      </Modal>
 
       <Modal
         open={Boolean(rescheduleState)}
