@@ -252,6 +252,7 @@ export function JournalSection() {
       await refreshWeekSlots();
       api.success('Слот удалён');
     } catch (error) {
+      await refreshWeekSlots().catch(() => undefined);
       api.error(error instanceof Error ? error.message : 'Не удалось удалить слот');
     } finally {
       setDeletingSlotId((prev) => (prev === slot.id ? null : prev));
@@ -259,6 +260,7 @@ export function JournalSection() {
   };
 
   const deleteWeeklySlot = async (slot: LessonSlot) => {
+    if (!selectedTeacherId) return;
     if (!slot.source_weekly_slot_id) {
       await deleteSlot(slot);
       return;
@@ -272,11 +274,15 @@ export function JournalSection() {
 
     setDeletingSlotId(slot.id);
     try {
-      const nextTemplate = weeklyTemplate.filter((item) => item.id !== slot.source_weekly_slot_id);
-      await saveTemplate(nextTemplate);
+      await fetchJson(
+        `/api/v1/journal/slots/${slot.id}?teacherId=${encodeURIComponent(selectedTeacherId)}&deleteMode=series`,
+        { method: 'DELETE' }
+      );
+      setWeeklyTemplate((prev) => prev.filter((item) => item.id !== slot.source_weekly_slot_id));
       await refreshWeekSlots();
-      api.success('Еженедельный слот удалён');
+      api.success('Слоты удалены');
     } catch (error) {
+      await refreshWeekSlots().catch(() => undefined);
       api.error(error instanceof Error ? error.message : 'Не удалось удалить еженедельный слот');
     } finally {
       setDeletingSlotId((prev) => (prev === slot.id ? null : prev));
@@ -313,7 +319,7 @@ export function JournalSection() {
   };
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       {contextHolder}
       <div>
         <Typography.Title level={3} style={{ margin: 0 }}>
@@ -323,12 +329,13 @@ export function JournalSection() {
       </div>
 
       <Space wrap>
-        {roleUser?.role === 'admin' ? (
+        {teachers.length > 0 ? (
           <Select
             style={{ width: 320 }}
             placeholder="Преподаватель"
             value={selectedTeacherId ?? undefined}
             options={teachers.map((item) => ({ value: item.id, label: item.full_name }))}
+            disabled={roleUser?.role !== 'admin'}
             onChange={(value) => setSelectedTeacherId(value)}
           />
         ) : null}
@@ -342,7 +349,7 @@ export function JournalSection() {
         {weekDays.map((day) => (
           <Col key={day.dateIso} xs={24} md={12} xl={8}>
             <Card title={`${day.short}, ${day.dateLabel}`} loading={loading}>
-              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+              <Space orientation="vertical" size={10} style={{ width: '100%' }}>
                 <Button type="primary" onClick={() => setCreateSlotState({ weekday: day.weekday, date: day.dateIso })} disabled={!selectedTeacherId}>
                   Добавить слот
                 </Button>
@@ -351,7 +358,7 @@ export function JournalSection() {
                 ) : (
                   (slotMapByDate.get(day.dateIso) ?? []).map((slot) => (
                     <Card key={slot.id} size="small">
-                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Space orientation="vertical" size={8} style={{ width: '100%' }}>
                         <Space>
                           <Tag color="geekblue">{slot.start_time}</Tag>
                           <Tag color={statusColor(slot.status)}>{statusLabel(slot.status)}</Tag>
@@ -385,24 +392,18 @@ export function JournalSection() {
                           >
                             Перенести
                           </Button>
-                          {!slot.source_weekly_slot_id ? (
-                            <Popconfirm
-                              title="Удалить слот?"
-                              description="Действие нельзя отменить"
-                              okText="Удалить"
-                              cancelText="Отмена"
-                              okButtonProps={{ danger: true, loading: deletingSlotId === slot.id }}
-                              onConfirm={() => deleteSlot(slot)}
-                            >
-                              <Button size="small" danger loading={deletingSlotId === slot.id}>
-                                Удалить
-                              </Button>
-                            </Popconfirm>
-                          ) : (
-                            <Button size="small" danger loading={deletingSlotId === slot.id} onClick={() => void deleteWeeklySlot(slot)}>
+                          <Popconfirm
+                            title="Удалить слот?"
+                            description="Действие нельзя отменить"
+                            okText="Удалить"
+                            cancelText="Отмена"
+                            okButtonProps={{ danger: true, loading: deletingSlotId === slot.id }}
+                            onConfirm={() => (slot.source_weekly_slot_id ? deleteWeeklySlot(slot) : deleteSlot(slot))}
+                          >
+                            <Button size="small" danger loading={deletingSlotId === slot.id}>
                               Удалить
                             </Button>
-                          )}
+                          </Popconfirm>
                         </Space>
                       </Space>
                     </Card>
@@ -432,7 +433,7 @@ export function JournalSection() {
         }}
       >
         {createSlotState ? (
-          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={10} style={{ width: '100%' }}>
             <Select
               value={dayDrafts[createSlotState.weekday]?.time ?? '10:00'}
               options={HOURLY_TIME_OPTIONS}
@@ -487,7 +488,7 @@ export function JournalSection() {
         onOk={() => void submitReschedule()}
         okText="Сохранить перенос"
       >
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <Space orientation="vertical" style={{ width: '100%' }}>
           <Input
             type="date"
             value={rescheduleState?.date ?? ''}
