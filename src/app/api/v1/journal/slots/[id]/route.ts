@@ -5,7 +5,7 @@ import { deleteTeacherLessonSlot, deleteTeacherWeeklySeriesFromSlot, updateTeach
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const bodySchema = z.object({
-  teacherId: z.string().uuid().optional(),
+  teacherId: z.string().trim().optional(),
   studentId: z.string().uuid().nullable().optional(),
   date: z.string().trim().optional(),
   startTime: z.string().trim().optional()

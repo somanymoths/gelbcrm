@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Card, Checkbox, Col, Input, Modal, Popconfirm, Row, Select, Space, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Checkbox, Col, Input, Modal, Popconfirm, Row, Select, Space, Tag, Typography, message } from 'antd';
 
 type RoleUser = { id: string; role: 'admin' | 'teacher'; login: string };
 type TeacherItem = { id: string; full_name: string };
@@ -40,6 +40,7 @@ const DAYS: Array<{ weekday: number; short: string; full: string }> = [
   { weekday: 7, short: 'Вс', full: 'Воскресенье' }
 ];
 const FREE_SLOT_VALUE = '__free_slot__';
+const ADMIN_JOURNAL_TEACHER_STORAGE_KEY = 'gelbcrm:journal:selectedTeacherId';
 const HOURLY_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
   const value = `${String(hour).padStart(2, '0')}:00`;
   return { value, label: value };
@@ -49,6 +50,7 @@ export function JournalSection() {
   const [api, contextHolder] = message.useMessage();
   const [loading, setLoading] = useState(false);
   const [roleUser, setRoleUser] = useState<RoleUser | null>(null);
+  const [teacherProfileMissing, setTeacherProfileMissing] = useState(false);
   const [teachers, setTeachers] = useState<TeacherItem[]>([]);
   const [selectedTeacherId, setSelectedTeacherId] = useState<string | null>(null);
   const [students, setStudents] = useState<StudentItem[]>([]);
@@ -78,10 +80,22 @@ export function JournalSection() {
     try {
       const me = await fetchJson<RoleUser>('/api/v1/auth/me');
       setRoleUser(me);
+      setTeacherProfileMissing(false);
 
       const teacherItems = await fetchJson<TeacherItem[]>('/api/v1/journal/teachers');
       setTeachers(teacherItems);
-      const nextTeacherId = selectedTeacherId ?? teacherItems[0]?.id ?? null;
+      const teacherIds = new Set(teacherItems.map((item) => item.id));
+      let nextTeacherId = selectedTeacherId;
+      if (me.role === 'admin') {
+        const persistedTeacherId = typeof window !== 'undefined' ? localStorage.getItem(ADMIN_JOURNAL_TEACHER_STORAGE_KEY) : null;
+        if (!nextTeacherId && persistedTeacherId && teacherIds.has(persistedTeacherId)) {
+          nextTeacherId = persistedTeacherId;
+        }
+      }
+      if (!nextTeacherId || !teacherIds.has(nextTeacherId)) {
+        nextTeacherId = teacherItems[0]?.id ?? null;
+      }
+
       setSelectedTeacherId(nextTeacherId);
       if (!nextTeacherId) {
         setStudents([]);
@@ -103,6 +117,16 @@ export function JournalSection() {
       setWeeklyTemplate(templateData);
       setSlots(slotsData);
     } catch (error) {
+      const messageText = error instanceof Error ? error.message : '';
+      if (messageText === 'Профиль преподавателя не найден') {
+        setTeacherProfileMissing(true);
+        setTeachers([]);
+        setSelectedTeacherId(null);
+        setStudents([]);
+        setWeeklyTemplate([]);
+        setSlots([]);
+        return;
+      }
       api.error(error instanceof Error ? error.message : 'Не удалось загрузить журнал');
     } finally {
       setLoading(false);
@@ -112,6 +136,11 @@ export function JournalSection() {
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    if (roleUser?.role !== 'admin' || !selectedTeacherId) return;
+    localStorage.setItem(ADMIN_JOURNAL_TEACHER_STORAGE_KEY, selectedTeacherId);
+  }, [roleUser?.role, selectedTeacherId]);
 
   const refreshWeekSlots = useCallback(async (): Promise<LessonSlot[]> => {
     if (!selectedTeacherId) return [];
@@ -317,6 +346,23 @@ export function JournalSection() {
     setCreateSlotState(null);
     await createSlotForDay(nextState.weekday, nextState.date);
   };
+
+  if (teacherProfileMissing) {
+    return (
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        {contextHolder}
+        <Typography.Title level={3} style={{ margin: 0 }}>
+          Журнал занятий
+        </Typography.Title>
+        <Alert
+          type="error"
+          showIcon
+          message="Профиль преподавателя не назначен"
+          description="Обратитесь к администратору для привязки аккаунта к карточке преподавателя."
+        />
+      </Space>
+    );
+  }
 
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>

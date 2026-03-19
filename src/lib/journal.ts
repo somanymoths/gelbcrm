@@ -19,10 +19,6 @@ export async function resolveJournalScope(session: SessionUser, requestedTeacher
     throw new Error('TEACHER_PROFILE_NOT_FOUND');
   }
 
-  if (requestedTeacherId && requestedTeacherId !== teacher.id) {
-    throw new Error('FORBIDDEN');
-  }
-
   return { teacherId: teacher.id, mode: 'teacher' };
 }
 

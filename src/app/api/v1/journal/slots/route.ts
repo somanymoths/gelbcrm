@@ -5,13 +5,13 @@ import { createTeacherLessonSlot, listTeacherLessonSlots } from '@/lib/db';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const listSchema = z.object({
-  teacherId: z.string().uuid().optional(),
+  teacherId: z.string().trim().optional(),
   dateFrom: z.string().trim(),
   dateTo: z.string().trim()
 });
 
 const createSchema = z.object({
-  teacherId: z.string().uuid().optional(),
+  teacherId: z.string().trim().optional(),
   studentId: z.string().uuid().nullable().optional(),
   date: z.string().trim(),
   startTime: z.string().trim()
