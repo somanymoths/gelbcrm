@@ -2,11 +2,10 @@
 
 import { useMemo } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { BookOpen, CreditCard, GraduationCap, KanbanSquare } from 'lucide-react';
 import { NAV_ITEMS } from '@/lib/types';
 import type { AppRole } from '@/lib/types';
-import { cn } from '@/lib/utils';
+import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar';
 
 const ITEM_ICONS: Record<string, React.ReactNode> = {
   '/funnel': <KanbanSquare className="h-4 w-4" />,
@@ -22,7 +21,6 @@ export function AppNav({
   role: AppRole;
   pathname: string;
 }) {
-  const router = useRouter();
   const allowed = NAV_ITEMS.filter((item) => item.roles.includes(role));
 
   const selectedKey = useMemo(() => {
@@ -31,28 +29,20 @@ export function AppNav({
   }, [allowed, pathname]);
 
   return (
-    <nav className="flex flex-col gap-1">
+    <SidebarMenu>
       {allowed.map((item) => {
         const active = selectedKey === item.href;
         return (
-          <Link
-            key={item.href}
-            href={item.href}
-            onClick={(event) => {
-              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-              event.preventDefault();
-              router.push(item.href);
-            }}
-            className={cn(
-              'inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
-              active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-            )}
-          >
-            {ITEM_ICONS[item.href]}
-            <span>{item.label}</span>
-          </Link>
+          <SidebarMenuItem key={item.href}>
+            <SidebarMenuButton asChild isActive={active} tooltip={item.label}>
+              <Link href={item.href}>
+                {ITEM_ICONS[item.href]}
+                <span>{item.label}</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
         );
       })}
-    </nav>
+    </SidebarMenu>
   );
 }

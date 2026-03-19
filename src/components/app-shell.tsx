@@ -4,6 +4,17 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { AppNav } from '@/components/nav';
 import { Badge } from '@/components/ui';
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarHeader,
+  SidebarInset,
+  SidebarProvider,
+  SidebarRail,
+  SidebarSeparator,
+  SidebarTrigger
+} from '@/components/ui/sidebar';
 import type { SessionUser } from '@/lib/session';
 
 export function AppShell({ children, session }: { children: React.ReactNode; session: SessionUser | null }) {
@@ -32,21 +43,33 @@ export function AppShell({ children, session }: { children: React.ReactNode; ses
   }
 
   return (
-    <div className="min-h-screen lg:grid lg:grid-cols-[260px_1fr]">
-      <aside className="sticky top-0 h-screen overflow-y-auto border-r bg-card p-4">
-        <div className="flex w-full flex-col gap-4">
-          <div className="flex w-full flex-col gap-1.5">
-            <h1 className="text-2xl font-semibold">GelbCRM</h1>
-            <Badge variant="secondary" className="w-fit">
-              {session.role === 'admin' ? 'Администратор' : 'Преподаватель'}: {session.login}
-            </Badge>
-          </div>
+    <SidebarProvider defaultOpen>
+      <Sidebar collapsible="icon" variant="sidebar">
+        <SidebarHeader className="gap-1.5 p-4">
+          <h1 className="text-2xl font-semibold group-data-[collapsible=icon]:hidden">GelbCRM</h1>
+          <Badge variant="secondary" className="w-fit group-data-[collapsible=icon]:hidden">
+            {session.role === 'admin' ? 'Администратор' : 'Преподаватель'}: {session.login}
+          </Badge>
+        </SidebarHeader>
 
-          <AppNav role={session.role} pathname={pathname} />
-        </div>
-      </aside>
+        <SidebarSeparator />
 
-      <main className="mx-auto w-full max-w-[1280px] p-5">{children}</main>
-    </div>
+        <SidebarContent>
+          <SidebarGroup>
+            <AppNav role={session.role} pathname={pathname} />
+          </SidebarGroup>
+        </SidebarContent>
+
+        <SidebarRail />
+      </Sidebar>
+
+      <SidebarInset>
+        <header className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b bg-background/90 px-4 backdrop-blur-sm">
+          <SidebarTrigger />
+          <span className="text-sm text-muted-foreground">Навигация</span>
+        </header>
+        <main className="mx-auto w-full max-w-[1280px] p-5">{children}</main>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }
