@@ -882,13 +882,14 @@ export function FunnelBoard() {
           <Spin size="large" />
         </div>
       ) : (
-        <Row ref={boardScrollContainerRef} gutter={[12, 12]} wrap={false} style={{ overflowX: 'auto', paddingBottom: 4 }}>
-          {stages.map((stage) => {
+        <div ref={boardScrollContainerRef} style={{ overflowX: 'auto', width: '100%', paddingBottom: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, minWidth: 'max-content' }}>
+            {stages.map((stage) => {
             const stageCards = groupedCards.get(stage.code) ?? [];
             const isActiveDropZone = draggedCardId !== null && dragOverStageCode === stage.code;
 
             return (
-              <Col key={stage.id} style={{ minWidth: 320 }}>
+              <div key={stage.id} style={{ minWidth: 320, width: 320, flex: '0 0 320px' }}>
                 <Card
                   title={stage.name}
                   extra={<Typography.Text type="secondary">{stageCards.length}</Typography.Text>}
@@ -979,10 +980,11 @@ export function FunnelBoard() {
                     ) : null}
                   </Space>
                 </Card>
-              </Col>
+              </div>
             );
-          })}
-        </Row>
+            })}
+          </div>
+        </div>
       )}
 
       <Drawer
