@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Card, Col, Input, Modal, Popconfirm, Row, Select, Space, Switch, Tag, Typography, message } from 'antd';
+import { Button, Card, Checkbox, Col, Input, Modal, Popconfirm, Row, Select, Space, Tag, Typography, message } from 'antd';
 
 type RoleUser = { id: string; role: 'admin' | 'teacher'; login: string };
 type TeacherItem = { id: string; full_name: string };
@@ -39,11 +39,15 @@ const DAYS: Array<{ weekday: number; short: string; full: string }> = [
   { weekday: 6, short: 'Сб', full: 'Суббота' },
   { weekday: 7, short: 'Вс', full: 'Воскресенье' }
 ];
+const FREE_SLOT_VALUE = '__free_slot__';
+const HOURLY_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
+  const value = `${String(hour).padStart(2, '0')}:00`;
+  return { value, label: value };
+});
 
 export function JournalSection() {
   const [api, contextHolder] = message.useMessage();
   const [loading, setLoading] = useState(false);
-  const [savingTemplate, setSavingTemplate] = useState(false);
   const [roleUser, setRoleUser] = useState<RoleUser | null>(null);
   const [teachers, setTeachers] = useState<TeacherItem[]>([]);
   const [selectedTeacherId, setSelectedTeacherId] = useState<string | null>(null);
@@ -122,7 +126,6 @@ export function JournalSection() {
 
   const saveTemplate = async (nextTemplate: WeeklySlot[]) => {
     if (!selectedTeacherId) return;
-    setSavingTemplate(true);
     try {
       await fetchJson(`/api/v1/journal/weekly-template?teacherId=${encodeURIComponent(selectedTeacherId)}`, {
         method: 'PUT',
@@ -138,8 +141,6 @@ export function JournalSection() {
     } catch (error) {
       api.error(error instanceof Error ? error.message : 'Не удалось сохранить шаблон');
       throw error;
-    } finally {
-      setSavingTemplate(false);
     }
   };
 
@@ -150,14 +151,6 @@ export function JournalSection() {
       ...weeklyTemplate,
       { id: `temp-${weekday}-${startTime}`, weekday, start_time: startTime, is_active: 1 }
     ];
-    await saveTemplate(nextTemplate);
-    await refreshWeekSlots();
-  };
-
-  const removeTemplateSlot = async (weekday: number, startTime: string) => {
-    const exists = weeklyTemplate.some((slot) => slot.weekday === weekday && slot.start_time === startTime);
-    if (!exists) return;
-    const nextTemplate = weeklyTemplate.filter((slot) => !(slot.weekday === weekday && slot.start_time === startTime));
     await saveTemplate(nextTemplate);
     await refreshWeekSlots();
   };
@@ -265,11 +258,6 @@ export function JournalSection() {
     }
   };
 
-  const templateKeySet = useMemo(
-    () => new Set(weeklyTemplate.map((slot) => `${slot.weekday}-${slot.start_time}`)),
-    [weeklyTemplate]
-  );
-
   const slotMapByDate = useMemo(() => {
     const map = new Map<string, LessonSlot[]>();
     for (const slot of slots) {
@@ -281,13 +269,22 @@ export function JournalSection() {
     }
     return map;
   }, [slots]);
+  const studentOptions = useMemo(
+    () => [
+      { value: FREE_SLOT_VALUE, label: 'Свободный слот' },
+      ...students.map((item) => ({
+        value: item.id,
+        label: `${item.full_name} (остаток: ${item.paid_lessons_left})`
+      }))
+    ],
+    [students]
+  );
 
   const submitCreateSlot = async () => {
     if (!createSlotState) return;
-    const isCreated = await createSlotForDay(createSlotState.weekday, createSlotState.date);
-    if (isCreated) {
-      setCreateSlotState(null);
-    }
+    const nextState = createSlotState;
+    setCreateSlotState(null);
+    await createSlotForDay(nextState.weekday, nextState.date);
   };
 
   return (
@@ -333,17 +330,13 @@ export function JournalSection() {
                         <Space>
                           <Tag color="geekblue">{slot.start_time}</Tag>
                           <Tag color={statusColor(slot.status)}>{statusLabel(slot.status)}</Tag>
-                          {templateKeySet.has(`${day.weekday}-${slot.start_time}`) ? <Tag color="purple">Шаблон</Tag> : null}
+                          {!slot.source_weekly_slot_id ? <Tag color="gold">Разовое занятие</Tag> : null}
                         </Space>
                         <Select
-                          allowClear
-                          value={slot.student_id ?? undefined}
+                          value={slot.student_id ?? FREE_SLOT_VALUE}
                           placeholder="Выберите ученика"
-                          options={students.map((item) => ({
-                            value: item.id,
-                            label: `${item.full_name} (остаток: ${item.paid_lessons_left})`
-                          }))}
-                          onChange={(value) => void assignStudent(slot, value ?? null)}
+                          options={studentOptions}
+                          onChange={(value) => void assignStudent(slot, value === FREE_SLOT_VALUE ? null : value)}
                         />
                         <Space wrap>
                           <Button size="small" onClick={() => void setStatus(slot, 'planned')}>
@@ -367,15 +360,6 @@ export function JournalSection() {
                           >
                             Перенести
                           </Button>
-                          {templateKeySet.has(`${day.weekday}-${slot.start_time}`) ? (
-                            <Button size="small" loading={savingTemplate} onClick={() => void removeTemplateSlot(day.weekday, slot.start_time)}>
-                              Убрать из шаблона
-                            </Button>
-                          ) : (
-                            <Button size="small" loading={savingTemplate} onClick={() => void ensureTemplateSlot(day.weekday, slot.start_time)}>
-                              Сделать шаблоном
-                            </Button>
-                          )}
                           {!slot.source_weekly_slot_id ? (
                             <Popconfirm
                               title="Удалить слот?"
@@ -420,52 +404,48 @@ export function JournalSection() {
       >
         {createSlotState ? (
           <Space direction="vertical" size={10} style={{ width: '100%' }}>
-            <Input
-              type="time"
+            <Select
               value={dayDrafts[createSlotState.weekday]?.time ?? '10:00'}
-              onChange={(event) =>
+              options={HOURLY_TIME_OPTIONS}
+              onChange={(value) =>
                 setDayDrafts((prev) => ({
                   ...prev,
                   [createSlotState.weekday]: {
                     ...(prev[createSlotState.weekday] ?? createDayDraft()),
-                    time: event.target.value
+                    time: value
                   }
                 }))
               }
-              style={{ width: 130 }}
+              style={{ width: 120 }}
             />
             <Select
-              allowClear
-              value={dayDrafts[createSlotState.weekday]?.studentId ?? undefined}
-              options={students.map((item) => ({
-                value: item.id,
-                label: `${item.full_name} (остаток: ${item.paid_lessons_left})`
-              }))}
+              value={dayDrafts[createSlotState.weekday]?.studentId ?? FREE_SLOT_VALUE}
+              options={studentOptions}
               placeholder="Ученик (опционально)"
               onChange={(value) =>
                 setDayDrafts((prev) => ({
                   ...prev,
                   [createSlotState.weekday]: {
                     ...(prev[createSlotState.weekday] ?? createDayDraft()),
-                    studentId: value ?? null
+                    studentId: value === FREE_SLOT_VALUE ? null : value
                   }
                 }))
               }
             />
             <Space>
-              <Switch
-                checked={dayDrafts[createSlotState.weekday]?.repeatWeekly ?? false}
-                onChange={(checked) =>
+              <Checkbox
+                checked={!(dayDrafts[createSlotState.weekday]?.repeatWeekly ?? true)}
+                onChange={(event) =>
                   setDayDrafts((prev) => ({
                     ...prev,
                     [createSlotState.weekday]: {
                       ...(prev[createSlotState.weekday] ?? createDayDraft()),
-                      repeatWeekly: checked
+                      repeatWeekly: !event.target.checked
                     }
                   }))
                 }
               />
-              <Typography.Text type="secondary">Повторять каждую неделю (шаблон)</Typography.Text>
+              <Typography.Text type="secondary">Разовый слот</Typography.Text>
             </Space>
           </Space>
         ) : null}
@@ -486,12 +466,13 @@ export function JournalSection() {
               setRescheduleState((prev) => (prev ? { ...prev, date: event.target.value } : prev))
             }
           />
-          <Input
-            type="time"
+          <Select
             value={rescheduleState?.time ?? ''}
-            onChange={(event) =>
-              setRescheduleState((prev) => (prev ? { ...prev, time: event.target.value } : prev))
+            options={HOURLY_TIME_OPTIONS}
+            onChange={(value) =>
+              setRescheduleState((prev) => (prev ? { ...prev, time: value } : prev))
             }
+            style={{ width: 120 }}
           />
         </Space>
       </Modal>
@@ -511,7 +492,7 @@ function createDayDraft(): DayDraft {
   return {
     time: '10:00',
     studentId: null,
-    repeatWeekly: false
+    repeatWeekly: true
   };
 }
 
