@@ -2,7 +2,11 @@
 
 import { useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { Button, Card, Empty, Input, Radio, Space, Tag, Typography, message } from 'antd';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { formatRub } from '@/lib/payments/format';
 import { getPackageTotal, getTariffBySlug } from '@/lib/payments/store';
 
@@ -19,7 +23,7 @@ export default function PaymentLinkPage() {
   const [payerEmail, setPayerEmail] = useState('');
   const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [api, contextHolder] = message.useMessage();
+  const [errorText, setErrorText] = useState<string | null>(null);
 
   const tariff = useMemo(() => getTariffBySlug(params.slug), [params.slug]);
 
@@ -27,6 +31,7 @@ export default function PaymentLinkPage() {
     () => tariff?.packages.find((item) => item.id === selectedPackageId) ?? null,
     [selectedPackageId, tariff]
   );
+
   const mostExpensiveLessonPrice = useMemo(
     () => (tariff ? Math.max(...tariff.packages.map((item) => item.pricePerLesson)) : 0),
     [tariff]
@@ -35,34 +40,40 @@ export default function PaymentLinkPage() {
   if (!tariff) {
     return (
       <Card>
-        <Empty description="Ссылка оплаты не найдена или устарела" />
+        <CardHeader>
+          <CardTitle>Ссылка не найдена</CardTitle>
+          <CardDescription>Ссылка оплаты не найдена или устарела.</CardDescription>
+        </CardHeader>
       </Card>
     );
   }
 
   const handlePay = async () => {
-    if (!payerName.trim()) {
-      api.error('Введите имя ученика.');
+    const name = payerName.trim();
+    const email = payerEmail.trim();
+
+    if (!name) {
+      setErrorText('Введите имя ученика.');
       return;
     }
 
-    if (!payerEmail.trim()) {
-      api.error('Введите e-mail ученика.');
+    if (!email) {
+      setErrorText('Введите e-mail ученика.');
       return;
     }
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payerEmail.trim())) {
-      api.error('Введите корректный e-mail.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setErrorText('Введите корректный e-mail.');
       return;
     }
 
     if (!selectedPackage) {
-      api.error('Выберите пакет.');
+      setErrorText('Выберите пакет.');
       return;
     }
 
+    setErrorText(null);
     const amount = getPackageTotal(selectedPackage);
-
     setIsSubmitting(true);
 
     try {
@@ -77,8 +88,8 @@ export default function PaymentLinkPage() {
           amount,
           tariffName: tariff.name,
           lessonsCount: selectedPackage.lessonsCount,
-          payerName,
-          payerEmail,
+          payerName: name,
+          payerEmail: email,
           returnUrl,
           metadata: {
             tariff_id: tariff.id,
@@ -93,84 +104,97 @@ export default function PaymentLinkPage() {
         | null;
 
       if (!response.ok || !result?.confirmationUrl) {
-        api.error(result?.message ?? 'Не удалось инициализировать платеж');
+        setErrorText(result?.message ?? 'Не удалось инициализировать платеж');
         return;
       }
 
       window.location.href = result.confirmationUrl;
     } catch {
-      api.error('Ошибка сети при создании платежа');
+      setErrorText('Ошибка сети при создании платежа');
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <Space orientation="vertical" size={16} style={{ width: '100%', maxWidth: 720, margin: '0 auto' }}>
-      {contextHolder}
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+      {errorText ? (
+        <Alert variant="destructive">
+          <AlertTitle>Ошибка</AlertTitle>
+          <AlertDescription>{errorText}</AlertDescription>
+        </Alert>
+      ) : null}
 
       <Card>
-        <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-          <Typography.Title level={2} style={{ margin: 0 }}>
-            Оплата тарифа: {tariff.name}
-          </Typography.Title>
-          <Typography.Text type="secondary">Выберите пакет и завершите оплату.</Typography.Text>
-        </Space>
+        <CardHeader>
+          <CardTitle>Оплата тарифа: {tariff.name}</CardTitle>
+          <CardDescription>Выберите пакет и завершите оплату.</CardDescription>
+        </CardHeader>
       </Card>
 
-      <Card title="Данные ученика">
-        <Space orientation="vertical" size={10} style={{ width: '100%' }}>
-          <Input placeholder="Имя ученика" value={payerName} onChange={(event) => setPayerName(event.target.value)} />
+      <Card>
+        <CardHeader>
+          <CardTitle>Данные ученика</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <Input
+            placeholder="Имя ученика"
+            value={payerName}
+            onChange={(event) => setPayerName(event.target.value)}
+          />
           <Input
             placeholder="E-mail ученика"
             type="email"
             value={payerEmail}
             onChange={(event) => setPayerEmail(event.target.value)}
           />
-        </Space>
-      </Card>
-
-      <Card title="Пакеты">
-        <Radio.Group
-          value={selectedPackageId}
-          onChange={(event) => setSelectedPackageId(event.target.value)}
-          style={{ width: '100%' }}
-        >
-          <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-            {tariff.packages.map((pkg) => {
-              const total = getPackageTotal(pkg);
-              const savings = Math.max(0, (mostExpensiveLessonPrice - pkg.pricePerLesson) * pkg.lessonsCount);
-
-              return (
-                <Card key={pkg.id} size="small">
-                  <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                    <Radio value={pkg.id}>{`${pkg.lessonsCount} занятий`}</Radio>
-                    <Typography.Text>{`${formatRub(pkg.pricePerLesson)} за занятие`}</Typography.Text>
-                    <Space size={8}>
-                      {savings > 0 ? <Tag color="success">{`Экономия ${formatRub(savings)}`}</Tag> : null}
-                      <Typography.Text strong>{formatRub(total)}</Typography.Text>
-                    </Space>
-                  </Space>
-                </Card>
-              );
-            })}
-          </Space>
-        </Radio.Group>
+        </CardContent>
       </Card>
 
       <Card>
-        <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-          <Typography.Text>
-            К оплате:{' '}
-            <Typography.Text strong>
-              {selectedPackage ? formatRub(getPackageTotal(selectedPackage)) : 'Выберите пакет'}
-            </Typography.Text>
-          </Typography.Text>
-          <Button type="primary" size="large" onClick={handlePay} loading={isSubmitting}>
-            Перейти к оплате
-          </Button>
-        </Space>
+        <CardHeader>
+          <CardTitle>Пакеты</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          {tariff.packages.map((pkg) => {
+            const total = getPackageTotal(pkg);
+            const savings = Math.max(0, (mostExpensiveLessonPrice - pkg.pricePerLesson) * pkg.lessonsCount);
+            const selected = selectedPackageId === pkg.id;
+
+            return (
+              <button
+                key={pkg.id}
+                type="button"
+                className={`flex w-full flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors ${
+                  selected ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+                }`}
+                onClick={() => setSelectedPackageId(pkg.id)}
+              >
+                <span className="font-medium">{pkg.lessonsCount} занятий</span>
+                <span className="text-sm text-muted-foreground">{formatRub(pkg.pricePerLesson)} за занятие</span>
+                <span className="flex items-center gap-2">
+                  {savings > 0 ? <Badge>{`Экономия ${formatRub(savings)}`}</Badge> : null}
+                  <span className="font-semibold">{formatRub(total)}</span>
+                </span>
+              </button>
+            );
+          })}
+        </CardContent>
       </Card>
-    </Space>
+
+      <Card>
+        <CardContent className="flex flex-col gap-3">
+          <p>
+            К оплате:{' '}
+            <span className="font-semibold">
+              {selectedPackage ? formatRub(getPackageTotal(selectedPackage)) : 'Выберите пакет'}
+            </span>
+          </p>
+          <Button onClick={handlePay} disabled={isSubmitting}>
+            {isSubmitting ? 'Переходим к оплате...' : 'Перейти к оплате'}
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
   );
 }

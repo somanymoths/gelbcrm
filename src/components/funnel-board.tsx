@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CloseOutlined, CopyOutlined, DeleteOutlined, ExportOutlined, PlusOutlined, RedoOutlined } from '@ant-design/icons';
 import {
   Alert,
   Avatar,
@@ -21,7 +20,14 @@ import {
   Tag,
   Typography,
   message
-} from 'antd';
+} from '@/components/ui/legacy-kit';
+
+const CloseOutlined = () => <span>✕</span>;
+const CopyOutlined = () => <span>⧉</span>;
+const DeleteOutlined = () => <span>🗑</span>;
+const ExportOutlined = () => <span>↗</span>;
+const PlusOutlined = () => <span>＋</span>;
+const RedoOutlined = () => <span>↻</span>;
 
 type FunnelStage = {
   id: number;
@@ -1386,7 +1392,7 @@ export function FunnelBoard() {
           style={{ width: '100%' }}
           placeholder="Причина потери"
           value={lossReasonIdForMove}
-          onChange={(value) => setLossReasonIdForMove(value)}
+          onChange={(value) => setLossReasonIdForMove(value ? Number(value) : null)}
           options={lossReasons.map((reason) => ({ value: reason.id, label: reason.name }))}
         />
       </Modal>

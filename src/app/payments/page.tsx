@@ -2,9 +2,14 @@
 
 import { useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { Tabs } from 'antd';
 import { PaymentsHistoryTab } from '@/components/payments/history-tab';
 import { TariffsTab } from '@/components/payments/tariffs-tab';
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger
+} from '@/components/ui/tabs';
 
 const TABS = {
   tariffs: 'tariffs',
@@ -26,23 +31,20 @@ export default function PaymentsPage() {
 
   return (
     <>
-      <h1 style={{ marginTop: 0 }}>Оплаты</h1>
-      <p style={{ color: 'rgba(0, 0, 0, 0.45)' }}>Управление тарифами и история платежей.</p>
-      <Tabs
-        defaultActiveKey={defaultTab}
-        items={[
-          {
-            key: TABS.tariffs,
-            label: 'Тарифы',
-            children: <TariffsTab />
-          },
-          {
-            key: TABS.history,
-            label: 'История оплат',
-            children: <PaymentsHistoryTab />
-          }
-        ]}
-      />
+      <h1 className="mt-0">Оплаты</h1>
+      <p className="text-sm text-muted-foreground">Управление тарифами и история платежей.</p>
+      <Tabs defaultValue={defaultTab}>
+        <TabsList>
+          <TabsTrigger value={TABS.tariffs}>Тарифы</TabsTrigger>
+          <TabsTrigger value={TABS.history}>История оплат</TabsTrigger>
+        </TabsList>
+        <TabsContent value={TABS.tariffs}>
+          <TariffsTab />
+        </TabsContent>
+        <TabsContent value={TABS.history}>
+          <PaymentsHistoryTab />
+        </TabsContent>
+      </Tabs>
     </>
   );
 }

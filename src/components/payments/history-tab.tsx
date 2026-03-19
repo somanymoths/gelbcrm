@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Card, Table, Tag } from 'antd';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardContent } from '@/components/ui/card';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { formatDateTime, formatRub } from '@/lib/payments/format';
 
 type PaymentHistoryItem = {
@@ -18,20 +20,20 @@ type PaymentHistoryItem = {
   paid_at: string | null;
 };
 
-function getStatusTag(status: string) {
+function getStatusBadge(status: string) {
   if (status === 'succeeded') {
-    return <Tag color="success">Оплачено</Tag>;
+    return <Badge>Оплачено</Badge>;
   }
 
   if (status === 'pending') {
-    return <Tag color="processing">Ожидает оплату</Tag>;
+    return <Badge variant="secondary">Ожидает оплату</Badge>;
   }
 
   if (status === 'canceled') {
-    return <Tag color="error">Отменено</Tag>;
+    return <Badge variant="destructive">Отменено</Badge>;
   }
 
-  return <Tag>{status}</Tag>;
+  return <Badge variant="outline">{status}</Badge>;
 }
 
 export function PaymentsHistoryTab() {
@@ -62,62 +64,50 @@ export function PaymentsHistoryTab() {
 
   return (
     <Card>
-      <Table<PaymentHistoryItem>
-        rowKey="id"
-        loading={loading}
-        pagination={false}
-        dataSource={rows}
-        locale={{ emptyText: 'Платежей пока нет' }}
-        columns={[
-          {
-            title: 'Дата создания',
-            dataIndex: 'created_at',
-            key: 'created_at',
-            render: (value: string) => formatDateTime(value)
-          },
-          {
-            title: 'Ученик',
-            dataIndex: 'payer_name',
-            key: 'payer_name',
-            render: (value: string | null) => value ?? '—'
-          },
-          {
-            title: 'E-mail',
-            dataIndex: 'payer_email',
-            key: 'payer_email',
-            render: (value: string | null) => value ?? '—'
-          },
-          {
-            title: 'Тариф',
-            dataIndex: 'tariff_name',
-            key: 'tariff_name',
-            render: (value: string | null) => value ?? '—'
-          },
-          {
-            title: 'Пакет',
-            dataIndex: 'lessons_count',
-            key: 'lessons_count',
-            render: (value: number | null) => (value ? `${value} занятий` : '—')
-          },
-          {
-            title: 'Сумма',
-            dataIndex: 'amount',
-            key: 'amount',
-            render: (value: number) => formatRub(Number(value))
-          },
-          {
-            title: 'Статус',
-            dataIndex: 'status',
-            key: 'status',
-            render: (value: string) => getStatusTag(value)
-          },
-          {
-            title: 'ID платежа',
-            dataIndex: 'provider_payment_id',
-            key: 'provider_payment_id'
-          }
-        ]}
-      />
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Дата создания</TableHead>
+              <TableHead>Ученик</TableHead>
+              <TableHead>E-mail</TableHead>
+              <TableHead>Тариф</TableHead>
+              <TableHead>Пакет</TableHead>
+              <TableHead>Сумма</TableHead>
+              <TableHead>Статус</TableHead>
+              <TableHead>ID платежа</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading ? (
+              <TableRow>
+                <TableCell colSpan={8} className="text-center text-muted-foreground">
+                  Загрузка...
+                </TableCell>
+              </TableRow>
+            ) : rows.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={8} className="text-center text-muted-foreground">
+                  Платежей пока нет
+                </TableCell>
+              </TableRow>
+            ) : (
+              rows.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>{formatDateTime(row.created_at)}</TableCell>
+                  <TableCell>{row.payer_name ?? '—'}</TableCell>
+                  <TableCell>{row.payer_email ?? '—'}</TableCell>
+                  <TableCell>{row.tariff_name ?? '—'}</TableCell>
+                  <TableCell>{row.lessons_count ? `${row.lessons_count} занятий` : '—'}</TableCell>
+                  <TableCell>{formatRub(Number(row.amount))}</TableCell>
+                  <TableCell>{getStatusBadge(row.status)}</TableCell>
+                  <TableCell>{row.provider_payment_id}</TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </CardContent>
     </Card>
   );
 }

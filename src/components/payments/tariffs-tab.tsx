@@ -1,21 +1,23 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
-  Button,
   Card,
-  Dropdown,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
-  Space,
-  Table,
-  Tag,
-  Typography,
-  message
-} from 'antd';
-import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
+} from '@/components/ui/card';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu';
+import { Input } from '@/components/ui/input';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { formatDateTime, formatRub } from '@/lib/payments/format';
 
 type TariffPackage = {
@@ -42,6 +44,11 @@ type NewPackage = {
   pricePerLesson: number;
 };
 
+type Notice = {
+  type: 'success' | 'error';
+  text: string;
+};
+
 function createEmptyPackage(): NewPackage {
   return {
     key: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -55,23 +62,16 @@ function getPackageTotal(pkg: { lessonsCount: number; pricePerLesson: number }) 
 }
 
 export function TariffsTab() {
-  const [form] = Form.useForm<{ name: string }>();
-  const [renameForm] = Form.useForm<{ name: string }>();
-  const [addPackageForm] = Form.useForm<{ lessonsCount: number; pricePerLessonRub: number }>();
-  const [api, contextHolder] = message.useMessage();
-
+  const [tariffName, setTariffName] = useState('');
   const [tariffs, setTariffs] = useState<TariffGrid[]>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
-
   const [packages, setPackages] = useState<NewPackage[]>([createEmptyPackage()]);
-
-  const [renameTarget, setRenameTarget] = useState<TariffGrid | null>(null);
-  const [addPackageTarget, setAddPackageTarget] = useState<TariffGrid | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
 
   const canCreate = useMemo(
-    () => packages.length > 0 && packages.every((item) => item.lessonsCount > 0 && item.pricePerLesson > 0),
-    [packages]
+    () => tariffName.trim().length > 0 && packages.length > 0 && packages.every((item) => item.lessonsCount > 0 && item.pricePerLesson > 0),
+    [packages, tariffName]
   );
 
   const loadTariffs = useCallback(async () => {
@@ -82,7 +82,7 @@ export function TariffsTab() {
       const data = (await response.json().catch(() => null)) as TariffGrid[] | null;
 
       if (!response.ok || !data) {
-        api.error('Не удалось загрузить тарифы');
+        setNotice({ type: 'error', text: 'Не удалось загрузить тарифы' });
         setTariffs([]);
         return;
       }
@@ -91,329 +91,276 @@ export function TariffsTab() {
     } finally {
       setLoading(false);
     }
-  }, [api]);
+  }, []);
 
   useEffect(() => {
     void loadTariffs();
   }, [loadTariffs]);
 
-  const handlePackageChange = (key: string, field: 'lessonsCount' | 'pricePerLesson', value: number | null) => {
-    setPackages((prev) => prev.map((item) => (item.key === key ? { ...item, [field]: Math.max(0, Number(value) || 0) } : item)));
+  const handlePackageChange = (key: string, field: 'lessonsCount' | 'pricePerLesson', value: string) => {
+    const parsed = Math.max(0, Number(value) || 0);
+    setPackages((prev) => prev.map((item) => (item.key === key ? { ...item, [field]: parsed } : item)));
   };
 
   const handleCreateTariff = async () => {
-    try {
-      const values = await form.validateFields();
+    const trimmedName = tariffName.trim();
 
-      if (!canCreate) {
-        api.error('Проверьте пакеты: количество занятий и цена должны быть больше 0.');
-        return;
-      }
-
-      setCreating(true);
-
-      const response = await fetch('/api/v1/tariff-grids', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: values.name,
-          packages: packages.map((item) => ({
-            lessonsCount: item.lessonsCount,
-            pricePerLessonRub: item.pricePerLesson
-          }))
-        })
-      });
-
-      setCreating(false);
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-        api.error(payload?.message ?? 'Не удалось создать тариф');
-        return;
-      }
-
-      setPackages([createEmptyPackage()]);
-      form.resetFields();
-      api.success('Тариф создан');
-      await loadTariffs();
-    } catch {
-      setCreating(false);
+    if (!trimmedName || !canCreate) {
+      setNotice({ type: 'error', text: 'Проверьте название тарифа и пакеты: все значения должны быть больше 0.' });
+      return;
     }
-  };
 
-  const openRenameModal = (tariff: TariffGrid) => {
-    setRenameTarget(tariff);
-    renameForm.setFieldsValue({ name: tariff.name });
-  };
+    setCreating(true);
 
-  const submitRename = async () => {
-    if (!renameTarget) return;
+    const response = await fetch('/api/v1/tariff-grids', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: trimmedName,
+        packages: packages.map((item) => ({
+          lessonsCount: item.lessonsCount,
+          pricePerLessonRub: item.pricePerLesson
+        }))
+      })
+    });
 
-    try {
-      const values = await renameForm.validateFields();
-      const response = await fetch(`/api/v1/tariff-grids/${renameTarget.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: values.name })
-      });
+    setCreating(false);
 
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-        api.error(payload?.message ?? 'Не удалось переименовать тариф');
-        return;
-      }
-
-      setRenameTarget(null);
-      renameForm.resetFields();
-      api.success('Тариф переименован');
-      await loadTariffs();
-    } catch {
-      // validation error
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+      setNotice({ type: 'error', text: payload?.message ?? 'Не удалось создать тариф' });
+      return;
     }
+
+    setPackages([createEmptyPackage()]);
+    setTariffName('');
+    setNotice({ type: 'success', text: 'Тариф создан' });
+    await loadTariffs();
   };
 
-  const openAddPackageModal = (tariff: TariffGrid) => {
-    setAddPackageTarget(tariff);
-    addPackageForm.setFieldsValue({ lessonsCount: 4, pricePerLessonRub: 1000 });
-  };
+  const renameTariffGrid = async (tariff: TariffGrid) => {
+    const name = window.prompt('Новое название тарифа', tariff.name)?.trim();
 
-  const submitAddPackage = async () => {
-    if (!addPackageTarget) return;
-
-    try {
-      const values = await addPackageForm.validateFields();
-      const response = await fetch(`/api/v1/tariff-grids/${addPackageTarget.id}/packages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(values)
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-        api.error(payload?.message ?? 'Не удалось добавить пакет');
-        return;
-      }
-
-      setAddPackageTarget(null);
-      addPackageForm.resetFields();
-      api.success('Пакет добавлен');
-      await loadTariffs();
-    } catch {
-      // validation error
+    if (!name) {
+      return;
     }
+
+    const response = await fetch(`/api/v1/tariff-grids/${tariff.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+      setNotice({ type: 'error', text: payload?.message ?? 'Не удалось переименовать тариф' });
+      return;
+    }
+
+    setNotice({ type: 'success', text: 'Тариф переименован' });
+    await loadTariffs();
+  };
+
+  const addPackageToTariff = async (tariff: TariffGrid) => {
+    const lessonsCountRaw = window.prompt('Количество занятий', '4')?.trim();
+    if (!lessonsCountRaw) return;
+
+    const pricePerLessonRaw = window.prompt('Цена за занятие (₽)', '1000')?.trim();
+    if (!pricePerLessonRaw) return;
+
+    const lessonsCount = Number(lessonsCountRaw);
+    const pricePerLessonRub = Number(pricePerLessonRaw);
+
+    if (!Number.isFinite(lessonsCount) || !Number.isFinite(pricePerLessonRub) || lessonsCount < 1 || pricePerLessonRub < 1) {
+      setNotice({ type: 'error', text: 'Количество занятий и цена должны быть числами больше 0.' });
+      return;
+    }
+
+    const response = await fetch(`/api/v1/tariff-grids/${tariff.id}/packages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lessonsCount, pricePerLessonRub })
+    });
+
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+      setNotice({ type: 'error', text: payload?.message ?? 'Не удалось добавить пакет' });
+      return;
+    }
+
+    setNotice({ type: 'success', text: 'Пакет добавлен' });
+    await loadTariffs();
   };
 
   const deleteTariffGrid = async (tariff: TariffGrid) => {
-    Modal.confirm({
-      title: `Удалить тариф «${tariff.name}»?`,
-      content: 'Тарифная сетка будет удалена без возможности восстановления.',
-      okText: 'Удалить',
-      okButtonProps: { danger: true },
-      cancelText: 'Отмена',
-      onOk: async () => {
-        const response = await fetch(`/api/v1/tariff-grids/${tariff.id}`, { method: 'DELETE' });
+    if (!window.confirm(`Удалить тариф «${tariff.name}»? Это действие нельзя отменить.`)) {
+      return;
+    }
 
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-          api.error(payload?.message ?? 'Не удалось удалить тариф');
-          return;
-        }
+    const response = await fetch(`/api/v1/tariff-grids/${tariff.id}`, { method: 'DELETE' });
 
-        api.success('Тариф удалён');
-        await loadTariffs();
-      }
-    });
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+      setNotice({ type: 'error', text: payload?.message ?? 'Не удалось удалить тариф' });
+      return;
+    }
+
+    setNotice({ type: 'success', text: 'Тариф удалён' });
+    await loadTariffs();
   };
 
   return (
-    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-      {contextHolder}
+    <div className="flex w-full flex-col gap-4">
+      {notice ? (
+        <p className={notice.type === 'error' ? 'text-sm text-destructive' : 'text-sm text-emerald-600'}>{notice.text}</p>
+      ) : null}
 
-      <Card title="Новый тариф (серверный)">
-        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-          <Form form={form} layout="vertical">
-            <Form.Item
-              label="Название тарифа"
-              name="name"
-              rules={[{ required: true, message: 'Введите название тарифа' }]}
-              style={{ marginBottom: 8 }}
-            >
-              <Input placeholder="Например: Базовый английский" />
-            </Form.Item>
-          </Form>
+      <Card>
+        <CardHeader>
+          <CardTitle>Новый тариф (серверный)</CardTitle>
+          <CardDescription>Создайте тариф и добавьте пакеты занятий.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <label htmlFor="new-tariff-name" className="text-sm font-medium">
+              Название тарифа
+            </label>
+            <Input
+              id="new-tariff-name"
+              placeholder="Например: Базовый английский"
+              value={tariffName}
+              onChange={(event) => setTariffName(event.target.value)}
+            />
+          </div>
 
-          <Typography.Text strong>Пакеты</Typography.Text>
-
-          <Space orientation="vertical" size={8} style={{ width: '100%' }}>
+          <div className="flex flex-col gap-2">
+            <p className="text-sm font-medium">Пакеты</p>
             {packages.map((pkg, index) => (
-              <Card key={pkg.key} size="small">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, width: '100%', flexWrap: 'wrap' }}>
-                  <Space wrap size={12}>
-                    <Typography.Text>Пакет {index + 1}</Typography.Text>
-                    <Space size={6}>
-                      <InputNumber min={1} value={pkg.lessonsCount} onChange={(value) => handlePackageChange(pkg.key, 'lessonsCount', value)} />
-                      <Typography.Text type="secondary">занятий</Typography.Text>
-                    </Space>
-                    <Space size={6}>
-                      <InputNumber min={1} value={pkg.pricePerLesson} onChange={(value) => handlePackageChange(pkg.key, 'pricePerLesson', value)} />
-                      <Typography.Text type="secondary">₽/занятие</Typography.Text>
-                    </Space>
-                    <Typography.Text strong>{formatRub(getPackageTotal(pkg))}</Typography.Text>
-                  </Space>
+              <Card key={pkg.key}>
+                <CardContent className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-sm">Пакет {index + 1}</span>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        min={1}
+                        value={pkg.lessonsCount}
+                        onChange={(event) => handlePackageChange(pkg.key, 'lessonsCount', event.target.value)}
+                        className="w-24"
+                      />
+                      <span className="text-sm text-muted-foreground">занятий</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        min={1}
+                        value={pkg.pricePerLesson}
+                        onChange={(event) => handlePackageChange(pkg.key, 'pricePerLesson', event.target.value)}
+                        className="w-28"
+                      />
+                      <span className="text-sm text-muted-foreground">₽/занятие</span>
+                    </div>
+                    <span className="text-sm font-semibold">{formatRub(getPackageTotal(pkg))}</span>
+                  </div>
+
                   <Button
-                    type="text"
-                    danger
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive"
                     onClick={() => setPackages((prev) => prev.filter((item) => item.key !== pkg.key))}
                     disabled={packages.length === 1}
                   >
                     Удалить
                   </Button>
-                </div>
+                </CardContent>
               </Card>
             ))}
-          </Space>
+          </div>
 
-          <Space wrap>
-            <Button icon={<PlusOutlined />} onClick={() => setPackages((prev) => [...prev, createEmptyPackage()])}>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => setPackages((prev) => [...prev, createEmptyPackage()])}>
               Добавить пакет
             </Button>
-            <Button type="primary" onClick={handleCreateTariff} disabled={!canCreate} loading={creating}>
-              Создать тариф
+            <Button onClick={handleCreateTariff} disabled={!canCreate || creating}>
+              {creating ? 'Создаём...' : 'Создать тариф'}
             </Button>
-            <Button onClick={() => void loadTariffs()} loading={loading}>
-              Обновить список
+            <Button variant="secondary" onClick={() => void loadTariffs()} disabled={loading}>
+              {loading ? 'Обновляем...' : 'Обновить список'}
             </Button>
-          </Space>
-        </Space>
+          </div>
+        </CardContent>
       </Card>
 
-      <Card title="Тарифные сетки">
-        <Table<TariffGrid>
-          rowKey="id"
-          loading={loading}
-          pagination={false}
-          dataSource={tariffs}
-          locale={{ emptyText: 'Пока нет тарифов' }}
-          columns={[
-            {
-              title: 'Тариф',
-              dataIndex: 'name',
-              key: 'name',
-              render: (_, row) => <Typography.Text>{row.name}</Typography.Text>
-            },
-            {
-              title: 'Пакеты',
-              key: 'packages',
-              render: (_, tariff) => (
-                <Space orientation="vertical" size={2}>
-                  {tariff.packages.length === 0 ? <Typography.Text type="secondary">Нет пакетов</Typography.Text> : null}
-                  {tariff.packages.map((pkg) => (
-                    <Space key={pkg.id}>
-                      <Typography.Text>
-                        {pkg.lessons_count} занятий x {formatRub(pkg.price_per_lesson_rub)} = {formatRub(pkg.total_price_rub)}
-                      </Typography.Text>
-                      {pkg.is_active ? <Tag color="green">Активен</Tag> : <Tag>Неактивен</Tag>}
-                    </Space>
-                  ))}
-                </Space>
-              )
-            },
-            {
-              title: 'Создан',
-              dataIndex: 'created_at',
-              key: 'created_at',
-              render: (value: string) => formatDateTime(value)
-            },
-            {
-              title: '',
-              key: 'actions',
-              width: 72,
-              render: (_, tariff) => (
-                <Dropdown
-                  trigger={['click']}
-                  menu={{
-                    items: [
-                      { key: 'rename', label: 'Переименовать' },
-                      { key: 'add-package', label: 'Добавить пакет' },
-                      { key: 'delete', label: 'Удалить тариф', danger: true }
-                    ],
-                    onClick: ({ key }) => {
-                      if (key === 'rename') {
-                        openRenameModal(tariff);
-                        return;
-                      }
-
-                      if (key === 'add-package') {
-                        openAddPackageModal(tariff);
-                        return;
-                      }
-
-                      if (key === 'delete') {
-                        void deleteTariffGrid(tariff);
-                      }
-                    }
-                  }}
-                >
-                  <Button type="text" icon={<MoreOutlined />} aria-label="Действия с тарифом" />
-                </Dropdown>
-              )
-            }
-          ]}
-        />
+      <Card>
+        <CardHeader>
+          <CardTitle>Тарифные сетки</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Тариф</TableHead>
+                <TableHead>Пакеты</TableHead>
+                <TableHead>Создан</TableHead>
+                <TableHead className="w-[72px]" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-center text-muted-foreground">
+                    Загрузка...
+                  </TableCell>
+                </TableRow>
+              ) : tariffs.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-center text-muted-foreground">
+                    Пока нет тарифов
+                  </TableCell>
+                </TableRow>
+              ) : (
+                tariffs.map((tariff) => (
+                  <TableRow key={tariff.id}>
+                    <TableCell>{tariff.name}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-col gap-1">
+                        {tariff.packages.length === 0 ? <span className="text-sm text-muted-foreground">Нет пакетов</span> : null}
+                        {tariff.packages.map((pkg) => (
+                          <div key={pkg.id} className="flex flex-wrap items-center gap-2 text-sm">
+                            <span>
+                              {pkg.lessons_count} занятий x {formatRub(pkg.price_per_lesson_rub)} = {formatRub(pkg.total_price_rub)}
+                            </span>
+                            {pkg.is_active ? <Badge>Активен</Badge> : <Badge variant="outline">Неактивен</Badge>}
+                          </div>
+                        ))}
+                      </div>
+                    </TableCell>
+                    <TableCell>{formatDateTime(tariff.created_at)}</TableCell>
+                    <TableCell>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon-sm" aria-label="Действия с тарифом">
+                            ⋯
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => void renameTariffGrid(tariff)}>Переименовать</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => void addPackageToTariff(tariff)}>Добавить пакет</DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive focus:text-destructive"
+                            onClick={() => void deleteTariffGrid(tariff)}
+                          >
+                            Удалить тариф
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
       </Card>
-
-      <Modal
-        title="Переименовать тариф"
-        open={Boolean(renameTarget)}
-        onCancel={() => {
-          setRenameTarget(null);
-          renameForm.resetFields();
-        }}
-        onOk={() => void submitRename()}
-        okText="Сохранить"
-        cancelText="Отмена"
-      >
-        <Form form={renameForm} layout="vertical">
-          <Form.Item
-            name="name"
-            label="Название тарифа"
-            rules={[{ required: true, message: 'Введите название тарифа' }]}
-            style={{ marginBottom: 0 }}
-          >
-            <Input placeholder="Новое название тарифа" />
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      <Modal
-        title={`Добавить пакет${addPackageTarget ? `: ${addPackageTarget.name}` : ''}`}
-        open={Boolean(addPackageTarget)}
-        onCancel={() => {
-          setAddPackageTarget(null);
-          addPackageForm.resetFields();
-        }}
-        onOk={() => void submitAddPackage()}
-        okText="Добавить"
-        cancelText="Отмена"
-      >
-        <Form form={addPackageForm} layout="vertical">
-          <Form.Item
-            name="lessonsCount"
-            label="Количество занятий"
-            rules={[{ required: true, message: 'Укажите количество занятий' }]}
-          >
-            <InputNumber min={1} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item
-            name="pricePerLessonRub"
-            label="Цена за занятие (₽)"
-            rules={[{ required: true, message: 'Укажите цену за занятие' }]}
-            style={{ marginBottom: 0 }}
-          >
-            <InputNumber min={1} style={{ width: '100%' }} />
-          </Form.Item>
-        </Form>
-      </Modal>
-    </Space>
+    </div>
   );
 }

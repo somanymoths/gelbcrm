@@ -2,18 +2,10 @@
 
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Menu } from 'antd';
-import type { MenuProps } from 'antd';
-import { BankOutlined, BookOutlined, TeamOutlined, UserSwitchOutlined } from '@ant-design/icons';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import { NAV_ITEMS } from '@/lib/types';
 import type { AppRole } from '@/lib/types';
-
-const ITEM_ICONS: Record<string, React.ReactNode> = {
-  '/funnel': <UserSwitchOutlined />,
-  '/teachers': <TeamOutlined />,
-  '/payments': <BankOutlined />,
-  '/journal': <BookOutlined />
-};
 
 export function AppNav({
   role,
@@ -22,7 +14,7 @@ export function AppNav({
 }: {
   role: AppRole;
   pathname: string;
-  mode?: MenuProps['mode'];
+  mode?: 'inline' | 'horizontal';
 }) {
   const router = useRouter();
   const allowed = NAV_ITEMS.filter((item) => item.roles.includes(role));
@@ -33,15 +25,24 @@ export function AppNav({
   }, [allowed, pathname]);
 
   return (
-    <Menu
-      mode={mode}
-      selectedKeys={selectedKey ? [selectedKey] : []}
-      onClick={({ key }) => router.push(String(key))}
-      items={allowed.map((item) => ({
-        key: item.href,
-        icon: ITEM_ICONS[item.href],
-        label: item.label
-      }))}
-    />
+    <nav
+      className={cn('flex gap-2', mode === 'horizontal' ? 'flex-row flex-wrap items-center' : 'flex-col items-stretch')}
+      aria-label="Основная навигация"
+    >
+      {allowed.map((item) => {
+        const isActive = selectedKey === item.href;
+        return (
+          <Button
+            key={item.href}
+            type="button"
+            variant={isActive ? 'default' : 'ghost'}
+            className={cn('justify-start', mode === 'inline' ? 'w-full' : '')}
+            onClick={() => router.push(item.href)}
+          >
+            {item.label}
+          </Button>
+        );
+      })}
+    </nav>
   );
 }

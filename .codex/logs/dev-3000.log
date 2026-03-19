@@ -1,6 +1,6 @@
 
 > gelbcrm@0.1.0 dev
-> next dev
+> next dev --port 3000
 
    ▲ Next.js 15.5.12
    - Local:        http://localhost:3000
@@ -8,5 +8,3 @@
    - Environments: .env.local
 
  ✓ Starting...
- ✓ Ready in 1523ms
- ✓ Compiled /middleware in 410ms (171 modules)

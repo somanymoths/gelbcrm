@@ -1,27 +1,42 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
-  Alert,
-  App,
-  Button,
   Card,
-  Checkbox,
-  Descriptions,
-  Dropdown,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
+} from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu';
+import { Input } from '@/components/ui/input';
+import {
   Select,
-  Space,
-  Table,
-  Tag,
-  Typography
-} from 'antd';
-import type { TableProps } from 'antd';
-import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Textarea } from '@/components/ui/textarea';
 
 type Scope = 'active' | 'archived';
 
@@ -78,6 +93,11 @@ type TeacherFormValues = {
   comment?: string | null;
 };
 
+type Notice = {
+  type: 'success' | 'error' | 'warning';
+  text: string;
+};
+
 const PHONE_MASK_REGEX = /^\+7 \(\d{3}\) \d{3}-\d{2}-\d{2}$/;
 const FLAG_OPTIONS = ['🇬🇧', '🇩🇪', '🇪🇸', '🇫🇷', '🇮🇹', '🇷🇺', '🇺🇸', '🇵🇹', '🇨🇳', '🇯🇵', '🇰🇷', '🇹🇷'];
 
@@ -125,17 +145,53 @@ function formatPhoneInput(value?: string | null): string {
   return output;
 }
 
-export function TeachersSection({ scope }: { scope: Scope }) {
-  const { message, notification, modal } = App.useApp();
-  const [form] = Form.useForm<TeacherFormValues>();
-  const [createForm] = Form.useForm<TeacherFormValues>();
+function emptyTeacherForm(): TeacherFormValues {
+  return {
+    firstName: '',
+    lastName: '',
+    languageId: null,
+    rateRub: null,
+    telegramRaw: '',
+    phone: '',
+    comment: ''
+  };
+}
 
+function normalizeTeacherPayload(values: TeacherFormValues) {
+  return {
+    firstName: values.firstName.trim(),
+    lastName: values.lastName.trim(),
+    languageId: values.languageId ?? null,
+    rateRub: values.rateRub ?? null,
+    telegramRaw: values.telegramRaw?.trim() ? values.telegramRaw.trim() : null,
+    phone: values.phone?.trim() ? values.phone.trim() : null,
+    comment: values.comment?.trim() ? values.comment.trim() : null
+  };
+}
+
+function validateTeacher(values: TeacherFormValues): string | null {
+  if (!values.firstName.trim()) return 'Укажите имя';
+  if (!values.lastName.trim()) return 'Укажите фамилию';
+  if (values.phone && values.phone.trim() && !PHONE_MASK_REGEX.test(values.phone.trim())) {
+    return 'Формат телефона: +7 (999) 999-99-99';
+  }
+  if ((values.comment ?? '').length > 1000) {
+    return 'Максимум 1000 символов в комментарии';
+  }
+  if ((values.rateRub ?? 0) < 0) {
+    return 'Ставка не может быть отрицательной';
+  }
+  return null;
+}
+
+export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scope; basePath?: string }) {
   const [items, setItems] = useState<Teacher[]>([]);
   const [total, setTotal] = useState(0);
   const [nextOffset, setNextOffset] = useState<number | null>(0);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
 
   const [search, setSearch] = useState('');
   const [languageId, setLanguageId] = useState<number | null>(null);
@@ -144,15 +200,17 @@ export function TeachersSection({ scope }: { scope: Scope }) {
 
   const [languages, setLanguages] = useState<Language[]>([]);
   const [newFilterLanguageName, setNewFilterLanguageName] = useState('');
-  const [newFilterLanguageFlag, setNewFilterLanguageFlag] = useState<string | undefined>(undefined);
+  const [newFilterLanguageFlag, setNewFilterLanguageFlag] = useState<string>('none');
   const [creatingFilterLanguage, setCreatingFilterLanguage] = useState(false);
 
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState<TeacherDetails | null>(null);
   const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState<TeacherFormValues>(emptyTeacherForm());
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [createForm, setCreateForm] = useState<TeacherFormValues>(emptyTeacherForm());
   const [submitting, setSubmitting] = useState(false);
 
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -161,16 +219,33 @@ export function TeachersSection({ scope }: { scope: Scope }) {
   const [dependenciesLoading, setDependenciesLoading] = useState(false);
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
 
+  const [undoArchiveTeacherId, setUndoArchiveTeacherId] = useState<string | null>(null);
+  const undoTimerRef = useRef<number | null>(null);
+
   const requestSerial = useRef(0);
+  const normalizedBasePath = useMemo(() => {
+    const trimmed = basePath.trim();
+    if (!trimmed) return '/teachers';
+    return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+  }, [basePath]);
+  const archivePath = `${normalizedBasePath}/archive`;
 
   const languageOptions = useMemo(
     () =>
       languages.map((lang) => ({
-        value: lang.id,
+        value: String(lang.id),
         label: `${lang.flag_emoji ? `${lang.flag_emoji} ` : ''}${lang.name}`
       })),
     [languages]
   );
+
+  const showError = useCallback((text: string) => {
+    setNotice({ type: 'error', text });
+  }, []);
+
+  const showSuccess = useCallback((text: string) => {
+    setNotice({ type: 'success', text });
+  }, []);
 
   const fetchLanguages = useCallback(async (): Promise<Language[]> => {
     const response = await fetch('/api/v1/school/languages', { cache: 'no-store' });
@@ -243,7 +318,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
   useEffect(() => {
     if (!isEditing || !detail) return;
 
-    form.setFieldsValue({
+    setEditForm({
       firstName: detail.first_name,
       lastName: detail.last_name,
       languageId: detail.language_id,
@@ -252,39 +327,44 @@ export function TeachersSection({ scope }: { scope: Scope }) {
       phone: formatPhoneInput(detail.phone),
       comment: detail.comment
     });
-  }, [detail, form, isEditing]);
+  }, [detail, isEditing]);
+
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) {
+        window.clearTimeout(undoTimerRef.current);
+      }
+    };
+  }, []);
 
   const loadMore = useCallback(async () => {
     if (loading || loadingMore || nextOffset === null) return;
     await fetchTeachers(nextOffset, true);
   }, [fetchTeachers, loading, loadingMore, nextOffset]);
 
-  const openTeacher = useCallback(
-    async (teacherId: string) => {
-      setDetailOpen(true);
-      setDetailLoading(true);
-      setIsEditing(false);
+  const openTeacher = useCallback(async (teacherId: string) => {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setIsEditing(false);
 
-      try {
-        const response = await fetch(`/api/v1/teachers/${teacherId}`, { cache: 'no-store' });
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-          throw new Error(payload?.message ?? 'Не удалось загрузить преподавателя');
-        }
-
-        const payload = (await response.json()) as TeacherDetails;
-        setDetail(payload);
-      } catch (fetchError) {
-        message.error(fetchError instanceof Error ? fetchError.message : 'Ошибка загрузки');
-        setDetailOpen(false);
-      } finally {
-        setDetailLoading(false);
+    try {
+      const response = await fetch(`/api/v1/teachers/${teacherId}`, { cache: 'no-store' });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(payload?.message ?? 'Не удалось загрузить преподавателя');
       }
-    },
-    [message]
-  );
 
-  const onTableScroll: TableProps<Teacher>['onScroll'] = (event) => {
+      const payload = (await response.json()) as TeacherDetails;
+      setDetail(payload);
+    } catch (fetchError) {
+      showError(fetchError instanceof Error ? fetchError.message : 'Ошибка загрузки');
+      setDetailOpen(false);
+    } finally {
+      setDetailLoading(false);
+    }
+  }, [showError]);
+
+  const onTableScroll = (event: UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
     const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
     if (distanceToBottom < 120) {
@@ -292,10 +372,25 @@ export function TeachersSection({ scope }: { scope: Scope }) {
     }
   };
 
+  function toggleSort(nextSortBy: SortBy) {
+    if (sortBy === nextSortBy) {
+      setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+
+    setSortBy(nextSortBy);
+    setSortDir('asc');
+  }
+
+  function sortMark(column: Exclude<SortBy, 'createdAt'>): string {
+    if (sortBy !== column) return '';
+    return sortDir === 'asc' ? ' ↑' : ' ↓';
+  }
+
   async function addLanguageFromFilter() {
     const name = newFilterLanguageName.trim();
     if (!name) {
-      message.warning('Введите название языка');
+      showError('Введите название языка');
       return;
     }
 
@@ -304,7 +399,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
       const response = await fetch('/api/v1/school/languages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, flagEmoji: newFilterLanguageFlag ?? null })
+        body: JSON.stringify({ name, flagEmoji: newFilterLanguageFlag === 'none' ? null : newFilterLanguageFlag })
       });
 
       if (response.status === 409) {
@@ -313,9 +408,9 @@ export function TeachersSection({ scope }: { scope: Scope }) {
         if (existing) {
           setLanguageId(existing.id);
           setNewFilterLanguageName('');
-          setNewFilterLanguageFlag(existing.flag_emoji ?? undefined);
+          setNewFilterLanguageFlag(existing.flag_emoji ?? 'none');
         }
-        message.warning('Такой язык уже существует');
+        setNotice({ type: 'warning', text: 'Такой язык уже существует' });
         return;
       }
 
@@ -328,24 +423,29 @@ export function TeachersSection({ scope }: { scope: Scope }) {
       setLanguages((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name, 'ru')));
       setLanguageId(created.id);
       setNewFilterLanguageName('');
-      setNewFilterLanguageFlag(created.flag_emoji ?? undefined);
-      message.success('Язык добавлен');
+      setNewFilterLanguageFlag(created.flag_emoji ?? 'none');
+      showSuccess('Язык добавлен');
     } catch (addError) {
-      message.error(addError instanceof Error ? addError.message : 'Не удалось добавить язык');
+      showError(addError instanceof Error ? addError.message : 'Не удалось добавить язык');
     } finally {
       setCreatingFilterLanguage(false);
     }
   }
 
   async function saveTeacher(id: string) {
+    const validationError = validateTeacher(editForm);
+    if (validationError) {
+      showError(validationError);
+      return;
+    }
+
     try {
-      const values = await form.validateFields();
       setSubmitting(true);
 
       const response = await fetch(`/api/v1/teachers/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(values)
+        body: JSON.stringify(normalizeTeacherPayload(editForm))
       });
 
       if (!response.ok) {
@@ -356,11 +456,11 @@ export function TeachersSection({ scope }: { scope: Scope }) {
       const updated = (await response.json()) as TeacherDetails;
       setDetail(updated);
       setIsEditing(false);
-      message.success('Сохранён');
+      showSuccess('Сохранён');
       await fetchTeachers(0, false);
     } catch (saveError) {
       if (saveError instanceof Error) {
-        message.error(saveError.message);
+        showError(saveError.message);
       }
     } finally {
       setSubmitting(false);
@@ -368,14 +468,19 @@ export function TeachersSection({ scope }: { scope: Scope }) {
   }
 
   async function createTeacher() {
+    const validationError = validateTeacher(createForm);
+    if (validationError) {
+      showError(validationError);
+      return;
+    }
+
     try {
-      const values = await createForm.validateFields();
       setSubmitting(true);
 
       const response = await fetch('/api/v1/teachers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(values)
+        body: JSON.stringify(normalizeTeacherPayload(createForm))
       });
 
       if (!response.ok) {
@@ -383,13 +488,13 @@ export function TeachersSection({ scope }: { scope: Scope }) {
         throw new Error(payload?.message ?? 'Не удалось создать преподавателя');
       }
 
-      createForm.resetFields();
+      setCreateForm(emptyTeacherForm());
       setCreateOpen(false);
-      message.success('Создан');
+      showSuccess('Создан');
       await fetchTeachers(0, false);
     } catch (createError) {
       if (createError instanceof Error) {
-        message.error(createError.message);
+        showError(createError.message);
       }
     } finally {
       setSubmitting(false);
@@ -403,23 +508,16 @@ export function TeachersSection({ scope }: { scope: Scope }) {
       throw new Error(payload?.message ?? 'Не удалось архивировать преподавателя');
     }
 
-    message.success('Архивирован');
-    notification.open({
-      message: 'Преподаватель архивирован',
-      description: 'Можно отменить действие в течение 9 секунд.',
-      duration: 9,
-      btn: (
-        <Button
-          size="small"
-          onClick={() => {
-            void restoreTeacherById(teacherId);
-            notification.destroy();
-          }}
-        >
-          Undo
-        </Button>
-      )
-    });
+    if (undoTimerRef.current) {
+      window.clearTimeout(undoTimerRef.current);
+    }
+
+    setUndoArchiveTeacherId(teacherId);
+    undoTimerRef.current = window.setTimeout(() => {
+      setUndoArchiveTeacherId(null);
+    }, 9000);
+
+    showSuccess('Преподаватель архивирован. Можно отменить в течение 9 секунд.');
 
     if (detail?.id === teacherId) {
       setDetailOpen(false);
@@ -436,7 +534,11 @@ export function TeachersSection({ scope }: { scope: Scope }) {
       throw new Error(payload?.message ?? 'Не удалось восстановить преподавателя');
     }
 
-    message.success('Восстановлен');
+    if (undoArchiveTeacherId === teacherId) {
+      setUndoArchiveTeacherId(null);
+    }
+
+    showSuccess('Восстановлен');
     await fetchTeachers(0, false);
   }
 
@@ -457,7 +559,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
       const payload = (await response.json()) as { students: TeacherDetails['students'] };
       setDependencies(payload.students);
     } catch (fetchError) {
-      message.error(fetchError instanceof Error ? fetchError.message : 'Ошибка загрузки зависимостей');
+      showError(fetchError instanceof Error ? fetchError.message : 'Ошибка загрузки зависимостей');
       setDeleteOpen(false);
     } finally {
       setDependenciesLoading(false);
@@ -475,7 +577,7 @@ export function TeachersSection({ scope }: { scope: Scope }) {
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      message.error(payload?.message ?? 'Не удалось отвязать учеников');
+      showError(payload?.message ?? 'Не удалось отвязать учеников');
       return;
     }
 
@@ -487,13 +589,13 @@ export function TeachersSection({ scope }: { scope: Scope }) {
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      message.error(payload?.message ?? 'Не удалось удалить преподавателя');
+      showError(payload?.message ?? 'Не удалось удалить преподавателя');
       return;
     }
 
     setDeleteOpen(false);
     setDeleteTeacher(null);
-    message.success('Удалён навсегда');
+    showSuccess('Удалён навсегда');
     await fetchTeachers(0, false);
   }
 
@@ -509,598 +611,700 @@ export function TeachersSection({ scope }: { scope: Scope }) {
 
       setDependencies(payload?.students ?? dependencies);
       setSelectedStudentIds([]);
-      message.error(payload?.message ?? 'Не удалось отвязать всех учеников');
+      showError(payload?.message ?? 'Не удалось отвязать всех учеников');
       return;
     }
 
     setDeleteOpen(false);
     setDeleteTeacher(null);
-    message.success('Удалён навсегда');
+    showSuccess('Удалён навсегда');
     await fetchTeachers(0, false);
   }
 
-  const columns: TableProps<Teacher>['columns'] = [
-    {
-      title: 'Имя',
-      dataIndex: 'full_name',
-      key: 'name',
-      sorter: true,
-      sortOrder: sortBy === 'name' ? (sortDir === 'asc' ? 'ascend' : 'descend') : null,
-      render: (_, row) =>
-        formatPersonName({
-          firstName: row.first_name,
-          lastName: row.last_name,
-          fallbackFullName: row.full_name
-        })
-    },
-    {
-      title: 'Ученики',
-      dataIndex: 'active_students_count',
-      key: 'students',
-      width: 120,
-      sorter: true,
-      sortOrder: sortBy === 'students' ? (sortDir === 'asc' ? 'ascend' : 'descend') : null,
-      render: (value: number) => value
-    },
-    {
-      title: 'Контакты',
-      key: 'contacts',
-      render: (_, row) => row.telegram_display ?? 'Нет контакта'
-    },
-    {
-      title: 'Язык',
-      dataIndex: 'language_name',
-      key: 'language_name',
-      width: 160,
-      render: (_: string | null, row) =>
-        row.language_name ? `${row.language_flag_emoji ? `${row.language_flag_emoji} ` : ''}${row.language_name}` : '—'
-    },
-    {
-      title: 'Ставка',
-      dataIndex: 'rate_rub',
-      key: 'rate',
-      width: 130,
-      sorter: true,
-      sortOrder: sortBy === 'rate' ? (sortDir === 'asc' ? 'ascend' : 'descend') : null,
-      render: (value: number | null) => (value === null ? '—' : `${value} ₽`)
-    },
-    {
-      title: '⋯',
-      key: 'menu',
-      width: 60,
-      render: (_, row) => (
-        <Dropdown
-          trigger={['click']}
-          menu={{
-            items:
-              scope === 'active'
-                ? [
-                    { key: 'open', label: 'Открыть' },
-                    { key: 'archive', label: 'Архивировать' }
-                  ]
-                : [
-                    { key: 'open', label: 'Открыть' },
-                    { key: 'restore', label: 'Восстановить' },
-                    { key: 'delete', label: 'Удалить навсегда', danger: true }
-                  ],
-            onClick: async ({ key }) => {
-              if (key === 'open') {
-                await openTeacher(row.id);
-                return;
-              }
-
-              if (key === 'archive') {
-                try {
-                  await archiveTeacherById(row.id);
-                } catch (error) {
-                  message.error(error instanceof Error ? error.message : 'Не удалось архивировать преподавателя');
-                }
-                return;
-              }
-
-              if (key === 'restore') {
-                try {
-                  await restoreTeacherById(row.id);
-                } catch (error) {
-                  message.error(error instanceof Error ? error.message : 'Не удалось восстановить преподавателя');
-                }
-                return;
-              }
-
-              if (key === 'delete') {
-                await openDeleteModal(row);
-              }
-            }
-          }}
-        >
-          <Button
-            icon={<MoreOutlined />}
-            type="text"
-            onClick={(event) => {
-              event.stopPropagation();
-            }}
-          />
-        </Dropdown>
-      )
-    }
-  ];
-
   return (
-    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+    <div className="flex w-full flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <Typography.Title level={2} style={{ margin: 0 }}>
-            {scope === 'active' ? 'Преподаватели' : 'Архив преподавателей'}
-          </Typography.Title>
-          <Typography.Text type="secondary">
+          <h2 className="text-2xl font-semibold">{scope === 'active' ? 'Преподаватели' : 'Архив преподавателей'}</h2>
+          <p className="text-sm text-muted-foreground">
             {scope === 'active' ? 'Активные преподаватели' : 'Архивные преподаватели'}
-          </Typography.Text>
+          </p>
         </div>
 
-        <Space>
+        <div className="flex flex-wrap gap-2">
           {scope === 'active' ? (
             <>
-              <Link href="/teachers/archive">
-                <Button>Перейти в архив</Button>
+              <Link href={archivePath}>
+                <Button variant="secondary">Перейти в архив</Button>
               </Link>
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-                Добавить преподавателя
-              </Button>
+              <Button onClick={() => setCreateOpen(true)}>Добавить преподавателя</Button>
             </>
           ) : (
-            <Link href="/teachers">
-              <Button>К активным</Button>
+            <Link href={normalizedBasePath}>
+              <Button variant="secondary">К активным</Button>
             </Link>
           )}
-        </Space>
+        </div>
       </div>
 
+      {notice ? (
+        <Alert variant={notice.type === 'error' ? 'destructive' : 'default'}>
+          <AlertTitle>{notice.type === 'error' ? 'Ошибка' : notice.type === 'warning' ? 'Внимание' : 'Готово'}</AlertTitle>
+          <AlertDescription>{notice.text}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {undoArchiveTeacherId ? (
+        <Card>
+          <CardContent className="flex items-center justify-between gap-3">
+            <p className="text-sm">Преподаватель архивирован. Можно отменить действие в течение 9 секунд.</p>
+            <Button
+              variant="outline"
+              onClick={() => {
+                void restoreTeacherById(undoArchiveTeacherId);
+              }}
+            >
+              Undo
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
-        <Space wrap style={{ marginBottom: 12 }}>
-          <Input.Search
-            allowClear
-            placeholder="Поиск по имени и фамилии"
-            style={{ width: 320 }}
-            value={search}
-            onChange={(event) => {
-              setSearch(event.target.value);
-            }}
-          />
+        <CardHeader>
+          <CardTitle>Список преподавателей</CardTitle>
+          <CardDescription>Фильтрация, сортировка и действия по преподавателям.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              placeholder="Поиск по имени и фамилии"
+              className="w-[320px]"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
 
-          <Select
-            allowClear
-            placeholder="Язык"
-            style={{ width: 220 }}
-            value={languageId ?? undefined}
-            options={languageOptions}
-            onChange={(value) => setLanguageId((value as number | undefined) ?? null)}
-            popupRender={(menu) => (
-              <>
-                {menu}
-                <div
-                  style={{ padding: 8, borderTop: '1px solid #f0f0f0' }}
-                >
-                  <Space.Compact style={{ width: '100%' }}>
-                    <Select
-                      style={{ width: 88 }}
-                      allowClear
-                      placeholder="🏳️"
-                      value={newFilterLanguageFlag}
-                      options={FLAG_OPTIONS.map((flag) => ({ value: flag, label: flag }))}
-                      onChange={(value) => setNewFilterLanguageFlag(value)}
-                      onMouseDown={(event) => event.stopPropagation()}
-                    />
-                    <Input
-                      placeholder="Новый язык"
-                      value={newFilterLanguageName}
-                      onChange={(event) => setNewFilterLanguageName(event.target.value)}
-                      onPressEnter={() => void addLanguageFromFilter()}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.stopPropagation();
-                        }
-                      }}
-                      onMouseDown={(event) => event.stopPropagation()}
-                    />
-                    <Button
-                      loading={creatingFilterLanguage}
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void addLanguageFromFilter();
-                      }}
-                    >
-                      Добавить
-                    </Button>
-                  </Space.Compact>
-                </div>
-              </>
-            )}
-          />
+            <Select
+              value={languageId ? String(languageId) : 'all'}
+              onValueChange={(value) => setLanguageId(value === 'all' ? null : Number(value))}
+            >
+              <SelectTrigger className="w-[220px]">
+                <SelectValue placeholder="Язык" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Все языки</SelectItem>
+                {languageOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
-          <Tag>
-            Показано: {items.length} / {total}
-          </Tag>
-        </Space>
+            <Badge variant="outline">Показано: {items.length} / {total}</Badge>
+          </div>
 
-        {error ? (
-          <Alert
-            type="error"
-            showIcon
-            title={error}
-            action={
-              <Button size="small" onClick={() => void fetchTeachers(0, false)}>
-                Повторить
-              </Button>
-            }
-            style={{ marginBottom: 12 }}
-          />
-        ) : null}
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border p-2">
+            <Select value={newFilterLanguageFlag} onValueChange={setNewFilterLanguageFlag}>
+              <SelectTrigger className="w-[110px]">
+                <SelectValue placeholder="🏳️" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Без флага</SelectItem>
+                {FLAG_OPTIONS.map((flag) => (
+                  <SelectItem key={flag} value={flag}>
+                    {flag}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
-        <Table<Teacher>
-          rowKey="id"
-          loading={loading}
-          columns={columns}
-          dataSource={items}
-          pagination={false}
-          onScroll={onTableScroll}
-          scroll={{ y: 560 }}
-          onChange={(pagination, filters, sorter) => {
-            const singleSorter = Array.isArray(sorter) ? sorter[0] : sorter;
-            if (!singleSorter?.columnKey || !singleSorter.order) {
-              setSortBy('createdAt');
-              setSortDir('desc');
-              return;
-            }
+            <Input
+              placeholder="Новый язык"
+              className="w-[220px]"
+              value={newFilterLanguageName}
+              onChange={(event) => setNewFilterLanguageName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void addLanguageFromFilter();
+                }
+              }}
+            />
 
-            if (singleSorter.columnKey === 'name') setSortBy('name');
-            if (singleSorter.columnKey === 'students') setSortBy('students');
-            if (singleSorter.columnKey === 'rate') setSortBy('rate');
+            <Button variant="secondary" onClick={() => void addLanguageFromFilter()} disabled={creatingFilterLanguage}>
+              {creatingFilterLanguage ? 'Добавляем...' : 'Добавить язык'}
+            </Button>
+          </div>
 
-            setSortDir(singleSorter.order === 'ascend' ? 'asc' : 'desc');
-          }}
-          onRow={(row) => ({
-            onClick: () => {
-              void openTeacher(row.id);
-            }
-          })}
-          locale={{
-            emptyText: loading ? 'Загрузка...' : 'Нет преподавателей'
-          }}
-        />
+          {error ? (
+            <Alert variant="destructive">
+              <AlertTitle>{error}</AlertTitle>
+              <AlertDescription>
+                <Button size="sm" variant="outline" onClick={() => void fetchTeachers(0, false)}>
+                  Повторить
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : null}
 
-        {loadingMore ? <Typography.Text type="secondary">Загрузка...</Typography.Text> : null}
+          <div className="rounded-lg border">
+            <div className="max-h-[560px] overflow-y-auto" onScroll={onTableScroll}>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="cursor-pointer" onClick={() => toggleSort('name')}>
+                      Имя{sortMark('name')}
+                    </TableHead>
+                    <TableHead className="w-[120px] cursor-pointer" onClick={() => toggleSort('students')}>
+                      Ученики{sortMark('students')}
+                    </TableHead>
+                    <TableHead>Контакты</TableHead>
+                    <TableHead className="w-[160px]">Язык</TableHead>
+                    <TableHead className="w-[130px] cursor-pointer" onClick={() => toggleSort('rate')}>
+                      Ставка{sortMark('rate')}
+                    </TableHead>
+                    <TableHead className="w-[60px]" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {items.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center text-muted-foreground">
+                        {loading ? 'Загрузка...' : 'Нет преподавателей'}
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    items.map((row) => (
+                      <TableRow
+                        key={row.id}
+                        className="cursor-pointer"
+                        onClick={() => {
+                          void openTeacher(row.id);
+                        }}
+                      >
+                        <TableCell>
+                          {formatPersonName({
+                            firstName: row.first_name,
+                            lastName: row.last_name,
+                            fallbackFullName: row.full_name
+                          })}
+                        </TableCell>
+                        <TableCell>{row.active_students_count}</TableCell>
+                        <TableCell>{row.telegram_display ?? 'Нет контакта'}</TableCell>
+                        <TableCell>
+                          {row.language_name ? `${row.language_flag_emoji ? `${row.language_flag_emoji} ` : ''}${row.language_name}` : '—'}
+                        </TableCell>
+                        <TableCell>{row.rate_rub === null ? '—' : `${row.rate_rub} ₽`}</TableCell>
+                        <TableCell>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                }}
+                                aria-label="Действия"
+                              >
+                                ⋯
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void openTeacher(row.id);
+                                }}
+                              >
+                                Открыть
+                              </DropdownMenuItem>
+                              {scope === 'active' ? (
+                                <DropdownMenuItem
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void archiveTeacherById(row.id).catch((err) => {
+                                      showError(err instanceof Error ? err.message : 'Не удалось архивировать преподавателя');
+                                    });
+                                  }}
+                                >
+                                  Архивировать
+                                </DropdownMenuItem>
+                              ) : (
+                                <>
+                                  <DropdownMenuItem
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void restoreTeacherById(row.id).catch((err) => {
+                                        showError(err instanceof Error ? err.message : 'Не удалось восстановить преподавателя');
+                                      });
+                                    }}
+                                  >
+                                    Восстановить
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    className="text-destructive focus:text-destructive"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void openDeleteModal(row);
+                                    }}
+                                  >
+                                    Удалить навсегда
+                                  </DropdownMenuItem>
+                                </>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+
+          {loadingMore ? <p className="text-sm text-muted-foreground">Загрузка...</p> : null}
+        </CardContent>
       </Card>
 
-      <Modal
+      <Dialog
         open={detailOpen}
-        onCancel={() => {
-          setDetailOpen(false);
-          setDetail(null);
-          setIsEditing(false);
+        onOpenChange={(open) => {
+          if (!open) {
+            setDetailOpen(false);
+            setDetail(null);
+            setIsEditing(false);
+            return;
+          }
+          setDetailOpen(true);
         }}
-        width={780}
-        title={
-          detail
-            ? formatPersonName({
-                firstName: detail.first_name,
-                lastName: detail.last_name,
-                fallbackFullName: detail.full_name
-              })
-            : 'Преподаватель'
-        }
-        footer={null}
-        destroyOnHidden
-        mask={{ closable: true }}
-        keyboard
       >
-        {detailLoading || !detail ? (
-          <Typography.Text type="secondary">Загрузка...</Typography.Text>
-        ) : (
-          <Space orientation="vertical" style={{ width: '100%' }} size={16}>
-            {!isEditing ? (
-              <>
-                <Descriptions size="small" column={1} bordered>
-                  <Descriptions.Item label="Имя">{detail.first_name}</Descriptions.Item>
-                  <Descriptions.Item label="Фамилия">{detail.last_name}</Descriptions.Item>
-                  <Descriptions.Item label="Язык">
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {detail
+                ? formatPersonName({
+                    firstName: detail.first_name,
+                    lastName: detail.last_name,
+                    fallbackFullName: detail.full_name
+                  })
+                : 'Преподаватель'}
+            </DialogTitle>
+          </DialogHeader>
+
+          {detailLoading || !detail ? (
+            <p className="text-sm text-muted-foreground">Загрузка...</p>
+          ) : !isEditing ? (
+            <div className="flex flex-col gap-4">
+              <Card>
+                <CardContent className="grid gap-2 text-sm sm:grid-cols-2">
+                  <p><span className="font-medium">Имя:</span> {detail.first_name}</p>
+                  <p><span className="font-medium">Фамилия:</span> {detail.last_name}</p>
+                  <p>
+                    <span className="font-medium">Язык:</span>{' '}
                     {detail.language_name
                       ? `${detail.language_flag_emoji ? `${detail.language_flag_emoji} ` : ''}${detail.language_name}`
                       : '—'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="Ставка">{detail.rate_rub === null ? '—' : `${detail.rate_rub} ₽`}</Descriptions.Item>
-                  <Descriptions.Item label="Telegram">{detail.telegram_display ?? '—'}</Descriptions.Item>
-                  <Descriptions.Item label="Телефон">{detail.phone ?? '—'}</Descriptions.Item>
-                  <Descriptions.Item label="Комментарий">{detail.comment ?? '—'}</Descriptions.Item>
-                </Descriptions>
+                  </p>
+                  <p><span className="font-medium">Ставка:</span> {detail.rate_rub === null ? '—' : `${detail.rate_rub} ₽`}</p>
+                  <p><span className="font-medium">Telegram:</span> {detail.telegram_display ?? '—'}</p>
+                  <p><span className="font-medium">Телефон:</span> {detail.phone ?? '—'}</p>
+                  <p className="sm:col-span-2"><span className="font-medium">Комментарий:</span> {detail.comment ?? '—'}</p>
+                </CardContent>
+              </Card>
 
-                <Card title={`Ученики (${detail.students.length})`} size="small">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Ученики ({detail.students.length})</CardTitle>
+                </CardHeader>
+                <CardContent>
                   {detail.students.length === 0 ? (
-                    <Typography.Text type="secondary">Нет учеников</Typography.Text>
+                    <p className="text-sm text-muted-foreground">Нет учеников</p>
                   ) : (
-                    <Space orientation="vertical" size={4}>
+                    <div className="flex flex-col gap-1">
                       {detail.students.map((student) => (
-                        <Typography.Text key={student.id}>
+                        <p key={student.id} className="text-sm">
                           {formatPersonName({
                             firstName: student.first_name,
                             lastName: student.last_name,
                             fallbackFullName: student.full_name
                           })}
-                        </Typography.Text>
+                        </p>
                       ))}
-                    </Space>
+                    </div>
                   )}
-                </Card>
+                </CardContent>
+              </Card>
 
-                <Space>
-                  {scope === 'active' ? (
-                    <>
-                      <Button onClick={() => setIsEditing(true)}>Редактировать</Button>
-                      <Button
-                        onClick={async () => {
-                          try {
-                            await archiveTeacherById(detail.id);
-                          } catch (error) {
-                            message.error(error instanceof Error ? error.message : 'Не удалось архивировать преподавателя');
-                          }
-                        }}
-                      >
-                        Архивировать
-                      </Button>
-                    </>
-                  ) : (
-                    <>
-                      <Button
-                        onClick={async () => {
-                          try {
-                            await restoreTeacherById(detail.id);
-                          } catch (error) {
-                            message.error(error instanceof Error ? error.message : 'Не удалось восстановить преподавателя');
-                          }
-                        }}
-                      >
-                        Восстановить
-                      </Button>
-                      <Button danger onClick={() => void openDeleteModal(detail)}>
-                        Удалить навсегда
-                      </Button>
-                    </>
-                  )}
-                </Space>
-              </>
-            ) : (
-              <>
-                <Form<TeacherFormValues> form={form} layout="vertical">
-                  <Space style={{ width: '100%' }} align="start" wrap>
-                    <Form.Item name="firstName" label="Имя" rules={[{ required: true, message: 'Укажите имя' }]} style={{ minWidth: 220 }}>
-                      <Input />
-                    </Form.Item>
-                    <Form.Item name="lastName" label="Фамилия" rules={[{ required: true, message: 'Укажите фамилию' }]} style={{ minWidth: 220 }}>
-                      <Input />
-                    </Form.Item>
-                  </Space>
-
-                  <Space style={{ width: '100%' }} align="start" wrap>
-                    <Form.Item name="languageId" label="Язык" style={{ minWidth: 220 }}>
-                      <Select allowClear options={languageOptions} placeholder="Выберите язык" />
-                    </Form.Item>
-                    <Form.Item name="rateRub" label="Ставка (₽)" style={{ minWidth: 220 }}>
-                      <InputNumber min={0} precision={0} style={{ width: '100%' }} />
-                    </Form.Item>
-                  </Space>
-
-                  <Space style={{ width: '100%' }} align="start" wrap>
-                    <Form.Item name="telegramRaw" label="Telegram" style={{ minWidth: 220 }}>
-                      <Input placeholder="@username или https://t.me/username" />
-                    </Form.Item>
-                    <Form.Item
-                      name="phone"
-                      label="Телефон"
-                      rules={[
-                        {
-                          validator: async (_, value: string | undefined) => {
-                            if (!value) return;
-                            if (!PHONE_MASK_REGEX.test(value)) {
-                              throw new Error('Формат: +7 999 999 99 99');
-                            }
-                          }
-                        }
-                      ]}
-                      style={{ minWidth: 220 }}
+              <div className="flex flex-wrap gap-2">
+                {scope === 'active' ? (
+                  <>
+                    <Button onClick={() => setIsEditing(true)}>Редактировать</Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        void archiveTeacherById(detail.id).catch((err) => {
+                          showError(err instanceof Error ? err.message : 'Не удалось архивировать преподавателя');
+                        });
+                      }}
                     >
-                      <Input
-                        placeholder="+7 (999) 999-99-99"
-                        inputMode="numeric"
-                        maxLength={18}
-                        onChange={(event) => {
-                          form.setFieldValue('phone', formatPhoneInput(event.target.value));
-                        }}
-                      />
-                    </Form.Item>
-                  </Space>
+                      Архивировать
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        void restoreTeacherById(detail.id).catch((err) => {
+                          showError(err instanceof Error ? err.message : 'Не удалось восстановить преподавателя');
+                        });
+                      }}
+                    >
+                      Восстановить
+                    </Button>
+                    <Button variant="destructive" onClick={() => void openDeleteModal(detail)}>
+                      Удалить навсегда
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium" htmlFor="edit-first-name">Имя</label>
+                  <Input
+                    id="edit-first-name"
+                    value={editForm.firstName}
+                    onChange={(event) => setEditForm((prev) => ({ ...prev, firstName: event.target.value }))}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium" htmlFor="edit-last-name">Фамилия</label>
+                  <Input
+                    id="edit-last-name"
+                    value={editForm.lastName}
+                    onChange={(event) => setEditForm((prev) => ({ ...prev, lastName: event.target.value }))}
+                  />
+                </div>
 
-                  <Form.Item name="comment" label="Комментарий" rules={[{ max: 1000, message: 'Максимум 1000 символов' }]}>
-                    <Input.TextArea rows={4} showCount maxLength={1000} />
-                  </Form.Item>
-                </Form>
-
-                <Space>
-                  <Button type="primary" loading={submitting} onClick={() => void saveTeacher(detail.id)}>
-                    Сохранить
-                  </Button>
-                  <Button
-                    onClick={() => {
-                      setIsEditing(false);
-                      form.setFieldsValue({
-                        firstName: detail.first_name,
-                        lastName: detail.last_name,
-                        languageId: detail.language_id,
-                        rateRub: detail.rate_rub,
-                        telegramRaw: detail.telegram_raw,
-                        phone: detail.phone,
-                        comment: detail.comment
-                      });
-                    }}
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium">Язык</label>
+                  <Select
+                    value={editForm.languageId ? String(editForm.languageId) : 'none'}
+                    onValueChange={(value) => setEditForm((prev) => ({ ...prev, languageId: value === 'none' ? null : Number(value) }))}
                   >
-                    Отмена
-                  </Button>
-                </Space>
-              </>
-            )}
-          </Space>
-        )}
-      </Modal>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Выберите язык" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Без языка</SelectItem>
+                      {languageOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-      <Modal
-        open={createOpen}
-        title="Добавить преподавателя"
-        onCancel={() => {
-          setCreateOpen(false);
-          createForm.resetFields();
-        }}
-        onOk={() => void createTeacher()}
-        confirmLoading={submitting}
-        okText="Создать"
-      >
-        <Form<TeacherFormValues> form={createForm} layout="vertical">
-          <Form.Item name="firstName" label="Имя" rules={[{ required: true, message: 'Укажите имя' }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="lastName" label="Фамилия" rules={[{ required: true, message: 'Укажите фамилию' }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="languageId" label="Язык">
-            <Select allowClear options={languageOptions} placeholder="Выберите язык" />
-          </Form.Item>
-          <Form.Item name="rateRub" label="Ставка (₽)">
-            <InputNumber min={0} precision={0} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="telegramRaw" label="Telegram">
-            <Input placeholder="@username или https://t.me/username" />
-          </Form.Item>
-          <Form.Item
-            name="phone"
-            label="Телефон"
-            rules={[
-              {
-                validator: async (_, value: string | undefined) => {
-                  if (!value) return;
-                  if (!PHONE_MASK_REGEX.test(value)) {
-                    throw new Error('Формат: +7 999 999 99 99');
-                  }
-                }
-              }
-            ]}
-          >
-            <Input
-              placeholder="+7 (999) 999-99-99"
-              inputMode="numeric"
-              maxLength={18}
-              onChange={(event) => {
-                createForm.setFieldValue('phone', formatPhoneInput(event.target.value));
-              }}
-            />
-          </Form.Item>
-          <Form.Item name="comment" label="Комментарий" rules={[{ max: 1000, message: 'Максимум 1000 символов' }]}>
-            <Input.TextArea rows={4} showCount maxLength={1000} />
-          </Form.Item>
-        </Form>
-      </Modal>
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium" htmlFor="edit-rate">Ставка (₽)</label>
+                  <Input
+                    id="edit-rate"
+                    type="number"
+                    min={0}
+                    value={editForm.rateRub ?? ''}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setEditForm((prev) => ({ ...prev, rateRub: value === '' ? null : Number(value) }));
+                    }}
+                  />
+                </div>
 
-      <Modal
-        open={deleteOpen}
-        title={
-          deleteTeacher
-            ? `Удалить преподавателя: ${formatPersonName({
-                firstName: deleteTeacher.first_name,
-                lastName: deleteTeacher.last_name,
-                fallbackFullName: deleteTeacher.full_name
-              })}`
-            : 'Удалить преподавателя'
-        }
-        onCancel={() => {
-          setDeleteOpen(false);
-          setDeleteTeacher(null);
-          setDependencies([]);
-          setSelectedStudentIds([]);
-        }}
-        footer={null}
-      >
-        {dependenciesLoading ? (
-          <Typography.Text type="secondary">Загрузка...</Typography.Text>
-        ) : !deleteTeacher ? null : (
-          <Space orientation="vertical" style={{ width: '100%' }}>
-            {dependencies.length === 0 ? (
-              <>
-                <Typography.Text>Привязанных учеников нет. Можно удалить преподавателя навсегда.</Typography.Text>
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium" htmlFor="edit-telegram">Telegram</label>
+                  <Input
+                    id="edit-telegram"
+                    placeholder="@username или https://t.me/username"
+                    value={editForm.telegramRaw ?? ''}
+                    onChange={(event) => setEditForm((prev) => ({ ...prev, telegramRaw: event.target.value }))}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium" htmlFor="edit-phone">Телефон</label>
+                  <Input
+                    id="edit-phone"
+                    placeholder="+7 (999) 999-99-99"
+                    inputMode="numeric"
+                    maxLength={18}
+                    value={editForm.phone ?? ''}
+                    onChange={(event) => setEditForm((prev) => ({ ...prev, phone: formatPhoneInput(event.target.value) }))}
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium" htmlFor="edit-comment">Комментарий</label>
+                <Textarea
+                  id="edit-comment"
+                  rows={4}
+                  maxLength={1000}
+                  value={editForm.comment ?? ''}
+                  onChange={(event) => setEditForm((prev) => ({ ...prev, comment: event.target.value }))}
+                />
+                <p className="text-xs text-muted-foreground">{(editForm.comment ?? '').length}/1000</p>
+              </div>
+
+              <DialogFooter>
+                <Button disabled={submitting} onClick={() => void saveTeacher(detail.id)}>
+                  {submitting ? 'Сохраняем...' : 'Сохранить'}
+                </Button>
                 <Button
-                  danger
+                  variant="secondary"
                   onClick={() => {
-                    modal.confirm({
-                      title: 'Удалить навсегда?',
-                      content: 'Это действие нельзя отменить.',
-                      okButtonProps: { danger: true },
-                      onOk: async () => {
-                        await deletePermanently(deleteTeacher);
-                      }
+                    setIsEditing(false);
+                    setEditForm({
+                      firstName: detail.first_name,
+                      lastName: detail.last_name,
+                      languageId: detail.language_id,
+                      rateRub: detail.rate_rub,
+                      telegramRaw: detail.telegram_raw,
+                      phone: detail.phone,
+                      comment: detail.comment
                     });
                   }}
                 >
-                  Удалить навсегда
+                  Отмена
                 </Button>
-              </>
-            ) : (
-              <>
-                <Alert
-                  type="warning"
-                  showIcon
-                  title="Удаление заблокировано: есть привязанные ученики"
-                  description="Отвяжите выбранных или всех учеников, чтобы продолжить удаление."
-                />
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
-                <Checkbox.Group
-                  style={{ width: '100%' }}
-                  value={selectedStudentIds}
-                  onChange={(values) => setSelectedStudentIds(values as string[])}
-                >
-                  <Space orientation="vertical" style={{ width: '100%' }}>
-                    {dependencies.map((student) => (
-                      <Checkbox key={student.id} value={student.id}>
+      <Dialog
+        open={createOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCreateOpen(false);
+            setCreateForm(emptyTeacherForm());
+            return;
+          }
+          setCreateOpen(true);
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Добавить преподавателя</DialogTitle>
+          </DialogHeader>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium" htmlFor="create-first-name">Имя</label>
+              <Input
+                id="create-first-name"
+                value={createForm.firstName}
+                onChange={(event) => setCreateForm((prev) => ({ ...prev, firstName: event.target.value }))}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium" htmlFor="create-last-name">Фамилия</label>
+              <Input
+                id="create-last-name"
+                value={createForm.lastName}
+                onChange={(event) => setCreateForm((prev) => ({ ...prev, lastName: event.target.value }))}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium">Язык</label>
+              <Select
+                value={createForm.languageId ? String(createForm.languageId) : 'none'}
+                onValueChange={(value) => setCreateForm((prev) => ({ ...prev, languageId: value === 'none' ? null : Number(value) }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Выберите язык" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Без языка</SelectItem>
+                  {languageOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium" htmlFor="create-rate">Ставка (₽)</label>
+              <Input
+                id="create-rate"
+                type="number"
+                min={0}
+                value={createForm.rateRub ?? ''}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setCreateForm((prev) => ({ ...prev, rateRub: value === '' ? null : Number(value) }));
+                }}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium" htmlFor="create-telegram">Telegram</label>
+              <Input
+                id="create-telegram"
+                placeholder="@username или https://t.me/username"
+                value={createForm.telegramRaw ?? ''}
+                onChange={(event) => setCreateForm((prev) => ({ ...prev, telegramRaw: event.target.value }))}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium" htmlFor="create-phone">Телефон</label>
+              <Input
+                id="create-phone"
+                placeholder="+7 (999) 999-99-99"
+                inputMode="numeric"
+                maxLength={18}
+                value={createForm.phone ?? ''}
+                onChange={(event) => setCreateForm((prev) => ({ ...prev, phone: formatPhoneInput(event.target.value) }))}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium" htmlFor="create-comment">Комментарий</label>
+            <Textarea
+              id="create-comment"
+              rows={4}
+              maxLength={1000}
+              value={createForm.comment ?? ''}
+              onChange={(event) => setCreateForm((prev) => ({ ...prev, comment: event.target.value }))}
+            />
+            <p className="text-xs text-muted-foreground">{(createForm.comment ?? '').length}/1000</p>
+          </div>
+
+          <DialogFooter>
+            <Button disabled={submitting} onClick={() => void createTeacher()}>
+              {submitting ? 'Создаём...' : 'Создать'}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setCreateOpen(false);
+                setCreateForm(emptyTeacherForm());
+              }}
+            >
+              Отмена
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={deleteOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteOpen(false);
+            setDeleteTeacher(null);
+            setDependencies([]);
+            setSelectedStudentIds([]);
+            return;
+          }
+          setDeleteOpen(true);
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {deleteTeacher
+                ? `Удалить преподавателя: ${formatPersonName({
+                    firstName: deleteTeacher.first_name,
+                    lastName: deleteTeacher.last_name,
+                    fallbackFullName: deleteTeacher.full_name
+                  })}`
+                : 'Удалить преподавателя'}
+            </DialogTitle>
+            <DialogDescription>
+              Удаление навсегда. Если есть привязанные ученики, сначала нужно отвязать их.
+            </DialogDescription>
+          </DialogHeader>
+
+          {dependenciesLoading ? (
+            <p className="text-sm text-muted-foreground">Загрузка...</p>
+          ) : !deleteTeacher ? null : dependencies.length === 0 ? (
+            <div className="flex flex-col gap-3">
+              <p className="text-sm">Привязанных учеников нет. Можно удалить преподавателя навсегда.</p>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  if (!window.confirm('Удалить навсегда? Это действие нельзя отменить.')) return;
+                  void deletePermanently(deleteTeacher);
+                }}
+              >
+                Удалить навсегда
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              <Alert>
+                <AlertTitle>Удаление заблокировано</AlertTitle>
+                <AlertDescription>
+                  Есть привязанные ученики. Отвяжите выбранных или всех учеников, чтобы продолжить удаление.
+                </AlertDescription>
+              </Alert>
+
+              <div className="flex flex-col gap-2">
+                {dependencies.map((student) => {
+                  const checked = selectedStudentIds.includes(student.id);
+
+                  return (
+                    <label key={student.id} className="flex items-center gap-2 rounded-md border p-2 text-sm">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(value) => {
+                          const isChecked = Boolean(value);
+                          setSelectedStudentIds((prev) => {
+                            if (isChecked) {
+                              return prev.includes(student.id) ? prev : [...prev, student.id];
+                            }
+                            return prev.filter((id) => id !== student.id);
+                          });
+                        }}
+                      />
+                      <span>
                         {formatPersonName({
                           firstName: student.first_name,
                           lastName: student.last_name,
                           fallbackFullName: student.full_name
                         })}
-                      </Checkbox>
-                    ))}
-                  </Space>
-                </Checkbox.Group>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
 
-                <Space>
-                  <Button disabled={selectedStudentIds.length === 0} onClick={() => void unbindSelected()}>
-                    Отвязать выбранных
-                  </Button>
-                  <Button
-                    danger
-                    onClick={() => {
-                      modal.confirm({
-                        title: 'Отвязать всех и удалить?',
-                        content: 'Все ученики будут отвязаны от преподавателя, после чего запись будет удалена навсегда.',
-                        okButtonProps: { danger: true },
-                        onOk: async () => {
-                          await unbindAllAndDelete(deleteTeacher);
-                        }
-                      });
-                    }}
-                  >
-                    Отвязать всех и удалить
-                  </Button>
-                </Space>
-              </>
-            )}
-          </Space>
-        )}
-      </Modal>
-    </Space>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" disabled={selectedStudentIds.length === 0} onClick={() => void unbindSelected()}>
+                  Отвязать выбранных
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    if (!window.confirm('Отвязать всех и удалить? Это действие нельзя отменить.')) return;
+                    void unbindAllAndDelete(deleteTeacher);
+                  }}
+                >
+                  Отвязать всех и удалить
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

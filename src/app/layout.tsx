@@ -1,11 +1,13 @@
 import './globals.css';
-import 'antd/dist/reset.css';
 import type { Metadata } from 'next';
-import { AntdRegistry } from '@ant-design/nextjs-registry';
 import { getCurrentSession } from '@/lib/auth';
 import { AppProviders } from '@/components/app-providers';
 import { AppShell } from '@/components/app-shell';
 import { RuntimeErrorBoundary } from '@/components/runtime-error-boundary';
+import { Inter } from "next/font/google";
+import { cn } from "@/lib/utils";
+
+const inter = Inter({subsets:['latin'],variable:'--font-sans'});
 
 export const metadata: Metadata = {
   title: 'GelbCRM',
@@ -17,15 +19,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const session = await getCurrentSession();
 
   return (
-    <html lang="ru">
+    <html lang="ru" className={cn("font-sans", inter.variable)}>
       <body>
-        <AntdRegistry>
-          <AppProviders>
-            <RuntimeErrorBoundary>
-              <AppShell session={session}>{children}</AppShell>
-            </RuntimeErrorBoundary>
-          </AppProviders>
-        </AntdRegistry>
+        <AppProviders>
+          <RuntimeErrorBoundary>
+            <AppShell session={session}>{children}</AppShell>
+          </RuntimeErrorBoundary>
+        </AppProviders>
       </body>
     </html>
   );

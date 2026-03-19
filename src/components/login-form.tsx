@@ -1,15 +1,25 @@
 'use client';
 
-import { useState } from 'react';
+import { FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, Form, Input } from 'antd';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 export function LoginForm() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [form, setForm] = useState({ login: '', password: '' });
 
-  async function onSubmit(values: { login: string; password: string }) {
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!form.login.trim() || !form.password) {
+      setError('Введите логин и пароль');
+      return;
+    }
+
     setError(null);
     setLoading(true);
 
@@ -17,7 +27,7 @@ export function LoginForm() {
       const response = await fetch('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(values)
+        body: JSON.stringify({ login: form.login.trim(), password: form.password })
       });
 
       if (!response.ok) {
@@ -42,24 +52,39 @@ export function LoginForm() {
   }
 
   return (
-    <Form layout="vertical" onFinish={onSubmit}>
-      <Form.Item label="Логин" name="login" rules={[{ required: true, message: 'Введите логин' }]}>
-        <Input autoComplete="username" size="large" />
-      </Form.Item>
-
-      <Form.Item label="Пароль" name="password" rules={[{ required: true, message: 'Введите пароль' }]}>
-        <Input.Password autoComplete="current-password" size="large" />
-      </Form.Item>
+    <form className="flex w-full flex-col gap-4" onSubmit={onSubmit}>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="login">Логин</Label>
+        <Input
+          id="login"
+          autoComplete="username"
+          value={form.login}
+          onChange={(event) => setForm((prev) => ({ ...prev, login: event.target.value }))}
+          disabled={loading}
+        />
+      </div>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="password">Пароль</Label>
+        <Input
+          id="password"
+          type="password"
+          autoComplete="current-password"
+          value={form.password}
+          onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))}
+          disabled={loading}
+        />
+      </div>
 
       {error ? (
-        <Form.Item>
-          <Alert type="error" title={error} showIcon />
-        </Form.Item>
+        <Alert variant="destructive">
+          <AlertTitle>Ошибка входа</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       ) : null}
 
-      <Button type="primary" htmlType="submit" loading={loading} size="large" block>
-        Войти
+      <Button type="submit" disabled={loading}>
+        {loading ? 'Вход...' : 'Войти'}
       </Button>
-    </Form>
+    </form>
   );
 }

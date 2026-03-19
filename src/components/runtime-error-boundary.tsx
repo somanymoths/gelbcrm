@@ -1,7 +1,8 @@
 'use client';
 
 import React from 'react';
-import { Alert, Button, Space } from 'antd';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 
 type RuntimeErrorBoundaryState = {
   hasError: boolean;
@@ -28,18 +29,16 @@ export class RuntimeErrorBoundary extends React.Component<React.PropsWithChildre
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 16 }}>
-          <Space direction="vertical" size={16} style={{ width: '100%', maxWidth: 560 }}>
-            <Alert
-              type="error"
-              showIcon
-              message="Не удалось загрузить приложение"
-              description="Произошла ошибка в браузере. Попробуйте обновить страницу."
-            />
-            <Button type="primary" onClick={this.handleReload}>
+        <div className="grid min-h-screen place-items-center p-4">
+          <div className="flex w-full max-w-xl flex-col gap-4">
+            <Alert variant="destructive">
+              <AlertTitle>Не удалось загрузить приложение</AlertTitle>
+              <AlertDescription>Произошла ошибка в браузере. Попробуйте обновить страницу.</AlertDescription>
+            </Alert>
+            <Button className="w-fit" onClick={this.handleReload}>
               Обновить страницу
             </Button>
-          </Space>
+          </div>
         </div>
       );
     }
