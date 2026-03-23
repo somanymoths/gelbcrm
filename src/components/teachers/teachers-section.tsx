@@ -634,15 +634,15 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
         <div className="flex flex-wrap gap-2">
           {scope === 'active' ? (
             <>
-              <Link href={archivePath}>
-                <Button variant="secondary">Перейти в архив</Button>
-              </Link>
+              <Button asChild variant="secondary">
+                <Link href={archivePath}>Перейти в архив</Link>
+              </Button>
               <Button onClick={() => setCreateOpen(true)}>Добавить преподавателя</Button>
             </>
           ) : (
-            <Link href={normalizedBasePath}>
-              <Button variant="secondary">К активным</Button>
-            </Link>
+            <Button asChild variant="secondary">
+              <Link href={normalizedBasePath}>К активным</Link>
+            </Button>
           )}
         </div>
       </div>

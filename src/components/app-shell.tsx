@@ -4,6 +4,14 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { AppNav } from '@/components/nav';
 import { Badge } from '@/components/ui/badge';
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarHeader,
+  SidebarInset,
+  SidebarProvider,
+  SidebarSeparator
+} from '@/components/ui/sidebar';
 import type { SessionUser } from '@/lib/session';
 
 export function AppShell({ children, session }: { children: React.ReactNode; session: SessionUser | null }) {
@@ -32,19 +40,24 @@ export function AppShell({ children, session }: { children: React.ReactNode; ses
   }
 
   return (
-    <div className="min-h-screen lg:grid lg:grid-cols-[260px_1fr]">
-      <aside className="sticky top-0 h-screen overflow-y-auto border-r border-border p-4">
-        <div className="flex flex-col gap-3.5">
+    <SidebarProvider>
+      <Sidebar variant="floating">
+        <SidebarHeader>
           <div className="flex flex-col gap-1.5">
             <h1 className="m-0 text-xl font-semibold">GelbCRM</h1>
             <Badge variant="secondary">
               {session.role === 'admin' ? 'Администратор' : 'Преподаватель'}: {session.login}
             </Badge>
           </div>
-          <AppNav role={session.role} pathname={pathname} mode="inline" />
-        </div>
-      </aside>
-      <main className="mx-auto w-full max-w-7xl p-5">{children}</main>
-    </div>
+        </SidebarHeader>
+        <SidebarSeparator />
+        <SidebarContent>
+          <AppNav role={session.role} pathname={pathname} />
+        </SidebarContent>
+      </Sidebar>
+      <SidebarInset className="bg-background/70">
+        <main className="mx-auto w-full max-w-7xl p-6">{children}</main>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }
