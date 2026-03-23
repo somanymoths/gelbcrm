@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
 import {
@@ -7,31 +8,18 @@ import {
   expireCardPaymentLink,
   getActiveCardPaymentLink,
   getActiveCardPaymentLinkForRefresh,
-  getTariffPackageForPayment,
+  getFunnelCardById,
+  listPaymentTariffs,
   listCardPaymentLinks
 } from '@/lib/funnel';
-import { createYooKassaPayment } from '@/lib/payments/yookassa';
-import { upsertYookassaPayment } from '@/lib/db';
 
 const createSchema = z.object({
-  tariffPackageId: z.string().trim().uuid().optional(),
-  returnUrl: z.string().trim().url().optional(),
+  tariffGridId: z.string().trim().uuid().optional(),
   refreshActive: z.boolean().optional()
-}).refine((payload) => payload.refreshActive === true || Boolean(payload.tariffPackageId), {
-  message: 'tariffPackageId is required when refreshActive is false',
-  path: ['tariffPackageId']
+}).refine((payload) => payload.refreshActive === true || Boolean(payload.tariffGridId), {
+  message: 'tariffGridId is required when refreshActive is false',
+  path: ['tariffGridId']
 });
-
-function getYooKassaCredentials() {
-  const shopId = process.env.YOOKASSA_SHOP_ID;
-  const secretKey = process.env.YOOKASSA_SECRET_KEY;
-
-  if (!shopId || !secretKey) {
-    throw new Error('YOOKASSA_NOT_CONFIGURED');
-  }
-
-  return { shopId, secretKey };
-}
 
 export async function GET(_: Request, context: { params: Promise<{ id: string }> }) {
   const guard = await requireAdmin();
@@ -55,29 +43,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ code: 'INVALID_PAYLOAD', message: 'Некорректные данные для создания ссылки оплаты' }, { status: 400 });
   }
 
-  let credentials: { shopId: string; secretKey: string };
-
   try {
-    credentials = getYooKassaCredentials();
-  } catch {
-    return NextResponse.json(
-      { code: 'YOOKASSA_NOT_CONFIGURED', message: 'YooKassa не настроена на сервере' },
-      { status: 503 }
-    );
-  }
+    const card = await getFunnelCardById({ cardId: id });
+    if (!card) {
+      return NextResponse.json({ code: 'STUDENT_NOT_FOUND', message: 'Карточка не найдена' }, { status: 404 });
+    }
 
-  const returnUrl = parsed.data.returnUrl ?? process.env.APP_URL ?? 'http://localhost:3000/funnel';
-
-  try {
-    let tariffPackage:
-      | {
-          id: string;
-          tariff_grid_id: string;
-          tariff_name: string;
-          lessons_count: number;
-          total_price_rub: number;
-        }
-      | null = null;
+    let selectedTariffGridId: string;
+    let selectedTariffPackageId: string;
+    let selectedPackageAmount: number;
 
     if (parsed.data.refreshActive === true) {
       const activeForRefresh = await getActiveCardPaymentLinkForRefresh({ cardId: id });
@@ -89,7 +63,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       }
 
       await expireCardPaymentLink({ cardId: id, linkId: activeForRefresh.linkId });
-      tariffPackage = activeForRefresh.tariffPackage;
+      selectedTariffGridId = activeForRefresh.tariffPackage.tariff_grid_id;
+      selectedTariffPackageId = activeForRefresh.tariffPackage.id;
+      selectedPackageAmount = activeForRefresh.tariffPackage.total_price_rub;
     } else {
       const activeLink = await getActiveCardPaymentLink({ cardId: id });
       if (activeLink) {
@@ -103,59 +79,54 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         );
       }
 
-      tariffPackage = await getTariffPackageForPayment({ tariffPackageId: parsed.data.tariffPackageId! });
-      if (!tariffPackage) {
-        return NextResponse.json({ code: 'TARIFF_PACKAGE_NOT_FOUND', message: 'Пакет тарифа не найден' }, { status: 404 });
+      const tariffs = await listPaymentTariffs();
+      const selectedTariff = tariffs.find((item) => item.id === parsed.data.tariffGridId);
+
+      if (!selectedTariff) {
+        return NextResponse.json({ code: 'TARIFF_GRID_NOT_FOUND', message: 'Тариф не найден' }, { status: 404 });
       }
+
+      const defaultPackage = selectedTariff.packages[0];
+      if (!defaultPackage) {
+        return NextResponse.json(
+          { code: 'TARIFF_HAS_NO_PACKAGES', message: 'У выбранного тарифа нет активных пакетов' },
+          { status: 409 }
+        );
+      }
+
+      selectedTariffGridId = selectedTariff.id;
+      selectedTariffPackageId = defaultPackage.id;
+      selectedPackageAmount = defaultPackage.total_price_rub;
     }
 
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const appBaseUrl = process.env.APP_URL ?? new URL(request.url).origin;
+    const tariffPageUrl = new URL(`/payment-links/${selectedTariffGridId}`, appBaseUrl);
+    const payerName = [card.first_name?.trim() ?? '', card.last_name?.trim() ?? ''].filter(Boolean).join(' ').trim() || card.full_name?.trim() || '';
+    const payerEmail = card.email?.trim() ?? '';
 
-    const payment = await createYooKassaPayment({
-      shopId: credentials.shopId,
-      secretKey: credentials.secretKey,
-      amountRub: tariffPackage.total_price_rub,
-      returnUrl,
-      description: `${tariffPackage.tariff_name}: ${tariffPackage.lessons_count} занятий`,
-      metadata: {
-        student_id: id,
-        tariff_package_id: tariffPackage.id,
-        lessons_count: String(tariffPackage.lessons_count)
-      }
+    if (payerName) tariffPageUrl.searchParams.set('name', payerName);
+    if (payerEmail) tariffPageUrl.searchParams.set('email', payerEmail);
+    tariffPageUrl.searchParams.set('expiresAt', expiresAt);
+
+    const providerPaymentId = `tariff-page-${randomUUID()}`;
+
+    await createCardPaymentLinkRecord({
+      cardId: id,
+      actorUserId: guard.session.id,
+      tariffPackageId: selectedTariffPackageId,
+      providerPaymentId,
+      paymentUrl: tariffPageUrl.toString(),
+      amount: selectedPackageAmount,
+      currency: 'RUB',
+      expiresAt
     });
-
-    await Promise.all([
-      createCardPaymentLinkRecord({
-        cardId: id,
-        actorUserId: guard.session.id,
-        tariffPackageId: tariffPackage.id,
-        providerPaymentId: payment.id,
-        paymentUrl: payment.confirmationUrl,
-        amount: tariffPackage.total_price_rub,
-        currency: 'RUB',
-        expiresAt
-      }),
-      upsertYookassaPayment({
-        providerPaymentId: payment.id,
-        status: payment.status,
-        amount: tariffPackage.total_price_rub,
-        currency: 'RUB',
-        tariffName: tariffPackage.tariff_name,
-        lessonsCount: tariffPackage.lessons_count,
-        metadata: {
-          student_id: id,
-          tariff_package_id: tariffPackage.id,
-          lessons_count: String(tariffPackage.lessons_count)
-        },
-        paidAt: null
-      })
-    ]);
 
     return NextResponse.json(
       {
-        paymentId: payment.id,
-        status: payment.status,
-        confirmationUrl: payment.confirmationUrl,
+        paymentId: providerPaymentId,
+        status: 'pending',
+        confirmationUrl: tariffPageUrl.toString(),
         expiresAt
       },
       { status: 201 }

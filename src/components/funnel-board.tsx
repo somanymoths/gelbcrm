@@ -140,6 +140,7 @@ function formatDate(value: string | null | undefined): string {
 }
 
 function auditActionLabel(action: string): string {
+  if (action === 'update_stage') return 'Смена этапа';
   if (action === 'manual_lessons_add') return 'Ручное добавление занятий';
   if (action === 'add_comment') return 'Комментарий';
   if (action === 'assign_teacher') return 'Назначение преподавателя';
@@ -148,7 +149,47 @@ function auditActionLabel(action: string): string {
   if (action === 'restore') return 'Восстановление';
   if (action === 'create') return 'Создание карточки';
   if (action === 'update') return 'Обновление карточки';
-  return action;
+  if (action === 'payment_link_create') return 'Ссылка на оплату создана';
+  if (action === 'payment_link_delete') return 'Ссылка на оплату удалена';
+  return 'Системное событие';
+}
+
+function stageCodeLabel(stageCode: string | null | undefined): string {
+  if (!stageCode) return 'неизвестно';
+  if (stageCode === 'interested') return 'Заинтересовался';
+  if (stageCode === 'qualification') return 'Квалификация';
+  if (stageCode === 'acquaintance') return 'Знакомство';
+  if (stageCode === 'payment') return 'Оплата';
+  if (stageCode === 'studying') return 'На занятиях';
+  if (stageCode === 'last_lesson') return 'Последнее занятие';
+  if (stageCode === 'declined') return 'Отказался';
+  if (stageCode === 'stopped') return 'Перестал заниматься';
+  return stageCode;
+}
+
+function getAuditSummary(item: FunnelAuditItem): { title: string; details?: string; color: string } {
+  if (item.action === 'manual_lessons_add') {
+    const added = Number(item.diff_after?.lessons_added ?? 0);
+    const comment = typeof item.diff_after?.comment === 'string' ? item.diff_after.comment : null;
+    return {
+      title: `Добавлено занятий: +${added}`,
+      details: comment ?? undefined,
+      color: '#d9d9f3'
+    };
+  }
+
+  if (item.action === 'update_stage' || item.action === 'move_stage') {
+    const stageCode = typeof item.diff_after?.stage_code === 'string' ? item.diff_after.stage_code : null;
+    return {
+      title: `Этап изменен: ${stageCodeLabel(stageCode)}`,
+      color: '#e6e7f5'
+    };
+  }
+
+  return {
+    title: auditActionLabel(item.action),
+    color: '#e6e7f5'
+  };
 }
 
 function formatEventDate(value: string | null | undefined): string {
@@ -169,7 +210,7 @@ function formatCountdown(targetDate: string | null, nowTs: number): string {
   const targetTs = new Date(targetDate).getTime();
   if (Number.isNaN(targetTs)) return '—';
 
-  const diff = targetTs - nowTs;
+  const diff = targetTs - nowTs - 1000;
   if (diff <= 0) return '00:00:00';
 
   const totalSec = Math.floor(diff / 1000);
@@ -210,7 +251,7 @@ export function FunnelBoard() {
   const [selectedTeacherId, setSelectedTeacherId] = useState<string | null>(null);
   const [teacherSaving, setTeacherSaving] = useState(false);
 
-  const [selectedTariffPackageId, setSelectedTariffPackageId] = useState<string | null>(null);
+  const [selectedTariffId, setSelectedTariffId] = useState<string | null>(null);
   const [paymentLinkCreating, setPaymentLinkCreating] = useState(false);
   const [paymentLinkDeleting, setPaymentLinkDeleting] = useState(false);
   const [manualLessonsToAdd, setManualLessonsToAdd] = useState<number>(1);
@@ -333,17 +374,15 @@ export function FunnelBoard() {
     return map;
   }, [teachers]);
 
-  const tariffPackageOptions = useMemo(() => {
-    return tariffs.flatMap((tariff) =>
-      tariff.packages.map((pkg) => ({
-        value: pkg.id,
-        label: `${tariff.name}: ${pkg.lessons_count} занятий / ${pkg.total_price_rub} ₽`
-      }))
-    );
+  const tariffOptions = useMemo(() => {
+    return tariffs.map((tariff) => ({
+      value: tariff.id,
+      label: `${tariff.name} (${tariff.packages.length} пак.)`
+    }));
   }, [tariffs]);
 
   const recentEvents = useMemo(() => {
-    const events: Array<{ id: string; title: string; created_at: string; color: string }> = [];
+    const events: Array<{ id: string; title: string; details?: string; created_at: string; color: string }> = [];
 
     for (const item of paymentLinks) {
       if (item.status === 'paid') {
@@ -357,19 +396,14 @@ export function FunnelBoard() {
     }
 
     for (const item of auditItems) {
-      let title = auditActionLabel(item.action);
-
-      if (item.action === 'manual_lessons_add') {
-        title = `+${Number(item.diff_after?.lessons_added ?? 0)} новых занятий`;
-      } else if (item.action === 'move_stage' && item.diff_after?.stage_code === 'last_lesson') {
-        title = 'Закончил занятие';
-      }
+      const summary = getAuditSummary(item);
 
       events.push({
         id: `audit-${item.id}`,
-        title,
+        title: summary.title,
+        details: summary.details,
         created_at: item.created_at,
-        color: item.action === 'manual_lessons_add' ? '#d9d9f3' : '#e6e7f5'
+        color: summary.color
       });
     }
 
@@ -705,14 +739,14 @@ export function FunnelBoard() {
   }
 
   async function onCreatePaymentLink() {
-    if (!selectedCard || !selectedTariffPackageId) return;
+    if (!selectedCard || !selectedTariffId) return;
 
     setPaymentLinkCreating(true);
 
     const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/payment-links`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tariffPackageId: selectedTariffPackageId })
+      body: JSON.stringify({ tariffGridId: selectedTariffId })
     });
 
     setPaymentLinkCreating(false);
@@ -1023,374 +1057,449 @@ export function FunnelBoard() {
       )}
 
       <Sheet open={drawerOpen} onOpenChange={(nextOpen) => !nextOpen && closeCardDrawer()}>
-        <SheetContent side="right" className="max-w-[560px] p-0 sm:max-w-[560px]">
-          <div className="h-full overflow-auto bg-muted/20 p-5">
-        {detailsLoading || !selectedCard ? (
-          <div className="py-6 text-center">
-            <div className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-              <Spinner />
-              <span>Загрузка...</span>
-            </div>
-          </div>
-        ) : (
-          <div className="flex w-full flex-col gap-5">
-            <div className="flex w-full items-center justify-between gap-2">
-              <div className="flex flex-row gap-2">
-                <UIButton
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Закрыть карточку"
-                  onClick={() => {
-                    closeCardDrawer();
-                  }}
-                >
-                  <CloseOutlined />
-                </UIButton>
-                <span className="text-base font-semibold">Карточка ученика</span>
-              </div>
-              <UIButton
-                variant={editMode ? 'outline' : 'default'}
-                size="sm"
-                onClick={() => setEditMode((prev) => !prev)}
-              >
-                {editMode ? 'Готово' : 'Редактировать'}
-              </UIButton>
-            </div>
-
-            <div className="flex flex-row gap-2">
-              <UIAvatar className="size-14 ring-1 ring-border/50">
-                <AvatarFallback className="text-xl font-medium text-foreground">{selectedCard.first_name?.[0] ?? 'У'}</AvatarFallback>
-              </UIAvatar>
-              <div className="flex flex-col gap-1">
-                <span className="text-lg font-semibold leading-tight">
-                  {formatPersonName({
-                    firstName: selectedCard.first_name,
-                    lastName: selectedCard.last_name,
-                    fallbackFullName: selectedCard.full_name
-                  })}
-                </span>
-                <span className="text-sm text-muted-foreground underline">
-                  {selectedCard.contact_link || '@telegram'}
-                </span>
-              </div>
-            </div>
-
-            {editMode ? (
-              <UICard size="sm" className="bg-card ring-1 ring-border/50 shadow-sm">
-                <CardHeader className="px-3 pb-2">
-                  <CardTitle>Редактирование данных</CardTitle>
-                </CardHeader>
-                <CardContent className="px-3 pb-3">
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <div className="flex flex-col gap-1">
-                    <span>Имя</span>
-                    <UIInput value={selectedCard.first_name ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, first_name: event.target.value } : prev))} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <span>Фамилия</span>
-                    <UIInput value={selectedCard.last_name ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, last_name: event.target.value } : prev))} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <span>Телефон</span>
-                    <UIInput value={selectedCard.phone ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, phone: event.target.value } : prev))} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <span>Email</span>
-                    <UIInput value={selectedCard.email ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, email: event.target.value } : prev))} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <span>Контакт</span>
-                    <UIInput value={selectedCard.contact_link ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, contact_link: event.target.value } : prev))} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <span>Источник</span>
-                    <UIInput value={selectedCard.lead_source ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, lead_source: event.target.value } : prev))} />
-                  </div>
-                  <div className="md:col-span-2">
-                    <div className="flex flex-row gap-2">
-                      <UIButton variant="default" onClick={() => void onSaveDetails()}>
-                        Сохранить
-                      </UIButton>
-                      <UIButton variant="destructive" onClick={() => void onArchiveSelectedCard()}>
-                        В архив
-                      </UIButton>
-                    </div>
-                  </div>
+        <SheetContent side="right" className="w-full max-w-[560px] p-0 sm:max-w-[560px]">
+          <div className="h-full overflow-auto overflow-x-hidden bg-muted/20 p-4 sm:p-5">
+            {detailsLoading || !selectedCard ? (
+              <div className="py-8 text-center">
+                <div className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                  <Spinner />
+                  <span>Загрузка карточки...</span>
                 </div>
-                </CardContent>
-              </UICard>
-            ) : null}
-
-            <UICard size="sm" className="bg-card ring-1 ring-border/50 shadow-sm">
-              <CardHeader className="px-3 pb-2">
-                <CardTitle>Преподаватель</CardTitle>
-              </CardHeader>
-              <CardContent className="px-3 pb-3">
-                <div className="flex flex-row gap-2">
-                <NativeSelect
-                  className="min-w-[260px]"
-                  value={selectedTeacherId ?? ''}
-                  onChange={(event) => setSelectedTeacherId(event.target.value || null)}
-                >
-                  <option value="">Не назначен</option>
-                  {teachers.map((teacher) => (
-                    <option key={teacher.id} value={teacher.id}>
-                      {teacherNameById.get(teacher.id) ?? teacher.full_name}
-                    </option>
-                  ))}
-                </NativeSelect>
-                <UIButton
-                  variant="default"
-                  onClick={() => void onAssignTeacher()}
-                  disabled={teacherSaving || !selectedCard || selectedCard.assigned_teacher_id === selectedTeacherId}
-                >
-                  {teacherSaving ? (
-                    <>
-                      <Spinner className="size-4" />
-                      <span>Сохранение...</span>
-                    </>
-                  ) : (
-                    'Сохранить'
-                  )}
-                </UIButton>
-                </div>
-              </CardContent>
-            </UICard>
-
-            <div className="flex w-full flex-col gap-3">
-              <div className="flex w-full items-center justify-between gap-2">
-                <div className="flex flex-row gap-2">
-                  <span className="text-base font-semibold">
-                    Занятия
-                  </span>
-                  <UIButton
-                    onClick={() => void onAddManualLessons()}
-                    disabled={manualLessonsSaving}
-                    size="sm"
-                  >
-                    {manualLessonsSaving ? <Spinner className="size-4" /> : <PlusOutlined />} Добавить
-                  </UIButton>
-                </div>
-                <span className="text-sm text-muted-foreground">{`Осталось ${selectedCard.paid_lessons_left}`}</span>
               </div>
-
-              <div className="flex w-full flex-row gap-2">
-                <UIInput
-                  type="number"
-                  min={1}
-                  value={manualLessonsToAdd}
-                  className="h-9"
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setManualLessonsToAdd(value === '' ? 1 : Number(value) || 1);
-                  }}
-                />
-                <UIInput
-                  value={manualLessonsComment}
-                  onChange={(event) => setManualLessonsComment(event.target.value)}
-                  placeholder="Комментарий к добавлению (обязательно)"
-                />
-              </div>
-
-              <div className="relative h-3 w-full rounded-full bg-secondary">
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: 0,
-                    top: 0,
-                    height: 12,
-                    borderRadius: 11,
-                    background: 'var(--primary)',
-                    width: `${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}%`
-                  }}
-                />
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: -3,
-                    left: `calc(${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}% - 10px)`,
-                    width: 20,
-                    height: 18,
-                    borderRadius: 11,
-                    background: 'var(--foreground)'
-                  }}
-                />
-              </div>
-
-              <div className="flex w-full flex-row gap-2">
-                <NativeSelect
-                  className="min-w-[360px] flex-1"
-                  value={selectedTariffPackageId ?? ''}
-                  disabled={Boolean(activePaymentLink)}
-                  onChange={(event) => setSelectedTariffPackageId(event.target.value)}
-                >
-                  <option value="" disabled>
-                    Выберите тариф и пакет
-                  </option>
-                  {tariffPackageOptions.map((option) => (
-                    <option key={String(option.value)} value={String(option.value)}>
-                      {typeof option.label === 'string' ? option.label : String(option.value)}
-                    </option>
-                  ))}
-                </NativeSelect>
-                <UIButton
-                  variant="default"
-                  onClick={() => void onCreatePaymentLink()}
-                  disabled={paymentLinkCreating || Boolean(activePaymentLink)}
-                >
-                  {paymentLinkCreating ? (
-                    <>
-                      <Spinner className="size-4" />
-                      <span>Создание...</span>
-                    </>
-                  ) : (
-                    'Создать ссылку'
-                  )}
-                </UIButton>
-              </div>
-
-              {activePaymentLink ? (
-                <div className="flex w-full flex-col gap-2">
-                  <span className="text-muted-foreground">
-                    Активная ссылка уже создана. Новую можно создать после окончания срока действия.
-                  </span>
-                  <div className="flex w-full flex-row gap-2">
-                    <UIInput value={activePaymentLink.payment_url} readOnly />
-                    <UIButton variant="outline" size="icon-sm" onClick={() => void onCopyPaymentLink(activePaymentLink.payment_url)}>
-                      <CopyOutlined />
-                    </UIButton>
-                    <UIButton variant="outline" size="icon-sm" onClick={() => window.open(activePaymentLink.payment_url, '_blank', 'noopener,noreferrer')}>
-                      <ExportOutlined />
-                    </UIButton>
-                    <UIButton variant="outline" disabled={paymentLinkCreating} onClick={() => void onRefreshPaymentLink()}>
-                      {paymentLinkCreating ? <Spinner className="size-4" /> : <RedoOutlined />}
-                      Обновить
-                    </UIButton>
-                    <UIButton variant="destructive" disabled={paymentLinkDeleting} onClick={() => void onDeleteActivePaymentLink()}>
-                      {paymentLinkDeleting ? <Spinner className="size-4" /> : <DeleteOutlined />}
-                      Удалить
-                    </UIButton>
-                  </div>
-                  <span className="text-muted-foreground">
-                    Срок действия: {formatCountdown(activePaymentLink.expires_at, nowTs)}
-                  </span>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="flex w-full items-center justify-between gap-2">
-              <span className="text-base font-semibold">
-                Последние события
-              </span>
-              <UIButton
-                variant="link"
-                className="px-0 text-base text-muted-foreground"
-                onClick={() => setShowFullHistory((prev) => !prev)}
-              >
-                Вся история
-              </UIButton>
-            </div>
-
-            {recentEvents.length === 0 ? (
-              <span className="text-muted-foreground">Событий пока нет</span>
             ) : (
-              <div className="flex w-full flex-col gap-3">
-                {recentEvents.map((event) => (
-                  <div className="flex flex-row gap-2" key={event.id}>
-                    <UIAvatar className="size-9 ring-1 ring-border/50" style={{ backgroundColor: event.color }}>
-                      <AvatarFallback />
-                    </UIAvatar>
-                    <div className="flex flex-col gap-1">
-                      <span className="text-base">{event.title}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {formatEventDate(event.created_at)}
-                      </span>
+              <div className="flex min-w-0 w-full flex-col gap-4">
+                <UICard size="sm" className="min-w-0 bg-card ring-1 ring-border/50 shadow-sm">
+                  <CardContent className="px-4 pb-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <UIButton
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Закрыть карточку"
+                        onClick={closeCardDrawer}
+                      >
+                        <CloseOutlined />
+                      </UIButton>
+                      <UIButton
+                        variant={editMode ? 'outline' : 'default'}
+                        size="sm"
+                        onClick={() => setEditMode((prev) => !prev)}
+                      >
+                        {editMode ? 'Готово' : 'Редактировать'}
+                      </UIButton>
                     </div>
-                  </div>
-                ))}
+
+                    <div className="mt-3 flex items-start gap-3">
+                      <UIAvatar className="size-14 ring-1 ring-border/50">
+                        <AvatarFallback className="text-xl font-medium text-foreground">{selectedCard.first_name?.[0] ?? 'У'}</AvatarFallback>
+                      </UIAvatar>
+                      <div className="flex min-w-0 flex-1 flex-col gap-1">
+                        <span className="text-lg font-semibold leading-tight">
+                          {formatPersonName({
+                            firstName: selectedCard.first_name,
+                            lastName: selectedCard.last_name,
+                            fallbackFullName: selectedCard.full_name
+                          })}
+                        </span>
+                        <span className="break-all text-sm text-muted-foreground">
+                          {selectedCard.contact_link || 'Контакт не указан'}
+                        </span>
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <Badge
+                            variant="secondary"
+                            className={cn(
+                              selectedCard.entity_type === 'student' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'
+                            )}
+                          >
+                            {selectedCard.entity_type === 'student' ? 'Ученик' : 'Лид'}
+                          </Badge>
+                          <Badge variant="outline">{selectedCard.stage_name}</Badge>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <label className="text-xs text-muted-foreground">Этап</label>
+                      <NativeSelect
+                        className="mt-1 w-full"
+                        value={selectedCard.stage_code}
+                        onChange={(event) => void onChangeStage(selectedCard.id, event.target.value)}
+                      >
+                        {stages.map((item) => (
+                          <option key={item.code} value={item.code}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </NativeSelect>
+                    </div>
+                  </CardContent>
+                </UICard>
+
+                <UICard size="sm" className="min-w-0 bg-card ring-1 ring-border/50 shadow-sm">
+                  <CardHeader className="px-4 pb-2">
+                    <CardTitle>Основные данные</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4">
+                    {editMode ? (
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="flex flex-col gap-1">
+                          <span className="text-sm">Имя *</span>
+                          <UIInput value={selectedCard.first_name ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, first_name: event.target.value } : prev))} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-sm">Фамилия *</span>
+                          <UIInput value={selectedCard.last_name ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, last_name: event.target.value } : prev))} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-sm">Телефон</span>
+                          <UIInput value={selectedCard.phone ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, phone: event.target.value } : prev))} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-sm">Email</span>
+                          <UIInput value={selectedCard.email ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, email: event.target.value } : prev))} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-sm">Контакт</span>
+                          <UIInput value={selectedCard.contact_link ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, contact_link: event.target.value } : prev))} />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-sm">Источник</span>
+                          <UIInput value={selectedCard.lead_source ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, lead_source: event.target.value } : prev))} />
+                        </div>
+                        <div className="sm:col-span-2 flex flex-wrap gap-2 pt-1">
+                          <UIButton variant="default" onClick={() => void onSaveDetails()}>
+                            Сохранить
+                          </UIButton>
+                          <UIButton
+                            variant="outline"
+                            onClick={() => {
+                              void refreshSelectedCard(selectedCard.id);
+                              setEditMode(false);
+                            }}
+                          >
+                            Отменить
+                          </UIButton>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                        <div className="flex flex-col gap-1">
+                          <span className="text-muted-foreground">Имя</span>
+                          <span>{selectedCard.first_name || '—'}</span>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-muted-foreground">Фамилия</span>
+                          <span>{selectedCard.last_name || '—'}</span>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-muted-foreground">Телефон</span>
+                          <span>{selectedCard.phone || '—'}</span>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-muted-foreground">Email</span>
+                          <span>{selectedCard.email || '—'}</span>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-muted-foreground">Контакт</span>
+                          <span className="break-all">{selectedCard.contact_link || '—'}</span>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-muted-foreground">Источник</span>
+                          <span>{selectedCard.lead_source || '—'}</span>
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </UICard>
+
+                <UICard size="sm" className="min-w-0 bg-card ring-1 ring-border/50 shadow-sm">
+                  <CardHeader className="px-4 pb-2">
+                    <CardTitle>Преподаватель</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4">
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <NativeSelect
+                        className="w-full sm:min-w-[260px]"
+                        value={selectedTeacherId ?? ''}
+                        onChange={(event) => setSelectedTeacherId(event.target.value || null)}
+                      >
+                        <option value="">Не назначен</option>
+                        {teachers.map((teacher) => (
+                          <option key={teacher.id} value={teacher.id}>
+                            {teacherNameById.get(teacher.id) ?? teacher.full_name}
+                          </option>
+                        ))}
+                      </NativeSelect>
+                      <UIButton
+                        variant="default"
+                        onClick={() => void onAssignTeacher()}
+                        disabled={teacherSaving || !selectedCard || selectedCard.assigned_teacher_id === selectedTeacherId}
+                      >
+                        {teacherSaving ? (
+                          <>
+                            <Spinner className="size-4" />
+                            <span>Сохранение...</span>
+                          </>
+                        ) : (
+                          'Сохранить'
+                        )}
+                      </UIButton>
+                    </div>
+                  </CardContent>
+                </UICard>
+
+                <UICard size="sm" className="min-w-0 bg-card ring-1 ring-border/50 shadow-sm">
+                  <CardHeader className="px-4 pb-2">
+                    <CardTitle>Занятия и оплата</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm text-muted-foreground">Осталось занятий</span>
+                      <span className="text-base font-semibold">{selectedCard.paid_lessons_left}</span>
+                    </div>
+
+                    <div className="mt-3 relative h-3 w-full rounded-full bg-secondary">
+                      <div
+                        style={{
+                          position: 'absolute',
+                          left: 0,
+                          top: 0,
+                          height: 12,
+                          borderRadius: 11,
+                          background: 'var(--primary)',
+                          width: `${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}%`
+                        }}
+                      />
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: -3,
+                          left: `calc(${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}% - 10px)`,
+                          width: 20,
+                          height: 18,
+                          borderRadius: 11,
+                          background: 'var(--foreground)'
+                        }}
+                      />
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[120px_minmax(0,1fr)_auto]">
+                      <UIInput
+                        type="number"
+                        min={1}
+                        value={manualLessonsToAdd}
+                        className="h-9"
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setManualLessonsToAdd(value === '' ? 1 : Number(value) || 1);
+                        }}
+                      />
+                      <UIInput
+                        value={manualLessonsComment}
+                        onChange={(event) => setManualLessonsComment(event.target.value)}
+                        placeholder="Комментарий к добавлению (обязательно)"
+                      />
+                      <UIButton onClick={() => void onAddManualLessons()} disabled={manualLessonsSaving}>
+                        {manualLessonsSaving ? <Spinner className="size-4" /> : <PlusOutlined />}
+                        Добавить
+                      </UIButton>
+                    </div>
+
+                    <Separator className="my-4" />
+
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <NativeSelect
+                        className="w-full flex-1"
+                        value={selectedTariffId ?? ''}
+                        disabled={Boolean(activePaymentLink)}
+                        onChange={(event) => setSelectedTariffId(event.target.value)}
+                      >
+                        <option value="" disabled>
+                          Выберите тариф
+                        </option>
+                        {tariffOptions.map((option) => (
+                          <option key={String(option.value)} value={String(option.value)}>
+                            {typeof option.label === 'string' ? option.label : String(option.value)}
+                          </option>
+                        ))}
+                      </NativeSelect>
+                      <UIButton
+                        variant="default"
+                        onClick={() => void onCreatePaymentLink()}
+                        disabled={paymentLinkCreating || Boolean(activePaymentLink)}
+                      >
+                        {paymentLinkCreating ? (
+                          <>
+                            <Spinner className="size-4" />
+                            <span>Создание...</span>
+                          </>
+                        ) : (
+                          'Создать ссылку'
+                        )}
+                      </UIButton>
+                    </div>
+
+                    {activePaymentLink ? (
+                      <div className="mt-3 min-w-0 flex flex-col gap-2 rounded-lg border border-border/70 bg-muted/30 p-3">
+                        <span className="text-sm text-muted-foreground">
+                          Активная ссылка уже создана. Новую можно создать после окончания срока действия.
+                        </span>
+                        <div className="flex min-w-0 flex-col gap-2 sm:flex-row">
+                          <UIInput value={activePaymentLink.payment_url} readOnly className="min-w-0 flex-1" />
+                          <div className="flex flex-wrap gap-2">
+                            <UIButton variant="outline" size="icon-sm" onClick={() => void onCopyPaymentLink(activePaymentLink.payment_url)}>
+                              <CopyOutlined />
+                            </UIButton>
+                            <UIButton variant="outline" size="icon-sm" onClick={() => window.open(activePaymentLink.payment_url, '_blank', 'noopener,noreferrer')}>
+                              <ExportOutlined />
+                            </UIButton>
+                            <UIButton variant="outline" disabled={paymentLinkCreating} onClick={() => void onRefreshPaymentLink()}>
+                              {paymentLinkCreating ? <Spinner className="size-4" /> : <RedoOutlined />}
+                              Обновить
+                            </UIButton>
+                            <UIButton variant="destructive" disabled={paymentLinkDeleting} onClick={() => void onDeleteActivePaymentLink()}>
+                              {paymentLinkDeleting ? <Spinner className="size-4" /> : <DeleteOutlined />}
+                              Удалить
+                            </UIButton>
+                          </div>
+                        </div>
+                        <span className="text-sm text-muted-foreground">
+                          Срок действия: {formatCountdown(activePaymentLink.expires_at, nowTs)}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="mt-3 rounded-lg border border-dashed border-border/70 bg-background/30 px-3 py-2 text-sm text-muted-foreground">
+                        Активной ссылки оплаты нет.
+                      </div>
+                    )}
+                  </CardContent>
+                </UICard>
+
+                <UICard size="sm" className="min-w-0 bg-card ring-1 ring-border/50 shadow-sm">
+                  <CardHeader className="px-4 pb-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <CardTitle>История</CardTitle>
+                      <UIButton
+                        variant="link"
+                        className="px-0 text-sm text-muted-foreground"
+                        onClick={() => setShowFullHistory((prev) => !prev)}
+                      >
+                        {showFullHistory ? 'Скрыть полную историю' : 'Вся история'}
+                      </UIButton>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4">
+                    {recentEvents.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-border/70 bg-background/30 px-3 py-2 text-sm text-muted-foreground">
+                        Событий пока нет.
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        {recentEvents.map((event) => (
+                          <div key={event.id} className="flex items-start gap-2 rounded-lg border border-border/60 bg-background/70 p-2.5">
+                            <UIAvatar className="size-8 ring-1 ring-border/50" style={{ backgroundColor: event.color }}>
+                              <AvatarFallback />
+                            </UIAvatar>
+                            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                              <span className="text-sm">{event.title}</span>
+                              {event.details ? <span className="text-xs text-muted-foreground">{event.details}</span> : null}
+                              <span className="text-xs text-muted-foreground">{formatEventDate(event.created_at)}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {showFullHistory ? (
+                      <div className="mt-3 flex flex-col gap-2">
+                        {auditItems.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-border/70 bg-background/30 px-3 py-2 text-sm text-muted-foreground">
+                            Лог пуст.
+                          </div>
+                        ) : (
+                          auditItems.map((item) => {
+                            const summary = getAuditSummary(item);
+                            return (
+                              <UICard key={item.id} size="sm" className="bg-background/80 ring-1 ring-border/40 shadow-sm">
+                                <CardContent className="px-3 pb-3">
+                                  <div className="flex flex-col gap-1.5">
+                                    <span className="text-sm font-medium">{summary.title}</span>
+                                    {summary.details ? <span className="text-sm text-muted-foreground">{summary.details}</span> : null}
+                                    <span className="text-xs text-muted-foreground">
+                                      {item.actor_login ?? 'admin'} • {formatDate(item.created_at)}
+                                    </span>
+                                  </div>
+                                </CardContent>
+                              </UICard>
+                            );
+                          })
+                        )}
+                      </div>
+                    ) : null}
+                  </CardContent>
+                </UICard>
+
+                <UICard size="sm" className="min-w-0 bg-card ring-1 ring-border/50 shadow-sm">
+                  <CardHeader className="px-4 pb-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <CardTitle>Заметки</CardTitle>
+                        <Badge variant="secondary">{cardComments.length}</Badge>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4">
+                    <div className="flex flex-col gap-2">
+                      <Textarea
+                        rows={2}
+                        value={newNoteBody}
+                        onChange={(event) => setNewNoteBody(event.target.value)}
+                        placeholder="Текст заметки"
+                      />
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-muted-foreground">Заметка сохраняется в общую историю карточки.</span>
+                        <UIButton disabled={addingNote} onClick={() => void onAddNote()}>
+                          {addingNote ? <Spinner className="size-4" /> : null}
+                          Добавить заметку
+                        </UIButton>
+                      </div>
+                    </div>
+
+                    {cardComments.length === 0 ? (
+                      <div className="mt-3 rounded-lg border border-dashed border-border/70 bg-background/30 px-3 py-2 text-sm text-muted-foreground">
+                        Заметок пока нет.
+                      </div>
+                    ) : (
+                      <div className="mt-3 flex flex-col gap-2">
+                        {cardComments.map((comment) => (
+                          <UICard key={comment.id} size="sm" className="bg-background/80 ring-1 ring-border/40 shadow-sm">
+                            <CardContent className="px-3 pb-3">
+                              <div className="flex flex-col gap-1.5">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="text-sm font-semibold">{`Заметка от ${comment.author_login ?? 'admin'}`}</span>
+                                  <span className="text-xs text-muted-foreground">{formatDate(comment.created_at)}</span>
+                                </div>
+                                <span className="text-sm">{comment.body}</span>
+                              </div>
+                            </CardContent>
+                          </UICard>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </UICard>
+
+                <UICard size="sm" className="min-w-0 bg-card ring-1 ring-border/50 shadow-sm">
+                  <CardHeader className="px-4 pb-2">
+                    <CardTitle>Опасная зона</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4">
+                    <UIButton variant="destructive" onClick={() => void onArchiveSelectedCard()}>
+                      В архив
+                    </UIButton>
+                  </CardContent>
+                </UICard>
               </div>
             )}
-
-            {showFullHistory ? (
-              <UICard size="sm" className="bg-card ring-1 ring-border/50 shadow-sm">
-                <CardHeader className="px-3 pb-2">
-                  <CardTitle>Полная история</CardTitle>
-                </CardHeader>
-                <CardContent className="px-3 pb-3">
-                {auditItems.length === 0 ? (
-                  <span className="text-muted-foreground">Лог пуст</span>
-                ) : (
-                  <div className="flex w-full flex-col gap-2">
-                    {auditItems.map((item) => (
-                      <UICard key={item.id} size="sm" className="bg-background/80 ring-1 ring-border/40 shadow-sm">
-                        <CardContent className="px-3 pb-3">
-                          <div className="flex flex-col gap-2">
-                          <span>
-                            {auditActionLabel(item.action)} • {item.actor_login ?? 'admin'}
-                          </span>
-                          {item.action === 'manual_lessons_add' ? (
-                            <span>
-                              {`+${Number(item.diff_after?.lessons_added ?? 0)} занятий`}
-                              {typeof item.diff_after?.comment === 'string' ? ` • ${item.diff_after.comment}` : ''}
-                            </span>
-                          ) : null}
-                          <span className="text-muted-foreground">{formatDate(item.created_at)}</span>
-                          </div>
-                        </CardContent>
-                      </UICard>
-                    ))}
-                  </div>
-                )}
-                </CardContent>
-              </UICard>
-            ) : null}
-
-            <UICard size="sm" className="bg-card ring-1 ring-border/50 shadow-sm">
-              <CardContent className="px-3 pb-3">
-                <div className="flex w-full items-center justify-between gap-2 border-b border-border pb-2">
-                <div className="flex flex-row gap-2">
-                  <span className="text-base font-semibold">
-                    Заметки
-                  </span>
-                  <Badge variant="secondary">{cardComments.length}</Badge>
-                </div>
-                <UIButton variant="link" className="px-0 text-destructive" onClick={() => void onAddNote()}>
-                  Добавить
-                </UIButton>
-                </div>
-                <div className="h-2" />
-                <div className="flex w-full flex-col gap-2">
-                <Textarea
-                  rows={2}
-                  value={newNoteBody}
-                  onChange={(event) => setNewNoteBody(event.target.value)}
-                  placeholder="Текст заметки"
-                />
-                <UIButton disabled={addingNote} onClick={() => void onAddNote()}>
-                  {addingNote ? <Spinner className="size-4" /> : null}
-                  Добавить заметку
-                </UIButton>
-
-                {cardComments.length === 0 ? (
-                  <span className="text-muted-foreground">Заметок пока нет</span>
-                ) : (
-                  <UICard size="sm" className="bg-background/80 ring-1 ring-border/40 shadow-sm">
-                    <CardContent className="px-3 pb-3">
-                      <div className="flex flex-col gap-2">
-                      <div className="flex w-full items-center justify-between gap-2">
-                        <span className="font-semibold">{`Заметка от ${cardComments[0].author_login ?? 'admin'}`}</span>
-                        <span className="text-muted-foreground">{formatDate(cardComments[0].created_at)}</span>
-                      </div>
-                      <span>{cardComments[0].body}</span>
-                      </div>
-                    </CardContent>
-                  </UICard>
-                )}
-                </div>
-              </CardContent>
-            </UICard>
-          </div>
-        )}
           </div>
         </SheetContent>
       </Sheet>
