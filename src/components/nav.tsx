@@ -1,22 +1,19 @@
 'use client';
 
 import { useMemo } from 'react';
-import { useRouter } from 'next/navigation';
-import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
+import Link from 'next/link';
+import {
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem
+} from '@/components/ui/sidebar';
 import { NAV_ITEMS } from '@/lib/types';
 import type { AppRole } from '@/lib/types';
 
-export function AppNav({
-  role,
-  pathname,
-  mode = 'inline'
-}: {
-  role: AppRole;
-  pathname: string;
-  mode?: 'inline' | 'horizontal';
-}) {
-  const router = useRouter();
+export function AppNav({ role, pathname }: { role: AppRole; pathname: string }) {
   const allowed = NAV_ITEMS.filter((item) => item.roles.includes(role));
 
   const selectedKey = useMemo(() => {
@@ -25,24 +22,19 @@ export function AppNav({
   }, [allowed, pathname]);
 
   return (
-    <nav
-      className={cn('flex gap-2', mode === 'horizontal' ? 'flex-row flex-wrap items-center' : 'flex-col items-stretch')}
-      aria-label="Основная навигация"
-    >
-      {allowed.map((item) => {
-        const isActive = selectedKey === item.href;
-        return (
-          <Button
-            key={item.href}
-            type="button"
-            variant={isActive ? 'default' : 'ghost'}
-            className={cn('justify-start', mode === 'inline' ? 'w-full' : '')}
-            onClick={() => router.push(item.href)}
-          >
-            {item.label}
-          </Button>
-        );
-      })}
-    </nav>
+    <SidebarGroup>
+      <SidebarGroupLabel>Навигация</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <SidebarMenu aria-label="Основная навигация">
+          {allowed.map((item) => (
+            <SidebarMenuItem key={item.href}>
+              <SidebarMenuButton asChild isActive={selectedKey === item.href}>
+                <Link href={item.href}>{item.label}</Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
   );
 }
