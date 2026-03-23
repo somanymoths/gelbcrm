@@ -866,25 +866,26 @@ export function FunnelBoard() {
   }
 
   return (
-    <div className="flex w-full flex-col gap-4">
-      <div>
+    <div className="flex w-full flex-col gap-4 rounded-xl border border-border/60 bg-muted/20 p-4">
+      <div className="space-y-1">
         <h2 className="mb-2 font-heading text-2xl font-semibold tracking-tight">
           Воронка
         </h2>
-        <span className="text-muted-foreground">
+        <span className="text-sm text-muted-foreground">
           Управление лидами/учениками по этапам с учётом оплат, истории изменений и архива.
         </span>
       </div>
 
-      <UICard className="border border-border/70 bg-card shadow-sm">
-        <CardContent className="px-4 pb-4">
-          <div className="flex flex-row gap-2">
+      <UICard className="bg-card/95 ring-1 ring-border/50 shadow-sm">
+        <CardContent className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+          <div className="flex flex-wrap gap-2">
             <UIButton variant="default" onClick={() => setCreateModalOpen(true)}>
               Создать карточку
             </UIButton>
             <UIButton onClick={() => void loadBoard()}>Обновить</UIButton>
             <UIButton onClick={() => void onOpenArchive()}>Архив карточек</UIButton>
           </div>
+          <Badge variant="secondary">{cards.length} карточек</Badge>
         </CardContent>
       </UICard>
 
@@ -902,18 +903,18 @@ export function FunnelBoard() {
           </div>
         </div>
       ) : (
-        <div ref={boardScrollContainerRef} className="w-full overflow-x-auto pb-1">
-          <div className="flex min-w-max items-start gap-3">
+        <div ref={boardScrollContainerRef} className="w-full overflow-x-auto rounded-xl bg-muted/30 p-2">
+          <div className="flex min-w-max items-start gap-4">
             {stages.map((stage) => {
             const stageCards = groupedCards.get(stage.code) ?? [];
             const isActiveDropZone = draggedCardId !== null && dragOverStageCode === stage.code;
 
             return (
-              <div key={stage.id} className="w-80 min-w-80 flex-none">
+              <div key={stage.id} className="w-[296px] min-w-[296px] flex-none">
                 <UICard
                   className={cn(
-                    'border border-border/70 bg-card shadow-sm transition-shadow',
-                    isActiveDropZone && 'border-primary ring-primary/30 shadow-sm'
+                    'bg-card/95 ring-1 ring-border/50 shadow-sm transition-shadow',
+                    isActiveDropZone && 'ring-2 ring-primary/40'
                   )}
                   onDragOver={(event) => {
                     event.preventDefault();
@@ -928,7 +929,7 @@ export function FunnelBoard() {
                   }}
                 >
                   <CardHeader className="px-4 pb-3">
-                    <CardTitle>{stage.name}</CardTitle>
+                    <CardTitle className="text-base">{stage.name}</CardTitle>
                     <CardAction>
                       <span className="text-muted-foreground">{stageCards.length}</span>
                     </CardAction>
@@ -939,7 +940,7 @@ export function FunnelBoard() {
                       <UICard
                         key={card.id}
                         size="sm"
-                        className="cursor-pointer border border-border/70 bg-card shadow-sm transition-shadow hover:shadow-md"
+                        className="cursor-pointer bg-background/90 ring-1 ring-border/40 shadow-sm transition-shadow hover:shadow-md"
                         draggable
                         style={{
                           cursor: 'grab',
@@ -965,14 +966,14 @@ export function FunnelBoard() {
                               fallbackFullName: card.full_name
                             })}
                           </span>
-                          <span className="text-muted-foreground">
+                          <span className="text-xs text-muted-foreground">
                             Преподаватель:{' '}
                             {card.assigned_teacher_id
                               ? teacherNameById.get(card.assigned_teacher_id) ?? card.teacher_full_name ?? 'Не назначен'
                               : 'Не назначен'}
                           </span>
-                          <span className="text-muted-foreground">Следующее занятие: {formatDate(card.next_lesson_at)}</span>
-                          <span className="text-muted-foreground">Осталось занятий: {card.paid_lessons_left}</span>
+                          <span className="text-xs text-muted-foreground">Следующее занятие: {formatDate(card.next_lesson_at)}</span>
+                          <span className="text-xs text-muted-foreground">Осталось занятий: {card.paid_lessons_left}</span>
                           <Badge
                             variant="secondary"
                             className={cn(
@@ -1002,8 +1003,8 @@ export function FunnelBoard() {
                     {stageCards.length === 0 ? (
                       <div
                         className={cn(
-                          'flex min-h-[120px] items-center justify-center rounded-md border border-dashed border-border bg-transparent p-3 text-center',
-                          isActiveDropZone && 'border-primary bg-primary/10'
+                          'flex min-h-[120px] items-center justify-center rounded-lg border border-dashed border-border/70 bg-background/30 p-3 text-center',
+                          isActiveDropZone && 'border-primary bg-primary/10 text-primary'
                         )}
                       >
                         <span className={cn(!isActiveDropZone && 'text-muted-foreground')}>
@@ -1022,8 +1023,8 @@ export function FunnelBoard() {
       )}
 
       <Sheet open={drawerOpen} onOpenChange={(nextOpen) => !nextOpen && closeCardDrawer()}>
-        <SheetContent side="right" className="max-w-[595px] p-0 sm:max-w-[595px]">
-          <div className="h-full overflow-auto p-6 pt-7">
+        <SheetContent side="right" className="max-w-[560px] p-0 sm:max-w-[560px]">
+          <div className="h-full overflow-auto bg-muted/20 p-5">
         {detailsLoading || !selectedCard ? (
           <div className="py-6 text-center">
             <div className="inline-flex items-center gap-2 text-sm text-muted-foreground">
@@ -1032,7 +1033,7 @@ export function FunnelBoard() {
             </div>
           </div>
         ) : (
-          <div className="flex w-full flex-col gap-6">
+          <div className="flex w-full flex-col gap-5">
             <div className="flex w-full items-center justify-between gap-2">
               <div className="flex flex-row gap-2">
                 <UIButton
@@ -1045,12 +1046,11 @@ export function FunnelBoard() {
                 >
                   <CloseOutlined />
                 </UIButton>
-                <span className="text-xl font-semibold">Карточка ученика</span>
+                <span className="text-base font-semibold">Карточка ученика</span>
               </div>
               <UIButton
                 variant={editMode ? 'outline' : 'default'}
                 size="sm"
-                className="rounded-full"
                 onClick={() => setEditMode((prev) => !prev)}
               >
                 {editMode ? 'Готово' : 'Редактировать'}
@@ -1058,25 +1058,25 @@ export function FunnelBoard() {
             </div>
 
             <div className="flex flex-row gap-2">
-              <UIAvatar className="size-16 ring-1 ring-border/70">
+              <UIAvatar className="size-14 ring-1 ring-border/50">
                 <AvatarFallback className="text-xl font-medium text-foreground">{selectedCard.first_name?.[0] ?? 'У'}</AvatarFallback>
               </UIAvatar>
               <div className="flex flex-col gap-1">
-                <span className="text-xl font-semibold leading-tight">
+                <span className="text-lg font-semibold leading-tight">
                   {formatPersonName({
                     firstName: selectedCard.first_name,
                     lastName: selectedCard.last_name,
                     fallbackFullName: selectedCard.full_name
                   })}
                 </span>
-                <span className="text-lg text-muted-foreground underline">
+                <span className="text-sm text-muted-foreground underline">
                   {selectedCard.contact_link || '@telegram'}
                 </span>
               </div>
             </div>
 
             {editMode ? (
-              <UICard size="sm" className="border border-border/70 bg-card shadow-sm">
+              <UICard size="sm" className="bg-card ring-1 ring-border/50 shadow-sm">
                 <CardHeader className="px-3 pb-2">
                   <CardTitle>Редактирование данных</CardTitle>
                 </CardHeader>
@@ -1121,7 +1121,7 @@ export function FunnelBoard() {
               </UICard>
             ) : null}
 
-            <UICard size="sm" className="border border-border/70 bg-card shadow-sm">
+            <UICard size="sm" className="bg-card ring-1 ring-border/50 shadow-sm">
               <CardHeader className="px-3 pb-2">
                 <CardTitle>Преподаватель</CardTitle>
               </CardHeader>
@@ -1160,19 +1160,18 @@ export function FunnelBoard() {
             <div className="flex w-full flex-col gap-3">
               <div className="flex w-full items-center justify-between gap-2">
                 <div className="flex flex-row gap-2">
-                  <span className="text-xl font-semibold">
+                  <span className="text-base font-semibold">
                     Занятия
                   </span>
                   <UIButton
                     onClick={() => void onAddManualLessons()}
                     disabled={manualLessonsSaving}
                     size="sm"
-                    className="rounded-full"
                   >
                     {manualLessonsSaving ? <Spinner className="size-4" /> : <PlusOutlined />} Добавить
                   </UIButton>
                 </div>
-                <span className="text-lg text-muted-foreground">{`Осталось ${selectedCard.paid_lessons_left}`}</span>
+                <span className="text-sm text-muted-foreground">{`Осталось ${selectedCard.paid_lessons_left}`}</span>
               </div>
 
               <div className="flex w-full flex-row gap-2">
@@ -1237,7 +1236,6 @@ export function FunnelBoard() {
                 <UIButton
                   variant="default"
                   onClick={() => void onCreatePaymentLink()}
-                  className="rounded-full"
                   disabled={paymentLinkCreating || Boolean(activePaymentLink)}
                 >
                   {paymentLinkCreating ? (
@@ -1281,7 +1279,7 @@ export function FunnelBoard() {
             </div>
 
             <div className="flex w-full items-center justify-between gap-2">
-              <span className="text-xl font-semibold">
+              <span className="text-base font-semibold">
                 Последние события
               </span>
               <UIButton
@@ -1299,7 +1297,7 @@ export function FunnelBoard() {
               <div className="flex w-full flex-col gap-3">
                 {recentEvents.map((event) => (
                   <div className="flex flex-row gap-2" key={event.id}>
-                    <UIAvatar className="size-10 ring-1 ring-border/70" style={{ backgroundColor: event.color }}>
+                    <UIAvatar className="size-9 ring-1 ring-border/50" style={{ backgroundColor: event.color }}>
                       <AvatarFallback />
                     </UIAvatar>
                     <div className="flex flex-col gap-1">
@@ -1314,7 +1312,7 @@ export function FunnelBoard() {
             )}
 
             {showFullHistory ? (
-              <UICard size="sm" className="border border-border/70 bg-card shadow-sm">
+              <UICard size="sm" className="bg-card ring-1 ring-border/50 shadow-sm">
                 <CardHeader className="px-3 pb-2">
                   <CardTitle>Полная история</CardTitle>
                 </CardHeader>
@@ -1324,7 +1322,7 @@ export function FunnelBoard() {
                 ) : (
                   <div className="flex w-full flex-col gap-2">
                     {auditItems.map((item) => (
-                      <UICard key={item.id} size="sm" className="border border-border/70 bg-card shadow-sm">
+                      <UICard key={item.id} size="sm" className="bg-background/80 ring-1 ring-border/40 shadow-sm">
                         <CardContent className="px-3 pb-3">
                           <div className="flex flex-col gap-2">
                           <span>
@@ -1347,11 +1345,11 @@ export function FunnelBoard() {
               </UICard>
             ) : null}
 
-            <UICard size="sm" className="border border-border/70 bg-card shadow-sm">
+            <UICard size="sm" className="bg-card ring-1 ring-border/50 shadow-sm">
               <CardContent className="px-3 pb-3">
                 <div className="flex w-full items-center justify-between gap-2 border-b border-border pb-2">
                 <div className="flex flex-row gap-2">
-                  <span className="text-xl font-semibold">
+                  <span className="text-base font-semibold">
                     Заметки
                   </span>
                   <Badge variant="secondary">{cardComments.length}</Badge>
@@ -1376,7 +1374,7 @@ export function FunnelBoard() {
                 {cardComments.length === 0 ? (
                   <span className="text-muted-foreground">Заметок пока нет</span>
                 ) : (
-                  <UICard size="sm" className="border border-border/70 bg-card shadow-sm">
+                  <UICard size="sm" className="bg-background/80 ring-1 ring-border/40 shadow-sm">
                     <CardContent className="px-3 pb-3">
                       <div className="flex flex-col gap-2">
                       <div className="flex w-full items-center justify-between gap-2">
@@ -1523,7 +1521,7 @@ export function FunnelBoard() {
             ) : (
               <div className="flex w-full flex-col gap-2">
                 {archivedCards.map((item) => (
-                  <UICard key={item.id} size="sm" className="border border-border/70 bg-card shadow-sm">
+                  <UICard key={item.id} size="sm" className="bg-background/80 ring-1 ring-border/40 shadow-sm">
                     <CardContent className="px-3 pb-3">
                       <div className="flex flex-col gap-2">
                       <span>
