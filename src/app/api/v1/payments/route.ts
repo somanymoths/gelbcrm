@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/api-auth';
 import { listPaymentHistory, upsertYookassaPayment } from '@/lib/db';
+import { syncCardPaymentStatusByLinkId, syncCardPaymentStatusByProviderPaymentId } from '@/lib/funnel';
 import { getYooKassaPayment } from '@/lib/payments/yookassa';
 
 function getYooKassaCredentials() {
@@ -43,6 +44,23 @@ export async function GET() {
             lessonsCount: latest.metadata.lessons_count ? Number(latest.metadata.lessons_count) : row.lessons_count,
             metadata: latest.metadata,
             paidAt: latest.capturedAt
+          });
+
+          const paymentLinkId = latest.metadata.payment_link_id?.trim() ?? '';
+          if (paymentLinkId) {
+            await syncCardPaymentStatusByLinkId({
+              paymentLinkId,
+              providerPaymentId: latest.id,
+              providerStatus: latest.status,
+              lessonsCount: latest.metadata.lessons_count ? Number(latest.metadata.lessons_count) : row.lessons_count
+            });
+            return;
+          }
+
+          await syncCardPaymentStatusByProviderPaymentId({
+            providerPaymentId: latest.id,
+            providerStatus: latest.status,
+            lessonsCount: latest.metadata.lessons_count ? Number(latest.metadata.lessons_count) : row.lessons_count
           });
         })
       );

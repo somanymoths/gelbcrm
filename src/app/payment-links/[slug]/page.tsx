@@ -64,6 +64,7 @@ export default function PaymentLinkPage() {
   const presetName = useMemo(() => searchParams.get('name')?.trim() ?? '', [searchParams]);
   const presetEmail = useMemo(() => searchParams.get('email')?.trim() ?? '', [searchParams]);
   const expiresAt = useMemo(() => searchParams.get('expiresAt')?.trim() ?? null, [searchParams]);
+  const paymentLinkId = useMemo(() => searchParams.get('paymentLinkId')?.trim() ?? '', [searchParams]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNowTs(Date.now()), 1000);
@@ -215,7 +216,8 @@ export default function PaymentLinkPage() {
           metadata: {
             tariff_id: tariff.id,
             package_id: selectedPackage.id,
-            tariff_grid_id: tariff.id
+            tariff_grid_id: tariff.id,
+            ...(paymentLinkId ? { payment_link_id: paymentLinkId } : {})
           }
         })
       });

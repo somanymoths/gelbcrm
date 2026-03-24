@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { upsertYookassaPayment } from '@/lib/db';
+import { findPendingPaymentLinkIdByFallback, syncCardPaymentStatusByLinkId } from '@/lib/funnel';
 import { createYooKassaPayment } from '@/lib/payments/yookassa';
 
 const schema = z.object({
@@ -28,6 +29,11 @@ function isMockPaymentsModeEnabled(): boolean {
   return process.env.PAYMENTS_MOCK_MODE === '1';
 }
 
+function getPaymentLinkId(metadata: Record<string, string> | undefined): string | null {
+  const paymentLinkId = metadata?.payment_link_id?.trim();
+  return paymentLinkId ? paymentLinkId : null;
+}
+
 export async function POST(request: Request) {
   const json = await request.json().catch(() => null);
   const parsed = schema.safeParse(json);
@@ -39,6 +45,16 @@ export async function POST(request: Request) {
   let credentials: { shopId: string; secretKey: string };
 
   const payload = parsed.data;
+  const paymentLinkId = getPaymentLinkId(payload.metadata);
+  const metadataPackageId = payload.metadata?.package_id?.trim() ?? '';
+  const fallbackLinkId = !paymentLinkId
+    ? await findPendingPaymentLinkIdByFallback({
+        payerEmail: payload.payerEmail,
+        tariffPackageId: metadataPackageId,
+        amount: payload.amount
+      })
+    : null;
+  const linkIdForSync = paymentLinkId ?? fallbackLinkId;
 
   try {
     if (isMockPaymentsModeEnabled()) {
@@ -60,6 +76,15 @@ export async function POST(request: Request) {
         },
         paidAt: new Date().toISOString()
       });
+
+      if (linkIdForSync) {
+        await syncCardPaymentStatusByLinkId({
+          paymentLinkId: linkIdForSync,
+          providerPaymentId: paymentId,
+          providerStatus: 'succeeded',
+          lessonsCount: payload.lessonsCount
+        });
+      }
 
       return NextResponse.json({
         paymentId,
@@ -109,6 +134,15 @@ export async function POST(request: Request) {
       },
       paidAt: null
     });
+
+    if (linkIdForSync) {
+      await syncCardPaymentStatusByLinkId({
+        paymentLinkId: linkIdForSync,
+        providerPaymentId: payment.id,
+        providerStatus: payment.status,
+        lessonsCount: payload.lessonsCount
+      });
+    }
 
     return NextResponse.json({
       paymentId: payment.id,

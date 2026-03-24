@@ -123,6 +123,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
 
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const paymentLinkId = randomUUID();
     const appBaseUrl = resolvePublicAppBaseUrl(request);
     const tariffPageUrl = new URL(`/payment-links/${selectedTariffGridId}`, appBaseUrl);
     const payerName = [card.first_name?.trim() ?? '', card.last_name?.trim() ?? ''].filter(Boolean).join(' ').trim() || card.full_name?.trim() || '';
@@ -131,12 +132,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (payerName) tariffPageUrl.searchParams.set('name', payerName);
     if (payerEmail) tariffPageUrl.searchParams.set('email', payerEmail);
     tariffPageUrl.searchParams.set('expiresAt', expiresAt);
+    tariffPageUrl.searchParams.set('paymentLinkId', paymentLinkId);
 
     const providerPaymentId = `tariff-page-${randomUUID()}`;
 
     await createCardPaymentLinkRecord({
       cardId: id,
       actorUserId: guard.session.id,
+      linkId: paymentLinkId,
       tariffPackageId: selectedTariffPackageId,
       providerPaymentId,
       paymentUrl: tariffPageUrl.toString(),

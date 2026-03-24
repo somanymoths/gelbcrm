@@ -22,6 +22,7 @@
     "db:migrate:sandbox": "bash scripts/with-sandbox-env.sh node scripts/migrate.cjs",
     "db:seed:admin": "node scripts/seed-admin.cjs",
     "db:seed:admin:sandbox": "bash scripts/with-sandbox-env.sh node scripts/seed-admin.cjs",
+    "payments:backfill-sync": "node scripts/backfill-payments-sync.cjs",
     "sandbox:up": "bash scripts/sandbox-up.sh",
     "sandbox:down": "bash scripts/sandbox-down.sh"
   },
