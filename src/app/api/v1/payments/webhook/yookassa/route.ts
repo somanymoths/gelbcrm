@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { upsertYookassaPayment } from '@/lib/db';
-import { syncCardPaymentStatusByProviderPaymentId } from '@/lib/funnel';
+import { syncCardPaymentStatusByLinkId, syncCardPaymentStatusByProviderPaymentId } from '@/lib/funnel';
 
 const webhookSchema = z.object({
   type: z.string().optional(),
@@ -49,6 +49,20 @@ export async function POST(request: Request) {
   }
 
   try {
+    const paymentLinkId = payment.metadata?.payment_link_id?.trim() ?? '';
+    const syncPromise = paymentLinkId
+      ? syncCardPaymentStatusByLinkId({
+          paymentLinkId,
+          providerPaymentId: payment.id,
+          providerStatus: payment.status,
+          lessonsCount: payment.metadata?.lessons_count ? Number(payment.metadata.lessons_count) : null
+        })
+      : syncCardPaymentStatusByProviderPaymentId({
+          providerPaymentId: payment.id,
+          providerStatus: payment.status,
+          lessonsCount: payment.metadata?.lessons_count ? Number(payment.metadata.lessons_count) : null
+        });
+
     await Promise.all([
       upsertYookassaPayment({
       providerPaymentId: payment.id,
@@ -63,10 +77,7 @@ export async function POST(request: Request) {
       rawPayload: payload as unknown as Record<string, unknown>,
       paidAt: payment.captured_at ?? null
       }),
-      syncCardPaymentStatusByProviderPaymentId({
-        providerPaymentId: payment.id,
-        providerStatus: payment.status
-      })
+      syncPromise
     ]);
 
     return NextResponse.json({ ok: true });

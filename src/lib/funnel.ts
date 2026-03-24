@@ -1,6 +1,7 @@
 import mysql from 'mysql2/promise';
 import { randomUUID } from 'crypto';
 import { getMysqlPool } from '@/lib/mysql-pool';
+import { invalidateFunnelCardCache } from '@/lib/funnel-cache';
 
 function getPool(): mysql.Pool {
   return getMysqlPool();
@@ -1153,12 +1154,13 @@ export async function createCardPaymentLinkRecord(input: {
   cardId: string;
   tariffPackageId: string;
   actorUserId: string;
+  linkId?: string;
   providerPaymentId: string;
   paymentUrl: string;
   amount: number;
   currency: string;
   expiresAt?: string | null;
-}): Promise<void> {
+}): Promise<string> {
   const connection = await getPool().getConnection();
 
   try {
@@ -1188,6 +1190,7 @@ export async function createCardPaymentLinkRecord(input: {
     }
 
     const tariffGridId = String(packageRows[0].tariff_grid_id);
+    const linkId = input.linkId ?? randomUUID();
 
     await connection.query(
       `
@@ -1208,7 +1211,7 @@ export async function createCardPaymentLinkRecord(input: {
         VALUES (?, ?, ?, ?, 'yookassa', ?, ?, 'pending', ?, ?, ?, ?)
       `,
       [
-        randomUUID(),
+        linkId,
         input.cardId,
         tariffGridId,
         input.tariffPackageId,
@@ -1235,6 +1238,7 @@ export async function createCardPaymentLinkRecord(input: {
     });
 
     await connection.commit();
+    return linkId;
   } catch (error) {
     await connection.rollback();
     throw error;
@@ -1481,17 +1485,146 @@ function mapYookassaStatusToCardStatus(status: string): FunnelPaymentLink['statu
 export async function syncCardPaymentStatusByProviderPaymentId(input: {
   providerPaymentId: string;
   providerStatus: string;
+  lessonsCount?: number | null;
 }): Promise<void> {
-  const nextStatus = mapYookassaStatusToCardStatus(input.providerStatus);
+  await syncCardPaymentStatus({
+    providerStatus: input.providerStatus,
+    lessonsCount: input.lessonsCount ?? null,
+    providerPaymentId: input.providerPaymentId
+  });
+}
 
-  await getPool().query(
+export async function findPendingPaymentLinkIdByFallback(input: {
+  payerEmail: string;
+  tariffPackageId: string;
+  amount: number;
+}): Promise<string | null> {
+  const email = input.payerEmail.trim().toLowerCase();
+  const tariffPackageId = input.tariffPackageId.trim();
+  const amount = Number(input.amount);
+
+  if (!email || !tariffPackageId || !Number.isFinite(amount) || amount <= 0) {
+    return null;
+  }
+
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
     `
-      UPDATE student_payment_links
-      SET status = ?
-      WHERE provider_payment_id = ?
+      SELECT spl.id
+      FROM student_payment_links spl
+      INNER JOIN students s ON s.id = spl.student_id
+      WHERE spl.status = 'pending'
+        AND spl.tariff_package_id = ?
+        AND spl.amount = ?
+        AND s.email IS NOT NULL
+        AND LOWER(TRIM(s.email)) = ?
+      ORDER BY spl.created_at DESC
+      LIMIT 2
     `,
-    [nextStatus, input.providerPaymentId]
+    [tariffPackageId, amount, email]
   );
+
+  if (rows.length !== 1) return null;
+  return String(rows[0].id);
+}
+
+export async function syncCardPaymentStatusByLinkId(input: {
+  paymentLinkId: string;
+  providerPaymentId: string;
+  providerStatus: string;
+  lessonsCount?: number | null;
+}): Promise<void> {
+  await syncCardPaymentStatus({
+    paymentLinkId: input.paymentLinkId,
+    providerPaymentId: input.providerPaymentId,
+    providerStatus: input.providerStatus,
+    lessonsCount: input.lessonsCount ?? null
+  });
+}
+
+async function syncCardPaymentStatus(input: {
+  providerStatus: string;
+  lessonsCount?: number | null;
+  providerPaymentId?: string;
+  paymentLinkId?: string;
+}): Promise<void> {
+  if (!input.providerPaymentId && !input.paymentLinkId) return;
+
+  const nextStatus = mapYookassaStatusToCardStatus(input.providerStatus);
+  const connection = await getPool().getConnection();
+
+  try {
+    await connection.beginTransaction();
+    const whereSql = input.paymentLinkId ? 'spl.id = ?' : 'spl.provider_payment_id = ?';
+    const params = [input.paymentLinkId ?? input.providerPaymentId];
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT
+          spl.id,
+          spl.student_id,
+          spl.status,
+          spl.provider_payment_id,
+          tp.lessons_count
+        FROM student_payment_links spl
+        LEFT JOIN tariff_packages tp ON tp.id = spl.tariff_package_id
+        WHERE ${whereSql}
+        FOR UPDATE
+      `,
+      params
+    );
+
+    if (rows.length === 0) {
+      await connection.commit();
+      return;
+    }
+
+    const affectedCardIds = new Set<string>();
+
+    for (const row of rows) {
+      const linkId = String(row.id);
+      const studentId = String(row.student_id);
+      const currentStatus = String(row.status) as FunnelPaymentLink['status'];
+      const finalStatus = currentStatus === 'paid' ? 'paid' : nextStatus;
+      const nextProviderPaymentId = input.providerPaymentId ?? String(row.provider_payment_id);
+      const shouldApplyPaidLessons = nextStatus === 'paid' && currentStatus !== 'paid';
+      const lessonsFromLink = Number(row.lessons_count ?? 0);
+      const lessonsCountInput = typeof input.lessonsCount === 'number' ? input.lessonsCount : null;
+      const lessonsToAdd = Number.isFinite(lessonsCountInput) && (lessonsCountInput ?? 0) > 0
+        ? Math.trunc(lessonsCountInput as number)
+        : Math.max(0, lessonsFromLink);
+
+      if (shouldApplyPaidLessons && lessonsToAdd > 0) {
+        await connection.query(
+          `
+            UPDATE students
+            SET paid_lessons_left = paid_lessons_left + ?
+            WHERE id = ?
+          `,
+          [lessonsToAdd, studentId]
+        );
+      }
+
+      await connection.query(
+        `
+          UPDATE student_payment_links
+          SET status = ?, provider_payment_id = ?
+          WHERE id = ?
+        `,
+        [finalStatus, nextProviderPaymentId, linkId]
+      );
+
+      affectedCardIds.add(studentId);
+    }
+
+    await connection.commit();
+    for (const cardId of affectedCardIds) {
+      invalidateFunnelCardCache(cardId);
+    }
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 export async function listActiveTeachersBasic(): Promise<Array<{ id: string; full_name: string }>> {
