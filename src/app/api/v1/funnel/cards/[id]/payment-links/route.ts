@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
+import { FunnelCacheKeys, invalidateFunnelCardCache } from '@/lib/funnel-cache';
 import {
   createCardPaymentLinkRecord,
   deleteActiveCardPaymentLink,
@@ -12,6 +13,7 @@ import {
   listPaymentTariffs,
   listCardPaymentLinks
 } from '@/lib/funnel';
+import { withShortTtlCache } from '@/lib/request-cache';
 
 const createSchema = z.object({
   tariffGridId: z.string().trim().uuid().optional(),
@@ -21,12 +23,33 @@ const createSchema = z.object({
   path: ['tariffGridId']
 });
 
+function resolvePublicAppBaseUrl(request: Request): string {
+  const envUrl = process.env.APP_URL?.trim();
+  if (envUrl && !/localhost|127\.0\.0\.1/i.test(envUrl)) {
+    return envUrl;
+  }
+
+  const forwardedHost = request.headers.get('x-forwarded-host')?.trim();
+  if (forwardedHost && !/localhost|127\.0\.0\.1/i.test(forwardedHost)) {
+    const forwardedProto = request.headers.get('x-forwarded-proto')?.trim() || 'https';
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+
+  const host = request.headers.get('host')?.trim();
+  if (host && !/localhost|127\.0\.0\.1/i.test(host)) {
+    const proto = request.headers.get('x-forwarded-proto')?.trim() || 'https';
+    return `${proto}://${host}`;
+  }
+
+  return 'https://gelbcrm.ru';
+}
+
 export async function GET(_: Request, context: { params: Promise<{ id: string }> }) {
   const guard = await requireAdmin();
   if (guard.error) return guard.error;
 
   const { id } = await context.params;
-  const items = await listCardPaymentLinks({ cardId: id });
+  const items = await withShortTtlCache(FunnelCacheKeys.cardPaymentLinks(id), 2_000, () => listCardPaymentLinks({ cardId: id }));
   return NextResponse.json(items);
 }
 
@@ -79,7 +102,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         );
       }
 
-      const tariffs = await listPaymentTariffs();
+      const tariffs = await withShortTtlCache(FunnelCacheKeys.paymentTariffs, 30_000, listPaymentTariffs);
       const selectedTariff = tariffs.find((item) => item.id === parsed.data.tariffGridId);
 
       if (!selectedTariff) {
@@ -100,7 +123,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
 
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    const appBaseUrl = process.env.APP_URL ?? new URL(request.url).origin;
+    const appBaseUrl = resolvePublicAppBaseUrl(request);
     const tariffPageUrl = new URL(`/payment-links/${selectedTariffGridId}`, appBaseUrl);
     const payerName = [card.first_name?.trim() ?? '', card.last_name?.trim() ?? ''].filter(Boolean).join(' ').trim() || card.full_name?.trim() || '';
     const payerEmail = card.email?.trim() ?? '';
@@ -121,6 +144,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       currency: 'RUB',
       expiresAt
     });
+    invalidateFunnelCardCache(id);
 
     return NextResponse.json(
       {
@@ -153,6 +177,7 @@ export async function DELETE(_: Request, context: { params: Promise<{ id: string
 
   try {
     await deleteActiveCardPaymentLink({ cardId: id, actorUserId: guard.session.id });
+    invalidateFunnelCardCache(id);
     return new NextResponse(null, { status: 204 });
   } catch (error) {
     if (error instanceof Error && error.message === 'ACTIVE_PAYMENT_LINK_NOT_FOUND') {

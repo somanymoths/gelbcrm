@@ -1,7 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Image from 'next/image';
+import { CalendarDays, CircleArrowRight, CircleX, Clock3, Ellipsis, Plus } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Avatar as UIAvatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
@@ -12,7 +15,6 @@ import {
   CardHeader,
   CardTitle
 } from '@/components/ui/card';
-import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -22,6 +24,8 @@ import {
 } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { Progress } from '@/components/ui/progress';
+import { getStableAvatarColor, getStableAvatarInitial, getStableAvatarSeed } from '@/lib/avatar-color';
 import {
   Select,
   SelectContent,
@@ -29,13 +33,15 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select';
-import { HugeiconsIcon } from '@hugeicons/react';
-import { ArrowDown01Icon } from '@hugeicons/core-free-icons';
+import { Toggle } from '@/components/ui/toggle';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { toast } from 'sonner';
 
 type RoleUser = { id: string; role: 'admin' | 'teacher'; login: string };
 type TeacherItem = { id: string; full_name: string };
 type StudentItem = { id: string; full_name: string; paid_lessons_left: number };
-type WeeklySlot = { id: string; weekday: number; start_time: string; is_active: 0 | 1 };
+type WeeklySlot = { id: string; weekday: number; start_time: string; is_active: 0 | 1; student_id?: string | null };
 type LessonStatus = 'planned' | 'completed' | 'rescheduled' | 'canceled';
 type LessonSlot = {
   id: string;
@@ -45,6 +51,12 @@ type LessonSlot = {
   date: string;
   start_time: string;
   status: LessonStatus;
+  rescheduled_to_slot_id: string | null;
+  reschedule_target_date: string | null;
+  reschedule_target_time: string | null;
+  status_changed_by_login: string | null;
+  status_changed_at: string | null;
+  status_reason?: string | null;
   source_weekly_slot_id?: string | null;
 };
 
@@ -55,13 +67,10 @@ type DayDraft = {
 };
 
 type CreateSlotState = {
+  mode: 'create' | 'edit';
+  slotId?: string;
   weekday: number;
   date: string;
-};
-
-type Notice = {
-  type: 'success' | 'error';
-  text: string;
 };
 
 const DAYS: Array<{ weekday: number; short: string; full: string }> = [
@@ -76,6 +85,7 @@ const DAYS: Array<{ weekday: number; short: string; full: string }> = [
 
 const FREE_SLOT_VALUE = '__free_slot__';
 const ADMIN_JOURNAL_TEACHER_STORAGE_KEY = 'gelbcrm:journal:selectedTeacherId';
+const REFERENCE_CACHE_TTL_MS = 60_000;
 const HOURLY_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
   const value = `${String(hour).padStart(2, '0')}:00`;
   return { value, label: value };
@@ -83,7 +93,6 @@ const HOURLY_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
 
 export function JournalSection() {
   const [loading, setLoading] = useState(false);
-  const [notice, setNotice] = useState<Notice | null>(null);
   const [roleUser, setRoleUser] = useState<RoleUser | null>(null);
   const [teacherProfileMissing, setTeacherProfileMissing] = useState(false);
   const [teachers, setTeachers] = useState<TeacherItem[]>([]);
@@ -94,12 +103,68 @@ export function JournalSection() {
   const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()));
   const [dayDrafts, setDayDrafts] = useState<Record<number, DayDraft>>(() => createInitialDayDrafts());
   const [createSlotState, setCreateSlotState] = useState<CreateSlotState | null>(null);
+  const [templateSlotState, setTemplateSlotState] = useState<{ weekday: number; slotId?: string } | null>(null);
+  const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
   const [creatingSlot, setCreatingSlot] = useState(false);
-  const [rescheduleState, setRescheduleState] = useState<{ slotId: string; date: string; time: string } | null>(null);
+  const [rescheduleState, setRescheduleState] = useState<{ slotId: string; date: string; time: string; reason: string } | null>(null);
   const [deletingSlotId, setDeletingSlotId] = useState<string | null>(null);
+  const [editingStudentSlotId, setEditingStudentSlotId] = useState<string | null>(null);
+  const [slotStudentDrafts, setSlotStudentDrafts] = useState<Record<string, string>>({});
+  const [assigningStudentSlotId, setAssigningStudentSlotId] = useState<string | null>(null);
+  const [statusUpdatingSlotId, setStatusUpdatingSlotId] = useState<string | null>(null);
+  const studentsCacheRef = useRef<Map<string, { ts: number; data: StudentItem[] }>>(new Map());
+  const weeklyTemplateCacheRef = useRef<Map<string, { ts: number; data: WeeklySlot[] }>>(new Map());
 
-  const showError = useCallback((text: string) => setNotice({ type: 'error', text }), []);
-  const showSuccess = useCallback((text: string) => setNotice({ type: 'success', text }), []);
+  const showError = useCallback((text: string) => {
+    toast.error('Ошибка', { description: text });
+  }, []);
+  const showSuccess = useCallback((text: string) => {
+    toast.success('Готово', { description: text });
+  }, []);
+
+  const applyStudentBalanceDelta = useCallback((studentId: string | null, delta: number) => {
+    if (!studentId || delta === 0) return;
+    setStudents((prev) =>
+      prev.map((student) =>
+        student.id === studentId
+          ? { ...student, paid_lessons_left: Math.max(0, student.paid_lessons_left + delta) }
+          : student
+      )
+    );
+    if (selectedTeacherId) {
+      const cached = studentsCacheRef.current.get(selectedTeacherId);
+      if (cached) {
+        studentsCacheRef.current.set(selectedTeacherId, {
+          ts: Date.now(),
+          data: cached.data.map((student) =>
+            student.id === studentId
+              ? { ...student, paid_lessons_left: Math.max(0, student.paid_lessons_left + delta) }
+              : student
+          )
+        });
+      }
+    }
+  }, [selectedTeacherId]);
+
+  const upsertSlotInState = useCallback((slot: LessonSlot) => {
+    setSlots((prev) => {
+      const next = [...prev];
+      const index = next.findIndex((item) => item.id === slot.id);
+      if (index >= 0) {
+        next[index] = slot;
+      } else {
+        next.push(slot);
+      }
+      return next.sort((a, b) => {
+        if (a.date !== b.date) return a.date.localeCompare(b.date);
+        return a.start_time.localeCompare(b.start_time);
+      });
+    });
+  }, []);
+
+  const removeSlotFromState = useCallback((slotId: string) => {
+    setSlots((prev) => prev.filter((slot) => slot.id !== slotId));
+  }, []);
 
   const weekDays = useMemo(() => {
     return DAYS.map((item, index) => {
@@ -145,8 +210,27 @@ export function JournalSection() {
       }
 
       const qs = new URLSearchParams({ teacherId: nextTeacherId });
-      const studentsData = await fetchJson<StudentItem[]>(`/api/v1/journal/students?${qs.toString()}`);
-      const templateData = await fetchJson<WeeklySlot[]>(`/api/v1/journal/weekly-template?${qs.toString()}`);
+      const now = Date.now();
+      const studentsCached = studentsCacheRef.current.get(nextTeacherId);
+      const templateCached = weeklyTemplateCacheRef.current.get(nextTeacherId);
+      const shouldFetchStudents = !studentsCached || now - studentsCached.ts > REFERENCE_CACHE_TTL_MS;
+      const shouldFetchTemplate = !templateCached || now - templateCached.ts > REFERENCE_CACHE_TTL_MS;
+
+      let studentsData: StudentItem[];
+      if (shouldFetchStudents) {
+        studentsData = await fetchJson<StudentItem[]>(`/api/v1/journal/students?${qs.toString()}`);
+        studentsCacheRef.current.set(nextTeacherId, { ts: now, data: studentsData });
+      } else {
+        studentsData = studentsCached.data;
+      }
+
+      let templateData: WeeklySlot[];
+      if (shouldFetchTemplate) {
+        templateData = await fetchJson<WeeklySlot[]>(`/api/v1/journal/weekly-template?${qs.toString()}`);
+        weeklyTemplateCacheRef.current.set(nextTeacherId, { ts: now, data: templateData });
+      } else {
+        templateData = templateCached.data;
+      }
       const dateFrom = toIsoDate(weekStart);
       const dateTo = toIsoDate(addDays(weekStart, 6));
       const slotsData = await fetchJson<LessonSlot[]>(
@@ -174,7 +258,10 @@ export function JournalSection() {
   }, [selectedTeacherId, showError, weekStart]);
 
   useEffect(() => {
-    void loadAll();
+    const timer = window.setTimeout(() => {
+      void loadAll();
+    }, 120);
+    return () => window.clearTimeout(timer);
   }, [loadAll]);
 
   useEffect(() => {
@@ -182,46 +269,27 @@ export function JournalSection() {
     localStorage.setItem(ADMIN_JOURNAL_TEACHER_STORAGE_KEY, selectedTeacherId);
   }, [roleUser?.role, selectedTeacherId]);
 
-  const refreshWeekSlots = useCallback(async (): Promise<LessonSlot[]> => {
-    if (!selectedTeacherId) return [];
-    const dateFrom = toIsoDate(weekStart);
-    const dateTo = toIsoDate(addDays(weekStart, 6));
-    const data = await fetchJson<LessonSlot[]>(
-      `/api/v1/journal/slots?teacherId=${encodeURIComponent(selectedTeacherId)}&dateFrom=${dateFrom}&dateTo=${dateTo}`
-    );
-    setSlots(data);
-    return data;
-  }, [selectedTeacherId, weekStart]);
-
   const saveTemplate = async (nextTemplate: WeeklySlot[]) => {
     if (!selectedTeacherId) return;
     try {
       await fetchJson(`/api/v1/journal/weekly-template?teacherId=${encodeURIComponent(selectedTeacherId)}`, {
+        ...withIdempotencyHeaders(),
         method: 'PUT',
         body: JSON.stringify({
           slots: nextTemplate.map((slot) => ({
             weekday: slot.weekday,
             startTime: slot.start_time,
+            studentId: slot.student_id ?? null,
             isActive: true
           }))
         })
       });
       setWeeklyTemplate(nextTemplate);
+      weeklyTemplateCacheRef.current.set(selectedTeacherId, { ts: Date.now(), data: nextTemplate });
     } catch (error) {
       showError(error instanceof Error ? error.message : 'Не удалось сохранить шаблон');
       throw error;
     }
-  };
-
-  const ensureTemplateSlot = async (weekday: number, startTime: string) => {
-    const exists = weeklyTemplate.some((slot) => slot.weekday === weekday && slot.start_time === startTime);
-    if (exists) return;
-    const nextTemplate: WeeklySlot[] = [
-      ...weeklyTemplate,
-      { id: `temp-${weekday}-${startTime}`, weekday, start_time: startTime, is_active: 1 }
-    ];
-    await saveTemplate(nextTemplate);
-    await refreshWeekSlots();
   };
 
   const createSlotForDay = async (weekday: number, date: string): Promise<boolean> => {
@@ -231,27 +299,19 @@ export function JournalSection() {
 
     setCreatingSlot(true);
     try {
-      if (draft.repeatWeekly) {
-        await ensureTemplateSlot(weekday, draft.time);
-        const nextSlots = (await refreshWeekSlots()) ?? [];
-        const generated = nextSlots.find((slot) => slot.date === date && slot.start_time === draft.time);
-        if (generated && draft.studentId) {
-          await assignStudent(generated, draft.studentId);
-        }
-        showSuccess('Еженедельный слот создан');
-      } else {
-        await fetchJson('/api/v1/journal/slots', {
-          method: 'POST',
-          body: JSON.stringify({
-            teacherId: selectedTeacherId,
-            date,
-            startTime: draft.time,
-            studentId: draft.studentId
-          })
-        });
-        showSuccess('Слот создан');
-        await refreshWeekSlots();
-      }
+      const created = await fetchJson<LessonSlot>('/api/v1/journal/slots', {
+        ...withIdempotencyHeaders(),
+        method: 'POST',
+        body: JSON.stringify({
+          teacherId: selectedTeacherId,
+          date,
+          startTime: draft.time,
+          studentId: draft.studentId,
+          repeatWeekly: false
+        })
+      });
+      upsertSlotInState(created);
+      showSuccess('Разовое занятие создано');
       return true;
     } catch (error) {
       showError(error instanceof Error ? error.message : 'Не удалось создать слот');
@@ -262,52 +322,124 @@ export function JournalSection() {
   };
 
   const assignStudent = async (slot: LessonSlot, studentId: string | null) => {
+    if (!selectedTeacherId) return;
+    setAssigningStudentSlotId(slot.id);
     try {
-      await fetchJson(`/api/v1/journal/slots/${slot.id}`, {
+      const updated = await fetchJson<LessonSlot>(`/api/v1/journal/slots/${slot.id}`, {
+        ...withIdempotencyHeaders(),
         method: 'PATCH',
         body: JSON.stringify({
           teacherId: selectedTeacherId,
           studentId
         })
       });
-      await refreshWeekSlots();
+      upsertSlotInState(updated);
+      setEditingStudentSlotId(null);
     } catch (error) {
       showError(error instanceof Error ? error.message : 'Не удалось назначить ученика');
+    } finally {
+      setAssigningStudentSlotId((prev) => (prev === slot.id ? null : prev));
     }
   };
 
-  const setStatus = async (slot: LessonSlot, status: Exclude<LessonStatus, 'rescheduled'>) => {
+  const openStudentEditor = (slot: LessonSlot) => {
+    if (slot.status === 'completed') return;
+    if (slot.source_weekly_slot_id) {
+      showError('Еженедельный слот редактируется в шаблоне недели');
+      return;
+    }
+    const dateValue = new Date(`${slot.date}T00:00:00`);
+    const weekday = ((dateValue.getDay() + 6) % 7) + 1;
+    setDayDrafts((prev) => ({
+      ...prev,
+      [weekday]: {
+        ...(prev[weekday] ?? createDayDraft()),
+        time: slot.start_time,
+        studentId: slot.student_id ?? null,
+        repeatWeekly: Boolean(slot.source_weekly_slot_id)
+      }
+    }));
+    setCreateSlotState({
+      mode: 'edit',
+      slotId: slot.id,
+      weekday,
+      date: slot.date
+    });
+  };
+
+  const cancelStudentEditor = () => {
+    setEditingStudentSlotId(null);
+  };
+
+  const saveStudentEditor = async (slot: LessonSlot) => {
+    const value = slotStudentDrafts[slot.id] ?? (slot.student_id ?? FREE_SLOT_VALUE);
+    await assignStudent(slot, value === FREE_SLOT_VALUE ? null : value);
+  };
+
+  const setStatus = async (
+    slot: LessonSlot,
+    status: Exclude<LessonStatus, 'rescheduled'>,
+    options?: { studentId?: string | null; reason?: string }
+  ) => {
+    if (slot.status === status) return;
+    if (!selectedTeacherId) return;
+    if (statusUpdatingSlotId === slot.id) return;
+    setStatusUpdatingSlotId(slot.id);
     try {
-      await fetchJson(`/api/v1/journal/slots/${slot.id}/status`, {
+      const previousStatus = slot.status;
+      const nextStudentId = options?.studentId ?? slot.student_id;
+      if (previousStatus !== 'completed' && status === 'completed') {
+        applyStudentBalanceDelta(nextStudentId, -1);
+      } else if (previousStatus === 'completed' && status !== 'completed') {
+        applyStudentBalanceDelta(nextStudentId, +1);
+      }
+
+      const updated = await fetchJson<LessonSlot>(`/api/v1/journal/slots/${slot.id}/status`, {
+        ...withIdempotencyHeaders(),
         method: 'POST',
         body: JSON.stringify({
           teacherId: selectedTeacherId,
-          status
+          status,
+          studentId: options?.studentId,
+          reason: options?.reason
         })
       });
-      await refreshWeekSlots();
+      upsertSlotInState(updated);
+      setEditingStudentSlotId(null);
     } catch (error) {
+      if (slot.status !== 'completed' && status === 'completed') {
+        applyStudentBalanceDelta(options?.studentId ?? slot.student_id, +1);
+      } else if (slot.status === 'completed' && status !== 'completed') {
+        applyStudentBalanceDelta(options?.studentId ?? slot.student_id, -1);
+      }
       showError(error instanceof Error ? error.message : 'Не удалось изменить статус');
+    } finally {
+      setStatusUpdatingSlotId((prev) => (prev === slot.id ? null : prev));
     }
   };
 
   const submitReschedule = async () => {
     if (!rescheduleState) return;
+    setStatusUpdatingSlotId(rescheduleState.slotId);
     try {
-      await fetchJson(`/api/v1/journal/slots/${rescheduleState.slotId}/status`, {
+      const updated = await fetchJson<LessonSlot>(`/api/v1/journal/slots/${rescheduleState.slotId}/status`, {
+        ...withIdempotencyHeaders(),
         method: 'POST',
         body: JSON.stringify({
           teacherId: selectedTeacherId,
           status: 'rescheduled',
           rescheduleToDate: rescheduleState.date,
-          rescheduleToTime: rescheduleState.time
+          rescheduleToTime: rescheduleState.time,
+          reason: rescheduleState.reason
         })
       });
+      upsertSlotInState(updated);
       setRescheduleState(null);
-      await refreshWeekSlots();
       showSuccess('Занятие перенесено');
     } catch (error) {
       showError(error instanceof Error ? error.message : 'Не удалось перенести занятие');
+    } finally {
+      setStatusUpdatingSlotId((prev) => (prev === rescheduleState.slotId ? null : prev));
     }
   };
 
@@ -316,12 +448,12 @@ export function JournalSection() {
     setDeletingSlotId(slot.id);
     try {
       await fetchJson(`/api/v1/journal/slots/${slot.id}?teacherId=${encodeURIComponent(selectedTeacherId)}`, {
+        ...withIdempotencyHeaders(),
         method: 'DELETE'
       });
-      await refreshWeekSlots();
+      removeSlotFromState(slot.id);
       showSuccess('Слот удалён');
     } catch (error) {
-      await refreshWeekSlots().catch(() => undefined);
       showError(error instanceof Error ? error.message : 'Не удалось удалить слот');
     } finally {
       setDeletingSlotId((prev) => (prev === slot.id ? null : prev));
@@ -345,13 +477,19 @@ export function JournalSection() {
     try {
       await fetchJson(
         `/api/v1/journal/slots/${slot.id}?teacherId=${encodeURIComponent(selectedTeacherId)}&deleteMode=series`,
-        { method: 'DELETE' }
+        withIdempotencyHeaders({ method: 'DELETE' })
       );
       setWeeklyTemplate((prev) => prev.filter((item) => item.id !== slot.source_weekly_slot_id));
-      await refreshWeekSlots();
+      setSlots((prev) =>
+        prev.filter(
+          (item) =>
+            item.source_weekly_slot_id !== slot.source_weekly_slot_id ||
+            item.status !== 'planned' ||
+            item.date < slot.date
+        )
+      );
       showSuccess('Слоты удалены');
     } catch (error) {
-      await refreshWeekSlots().catch(() => undefined);
       showError(error instanceof Error ? error.message : 'Не удалось удалить еженедельный слот');
     } finally {
       setDeletingSlotId((prev) => (prev === slot.id ? null : prev));
@@ -359,6 +497,7 @@ export function JournalSection() {
   };
 
   const openDeleteConfirm = (slot: LessonSlot) => {
+    if (slot.status === 'completed') return;
     const ok = window.confirm('Удалить слот? Действие нельзя отменить.');
     if (!ok) return;
     if (slot.source_weekly_slot_id) {
@@ -380,6 +519,27 @@ export function JournalSection() {
     return map;
   }, [slots]);
 
+  const createSlotOccupiedTimes = useMemo(() => {
+    if (!createSlotState) return new Set<string>();
+    const occupied = getOccupiedTimesForDay(createSlotState.weekday, createSlotState.date, weeklyTemplate, slotMapByDate);
+    if (createSlotState.mode === 'edit' && createSlotState.slotId) {
+      const current = slots.find((slot) => slot.id === createSlotState.slotId);
+      if (current) occupied.delete(current.start_time);
+    }
+    return occupied;
+  }, [createSlotState, weeklyTemplate, slotMapByDate, slots]);
+
+  const occupiedStudentIdsBySlot = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const slot of slots) {
+      const key = `${slot.date}|${slot.start_time}`;
+      const bucket = map.get(key) ?? new Set<string>();
+      if (slot.student_id) bucket.add(slot.student_id);
+      map.set(key, bucket);
+    }
+    return map;
+  }, [slots]);
+
   const studentOptions = useMemo(
     () => [
       { value: FREE_SLOT_VALUE, label: 'Свободный слот' },
@@ -393,9 +553,173 @@ export function JournalSection() {
 
   const submitCreateSlot = async () => {
     if (!createSlotState) return;
+    const selectedTime = dayDrafts[createSlotState.weekday]?.time ?? '';
+    if (!selectedTime || createSlotOccupiedTimes.has(selectedTime)) {
+      showError('Выберите свободное время');
+      return;
+    }
+
+    if (createSlotState.mode === 'edit' && createSlotState.slotId) {
+      if (!selectedTeacherId) return;
+      const draft = dayDrafts[createSlotState.weekday];
+      if (!draft) return;
+
+      setCreatingSlot(true);
+      try {
+        const updated = await fetchJson<LessonSlot>(`/api/v1/journal/slots/${createSlotState.slotId}`, {
+          ...withIdempotencyHeaders(),
+          method: 'PATCH',
+          body: JSON.stringify({
+            teacherId: selectedTeacherId,
+            date: createSlotState.date,
+            startTime: draft.time,
+            studentId: draft.studentId
+          })
+        });
+        upsertSlotInState(updated);
+        setCreateSlotState(null);
+        showSuccess('Слот обновлен');
+      } catch (error) {
+        showError(error instanceof Error ? error.message : 'Не удалось обновить слот');
+      } finally {
+        setCreatingSlot(false);
+      }
+      return;
+    }
+
     const nextState = createSlotState;
     setCreateSlotState(null);
     await createSlotForDay(nextState.weekday, nextState.date);
+  };
+
+  const openCreateSlotModal = (weekday: number, date: string) => {
+    const occupiedTimes = getOccupiedTimesForDay(weekday, date, weeklyTemplate, slotMapByDate);
+    const firstAvailableTime = HOURLY_TIME_OPTIONS.find((option) => !occupiedTimes.has(option.value))?.value ?? '';
+
+    setDayDrafts((prev) => {
+      const draft = prev[weekday] ?? createDayDraft();
+      const nextTime = draft.time && !occupiedTimes.has(draft.time) ? draft.time : firstAvailableTime;
+
+      return {
+        ...prev,
+        [weekday]: {
+          ...draft,
+          time: nextTime,
+          repeatWeekly: false
+        }
+      };
+    });
+
+    setCreateSlotState({ mode: 'create', weekday, date });
+  };
+
+  const weeklyTemplateByWeekday = useMemo(() => {
+    const map = new Map<number, WeeklySlot[]>();
+    for (const slot of weeklyTemplate) {
+      const list = map.get(slot.weekday) ?? [];
+      list.push(slot);
+      map.set(slot.weekday, list);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => a.start_time.localeCompare(b.start_time));
+    }
+    return map;
+  }, [weeklyTemplate]);
+
+  const studentNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const student of students) {
+      map.set(student.id, student.full_name);
+    }
+    return map;
+  }, [students]);
+
+  const selectedTeacherName = useMemo(() => {
+    if (!selectedTeacherId) return 'Преподаватель';
+    return teachers.find((item) => item.id === selectedTeacherId)?.full_name ?? 'Преподаватель';
+  }, [selectedTeacherId, teachers]);
+
+  const templateTotalSlots = useMemo(() => weeklyTemplate.length, [weeklyTemplate]);
+  const templateAssignedSlots = useMemo(
+    () => weeklyTemplate.filter((slot) => Boolean(slot.student_id)).length,
+    [weeklyTemplate]
+  );
+  const templateLoadPercent = templateTotalSlots > 0 ? Math.round((templateAssignedSlots / templateTotalSlots) * 100) : 0;
+
+  const openTemplateSlotModal = (weekday: number, slot?: WeeklySlot) => {
+    if (slot) {
+      setDayDrafts((prev) => ({
+        ...prev,
+        [weekday]: {
+          ...(prev[weekday] ?? createDayDraft()),
+          time: slot.start_time,
+          studentId: slot.student_id ?? null,
+          repeatWeekly: true
+        }
+      }));
+      setTemplateSlotState({ weekday, slotId: slot.id });
+      return;
+    }
+
+    const occupiedTimes = new Set((weeklyTemplateByWeekday.get(weekday) ?? []).map((item) => item.start_time));
+    const firstAvailableTime = HOURLY_TIME_OPTIONS.find((option) => !occupiedTimes.has(option.value))?.value ?? '10:00';
+    setDayDrafts((prev) => ({
+      ...prev,
+      [weekday]: {
+        ...(prev[weekday] ?? createDayDraft()),
+        time: firstAvailableTime,
+        studentId: null,
+        repeatWeekly: true
+      }
+    }));
+    setTemplateSlotState({ weekday });
+  };
+
+  const saveTemplateSlot = async () => {
+    if (!templateSlotState) return;
+    const draft = dayDrafts[templateSlotState.weekday];
+    if (!draft?.time) {
+      showError('Выберите время');
+      return;
+    }
+
+    const exists = (weeklyTemplateByWeekday.get(templateSlotState.weekday) ?? []).some(
+      (slot) => slot.start_time === draft.time && slot.id !== templateSlotState.slotId
+    );
+    if (exists) {
+      showError('Слот с этим временем уже есть в шаблоне');
+      return;
+    }
+
+    const nextTemplate = templateSlotState.slotId
+      ? weeklyTemplate.map((slot) =>
+          slot.id === templateSlotState.slotId
+            ? {
+                ...slot,
+                start_time: draft.time,
+                student_id: draft.studentId
+              }
+            : slot
+        )
+      : [
+          ...weeklyTemplate,
+          {
+            id: `temp-${templateSlotState.weekday}-${draft.time}-${Date.now()}`,
+            weekday: templateSlotState.weekday,
+            start_time: draft.time,
+            student_id: draft.studentId,
+            is_active: 1
+          } as WeeklySlot
+        ];
+
+    await saveTemplate(nextTemplate);
+    setTemplateSlotState(null);
+    showSuccess('Шаблон недели сохранен');
+  };
+
+  const removeTemplateSlot = async (slotId: string) => {
+    await saveTemplate(weeklyTemplate.filter((slot) => slot.id !== slotId));
+    showSuccess('Слот удален из шаблона недели');
   };
 
   if (teacherProfileMissing) {
@@ -419,13 +743,6 @@ export function JournalSection() {
         <p className="text-sm text-muted-foreground">Еженедельные и разовые слоты, переносы и статусы.</p>
       </div>
 
-      {notice ? (
-        <Alert variant={notice.type === 'error' ? 'destructive' : 'default'}>
-          <AlertTitle>{notice.type === 'error' ? 'Ошибка' : 'Готово'}</AlertTitle>
-          <AlertDescription>{notice.text}</AlertDescription>
-        </Alert>
-      ) : null}
-
       <div className="flex flex-wrap items-center gap-2">
         {teachers.length > 0 ? (
           <Select
@@ -445,6 +762,15 @@ export function JournalSection() {
             </SelectContent>
           </Select>
         ) : null}
+        <Button
+          variant="outline"
+          size="icon-sm"
+          aria-label="Открыть шаблон недели"
+          disabled={!selectedTeacherId}
+          onClick={() => setTemplateSheetOpen(true)}
+        >
+          <CalendarDays absoluteStrokeWidth className="size-4" />
+        </Button>
         <Button variant="secondary" onClick={() => setWeekStart(addDays(weekStart, -7))}>
           Предыдущая неделя
         </Button>
@@ -457,82 +783,357 @@ export function JournalSection() {
         <Badge variant="outline">{`${toIsoDate(weekStart)} — ${toIsoDate(addDays(weekStart, 6))}`}</Badge>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {weekDays.map((day) => (
-          <Card key={day.dateIso}>
+      <div className="w-full overflow-x-auto rounded-xl bg-muted/30 p-2">
+        <div className="grid grid-cols-1 gap-3 lg:flex lg:min-w-max">
+          {weekDays.map((day) => (
+            <Card key={day.dateIso} className="lg:w-[360px] lg:min-w-[360px]">
             <CardHeader>
-              <CardTitle>{`${day.short}, ${day.dateLabel}`}</CardTitle>
+              <CardTitle>{day.dateLabel}</CardTitle>
               <CardDescription>{day.full}</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
-              <Button onClick={() => setCreateSlotState({ weekday: day.weekday, date: day.dateIso })} disabled={!selectedTeacherId || loading}>
-                Добавить слот
-              </Button>
-
               {(slotMapByDate.get(day.dateIso) ?? []).length === 0 ? (
                 <p className="text-sm text-muted-foreground">{loading ? 'Загрузка...' : 'Нет слотов'}</p>
               ) : (
                 (slotMapByDate.get(day.dateIso) ?? []).map((slot) => (
                   <Card key={slot.id}>
                     <CardContent className="flex flex-col gap-3">
+                      {(() => {
+                        const draftValue = slotStudentDrafts[slot.id];
+                        const effectiveStudentId =
+                          editingStudentSlotId === slot.id
+                            ? draftValue === FREE_SLOT_VALUE
+                              ? null
+                              : (draftValue ?? slot.student_id)
+                            : slot.student_id;
+                        const isStudentMissing = !effectiveStudentId;
+                        const isStudentConflict = Boolean(
+                          effectiveStudentId &&
+                          occupiedStudentIdsBySlot.get(`${slot.date}|${slot.start_time}`)?.has(effectiveStudentId) &&
+                          effectiveStudentId !== slot.student_id
+                        );
+                        const confirmTooltip = isStudentMissing
+                          ? 'Нельзя подтвердить занятие без ученика'
+                          : isStudentConflict
+                            ? 'У выбранного ученика уже есть занятие в это время'
+                            : slot.status === 'completed'
+                              ? 'Нажмите, чтобы вернуть в Запланировано'
+                              : undefined;
+
+                        return (
+                          <>
                       <div className="flex flex-wrap items-center gap-2">
+                        <Badge className={statusBadgeClass(slot.status)}>{statusLabel(slot.status)}</Badge>
                         <Badge variant="outline">{slot.start_time}</Badge>
-                        <Badge variant={statusBadgeVariant(slot.status)}>{statusLabel(slot.status)}</Badge>
                         {!slot.source_weekly_slot_id ? <Badge variant="secondary">Разовое занятие</Badge> : null}
                       </div>
 
-                      <Select
-                        value={slot.student_id ?? FREE_SLOT_VALUE}
-                        onValueChange={(value) => void assignStudent(slot, value === FREE_SLOT_VALUE ? null : value)}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Выберите ученика" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {studentOptions.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>
-                              {option.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      {editingStudentSlotId === slot.id ? (
+                        <div className="flex flex-col gap-2">
+                          <Select
+                            value={slotStudentDrafts[slot.id] ?? (slot.student_id ?? FREE_SLOT_VALUE)}
+                            onValueChange={(value) =>
+                              setSlotStudentDrafts((prev) => ({
+                                ...prev,
+                                [slot.id]: value
+                              }))
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Выберите ученика" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {studentOptions.map((option) => {
+                                if (option.value === FREE_SLOT_VALUE) {
+                                  return (
+                                    <SelectItem key={option.value} value={option.value}>
+                                      {option.label}
+                                    </SelectItem>
+                                  );
+                                }
 
-                      <ButtonGroup>
-                        <Button size="xs" onClick={() => void setStatus(slot, 'completed')}>
-                          Подтвердть
-                        </Button>
+                                const takenByAnotherStudent =
+                                  occupiedStudentIdsBySlot
+                                    .get(`${slot.date}|${slot.start_time}`)
+                                    ?.has(option.value) && option.value !== slot.student_id;
+
+                                return (
+                                  <SelectItem key={option.value} value={option.value} disabled={Boolean(takenByAnotherStudent)}>
+                                    {takenByAnotherStudent ? `${option.label} — занято` : option.label}
+                                  </SelectItem>
+                                );
+                              })}
+                            </SelectContent>
+                          </Select>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              size="xs"
+                              onClick={() => void saveStudentEditor(slot)}
+                              disabled={assigningStudentSlotId === slot.id}
+                            >
+                              {assigningStudentSlotId === slot.id ? 'Сохранение...' : 'Сохранить'}
+                            </Button>
+                            <Button size="xs" variant="secondary" onClick={cancelStudentEditor} disabled={assigningStudentSlotId === slot.id}>
+                              Отмена
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="px-1 py-1 text-sm">
+                          {slot.student_full_name ? (
+                            <div className="flex items-center gap-2">
+                              <UIAvatar size="sm" className="ring-1 ring-border/60">
+                                <AvatarFallback
+                                  className="font-semibold text-white"
+                                  style={{
+                                    backgroundColor: getStableAvatarColor(
+                                      getStableAvatarSeed({
+                                        id: slot.student_id,
+                                        firstName: slot.student_full_name.split(/\s+/)[0] ?? null,
+                                        fallbackFullName: slot.student_full_name
+                                      })
+                                    )
+                                  }}
+                                >
+                                  {getStableAvatarInitial({
+                                    firstName: slot.student_full_name.split(/\s+/)[0] ?? null,
+                                    fallbackFullName: slot.student_full_name
+                                  })}
+                                </AvatarFallback>
+                              </UIAvatar>
+                              <span className="font-semibold">{slot.student_full_name}</span>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">Ученик не назначен</span>
+                          )}
+                        </div>
+                      )}
+
+                      {slot.student_id ? (
+                        <ButtonGroup className="shrink-0">
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Toggle
+                                variant="outline"
+                                size="sm"
+                                data-segment="first"
+                                pressed={slot.status === 'completed'}
+                                aria-label="Подтвердить занятие"
+                                disabled={
+                                  deletingSlotId === slot.id ||
+                                  statusUpdatingSlotId === slot.id ||
+                                  (slot.status !== 'completed' && (isStudentMissing || isStudentConflict))
+                                }
+                                onPressedChange={(pressed) =>
+                                  void setStatus(slot, pressed ? 'completed' : 'planned', {
+                                    studentId: effectiveStudentId ?? undefined
+                                  })
+                                }
+                                className="shrink-0 justify-start gap-1.5 rounded-l-lg rounded-r-none border-r-0 pr-[10px] pl-1.5"
+                              >
+                                <Image
+                                  src={slot.status === 'completed' ? '/icons/journal-confirmed.svg' : '/icons/journal-confirm.svg'}
+                                  alt=""
+                                  aria-hidden="true"
+                                  width={16}
+                                  height={16}
+                                  className="size-4"
+                                />
+                                <span className="inline-grid justify-items-start text-left">
+                                  <span className="col-start-1 row-start-1 invisible">Подтверждено</span>
+                                  <span className="col-start-1 row-start-1">
+                                    {slot.status === 'completed' ? 'Подтверждено' : 'Подтвердить'}
+                                  </span>
+                                </span>
+                              </Toggle>
+                            </TooltipTrigger>
+                            {confirmTooltip ? (
+                              <TooltipContent sideOffset={6}>
+                                <span>{confirmTooltip}</span>
+                              </TooltipContent>
+                            ) : null}
+                          </Tooltip>
+                        </TooltipProvider>
+
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span>
+                                <Button
+                                  variant="outline"
+                                  size="icon-sm"
+                                  data-segment="middle"
+                                  className="!rounded-none border-r-0 in-data-[slot=button-group]:!rounded-none"
+                                  aria-label="Перенести"
+                                  disabled={deletingSlotId === slot.id || statusUpdatingSlotId === slot.id || slot.status === 'completed'}
+                                  onClick={() =>
+                                    setRescheduleState({
+                                      slotId: slot.id,
+                                      date: slot.date,
+                                      time: slot.start_time,
+                                      reason: slot.status_reason ?? ''
+                                    })
+                                  }
+                                >
+                                  <CircleArrowRight absoluteStrokeWidth className="size-4" />
+                                </Button>
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent sideOffset={6}>
+                              <span>Перенести</span>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span>
+                                <Button
+                                  variant="outline"
+                                  size="icon-sm"
+                                  data-segment="middle"
+                                  className="!rounded-none border-r-0 in-data-[slot=button-group]:!rounded-none"
+                                  aria-label="Отменить занятие"
+                                  disabled={deletingSlotId === slot.id || statusUpdatingSlotId === slot.id || slot.status === 'completed'}
+                                  onClick={() => {
+                                    const reason = window.prompt('Укажите причину отмены занятия', slot.status_reason ?? '')?.trim() ?? '';
+                                    if (!reason) return;
+                                    void setStatus(slot, 'canceled', { reason });
+                                  }}
+                                >
+                                  <CircleX absoluteStrokeWidth className="size-4" />
+                                </Button>
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent sideOffset={6}>
+                              <span>Отменить занятие</span>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button size="icon-xs" aria-label="Открыть меню действий" disabled={deletingSlotId === slot.id}>
-                              <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} />
+                            <Button
+                              variant="outline"
+                              size="icon-sm"
+                              data-segment="last"
+                              className="rounded-l-none rounded-r-lg"
+                              aria-label="Список действий"
+                              disabled={
+                                deletingSlotId === slot.id ||
+                                statusUpdatingSlotId === slot.id ||
+                                assigningStudentSlotId === slot.id ||
+                                slot.status === 'completed'
+                              }
+                            >
+                              <Ellipsis absoluteStrokeWidth className="size-4" />
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start">
                             <DropdownMenuItem
-                              onSelect={() =>
-                                setRescheduleState({
-                                  slotId: slot.id,
-                                  date: slot.date,
-                                  time: slot.start_time
-                                })
-                              }
+                              disabled={slot.status === 'completed' || Boolean(slot.source_weekly_slot_id)}
+                              onSelect={() => openStudentEditor(slot)}
                             >
-                              Перенести
+                              Редактировать
                             </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={() => void setStatus(slot, 'canceled')}>Отменить</DropdownMenuItem>
-                            <DropdownMenuItem variant="destructive" onSelect={() => openDeleteConfirm(slot)}>
-                              Удалить
+                            <DropdownMenuItem
+                              variant="destructive"
+                              disabled={slot.status === 'completed' || Boolean(slot.source_weekly_slot_id)}
+                              onSelect={() => openDeleteConfirm(slot)}
+                            >
+                              Удалить слот
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
-                      </ButtonGroup>
+                        </ButtonGroup>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <Select
+                            value={FREE_SLOT_VALUE}
+                            onValueChange={(value) => {
+                              if (value === FREE_SLOT_VALUE) return;
+                              void assignStudent(slot, value);
+                            }}
+                            disabled={deletingSlotId === slot.id || statusUpdatingSlotId === slot.id || assigningStudentSlotId === slot.id}
+                          >
+                            <SelectTrigger className="h-7 w-[220px] rounded-lg">
+                              <SelectValue placeholder="Назначить ученика" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={FREE_SLOT_VALUE} disabled>
+                                Назначить ученика
+                              </SelectItem>
+                              {studentOptions
+                                .filter((option) => option.value !== FREE_SLOT_VALUE)
+                                .map((option) => {
+                                  const takenByAnotherStudent = occupiedStudentIdsBySlot
+                                    .get(`${slot.date}|${slot.start_time}`)
+                                    ?.has(option.value);
+                                  return (
+                                    <SelectItem key={option.value} value={option.value} disabled={Boolean(takenByAnotherStudent)}>
+                                      {takenByAnotherStudent ? `${option.label} — занято` : option.label}
+                                    </SelectItem>
+                                  );
+                                })}
+                            </SelectContent>
+                          </Select>
+
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="outline"
+                                size="icon-sm"
+                                aria-label="Список действий"
+                                disabled={
+                                  deletingSlotId === slot.id ||
+                                  statusUpdatingSlotId === slot.id ||
+                                  assigningStudentSlotId === slot.id ||
+                                  slot.status === 'completed'
+                                }
+                              >
+                                <Ellipsis absoluteStrokeWidth className="size-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="start">
+                              <DropdownMenuItem
+                                disabled={slot.status === 'completed' || Boolean(slot.source_weekly_slot_id)}
+                                onSelect={() => openStudentEditor(slot)}
+                              >
+                                Редактировать
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                variant="destructive"
+                                disabled={slot.status === 'completed' || Boolean(slot.source_weekly_slot_id)}
+                                onSelect={() => openDeleteConfirm(slot)}
+                              >
+                                Удалить слот
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      )}
+                          </>
+                        );
+                      })()}
                     </CardContent>
                   </Card>
                 ))
               )}
+
+              <Button
+                variant="secondary"
+                className="cursor-pointer transition-colors hover:bg-secondary/80"
+                onClick={() => openCreateSlotModal(day.weekday, day.dateIso)}
+                disabled={!selectedTeacherId || loading}
+              >
+                Добавить слот
+              </Button>
             </CardContent>
-          </Card>
-        ))}
+            </Card>
+          ))}
+        </div>
       </div>
 
       <Dialog open={Boolean(createSlotState)} onOpenChange={(open) => !open && setCreateSlotState(null)}>
@@ -540,7 +1141,7 @@ export function JournalSection() {
           <DialogHeader>
             <DialogTitle>
               {createSlotState
-                ? `Новый слот: ${DAYS.find((item) => item.weekday === createSlotState.weekday)?.full ?? ''}, ${new Date(
+                ? `${createSlotState.mode === 'edit' ? 'Редактировать слот' : 'Новый слот'}: ${DAYS.find((item) => item.weekday === createSlotState.weekday)?.full ?? ''}, ${new Date(
                     `${createSlotState.date}T00:00:00`
                   ).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}`
                 : 'Новый слот'}
@@ -549,29 +1150,48 @@ export function JournalSection() {
 
           {createSlotState ? (
             <div className="flex flex-col gap-3">
-              <Select
-                value={dayDrafts[createSlotState.weekday]?.time ?? '10:00'}
-                onValueChange={(value) =>
-                  setDayDrafts((prev) => ({
-                    ...prev,
-                    [createSlotState.weekday]: {
-                      ...(prev[createSlotState.weekday] ?? createDayDraft()),
-                      time: value
-                    }
-                  }))
-                }
-              >
-                <SelectTrigger className="w-[120px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {HOURLY_TIME_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex flex-col gap-2">
+                <span className="text-sm text-muted-foreground">Время</span>
+                <div className="grid grid-cols-6 gap-2">
+                  {HOURLY_TIME_OPTIONS.map((option) => {
+                    const selectedTime = dayDrafts[createSlotState.weekday]?.time ?? '10:00';
+                    const isOccupied = createSlotOccupiedTimes.has(option.value);
+                    const isActive = selectedTime === option.value;
+
+                    return (
+                      <Button
+                        key={option.value}
+                        type="button"
+                        size="sm"
+                        variant={isActive ? 'default' : 'outline'}
+                        className={isOccupied ? 'h-12 cursor-not-allowed opacity-60' : 'h-12 cursor-pointer'}
+                        disabled={isOccupied}
+                        onClick={() =>
+                          setDayDrafts((prev) => ({
+                            ...prev,
+                            [createSlotState.weekday]: {
+                              ...(prev[createSlotState.weekday] ?? createDayDraft()),
+                              time: option.value
+                            }
+                          }))
+                        }
+                      >
+                        {isOccupied ? (
+                          <span className="flex flex-col leading-tight">
+                            <span>{option.label}</span>
+                            <span className="text-[10px]">Занято</span>
+                          </span>
+                        ) : (
+                          option.label
+                        )}
+                      </Button>
+                    );
+                  })}
+                </div>
+                {HOURLY_TIME_OPTIONS.every((option) => createSlotOccupiedTimes.has(option.value)) ? (
+                  <p className="text-xs text-muted-foreground">На этот день все часы уже заняты.</p>
+                ) : null}
+              </div>
 
               <Select
                 value={dayDrafts[createSlotState.weekday]?.studentId ?? FREE_SLOT_VALUE}
@@ -597,38 +1217,221 @@ export function JournalSection() {
                 </SelectContent>
               </Select>
 
-              <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Checkbox
-                  checked={!(dayDrafts[createSlotState.weekday]?.repeatWeekly ?? true)}
-                  onCheckedChange={(checked) => {
-                    const isOneTime = Boolean(checked);
-                    setDayDrafts((prev) => ({
-                      ...prev,
-                      [createSlotState.weekday]: {
-                        ...(prev[createSlotState.weekday] ?? createDayDraft()),
-                        repeatWeekly: !isOneTime
-                      }
-                    }));
-                  }}
-                />
-                Разовый слот
-              </label>
             </div>
           ) : null}
 
           <DialogFooter>
+            {createSlotState && HOURLY_TIME_OPTIONS.every((option) => createSlotOccupiedTimes.has(option.value)) ? (
+              <p className="mr-auto text-xs text-muted-foreground">Свободных часов нет. Выберите другой день или удалите/перенесите слот.</p>
+            ) : null}
             <Button variant="secondary" onClick={() => setCreateSlotState(null)}>
               Отмена
             </Button>
             <Button
               onClick={() => void submitCreateSlot()}
-              disabled={!selectedTeacherId || !createSlotState || !(dayDrafts[createSlotState.weekday]?.time ?? '') || creatingSlot}
+              disabled={
+                !selectedTeacherId ||
+                !createSlotState ||
+                !(dayDrafts[createSlotState.weekday]?.time ?? '') ||
+                createSlotOccupiedTimes.has(dayDrafts[createSlotState.weekday]?.time ?? '') ||
+                creatingSlot
+              }
             >
-              {creatingSlot ? 'Добавляем...' : 'Добавить'}
+              {creatingSlot ? (createSlotState?.mode === 'edit' ? 'Сохраняем...' : 'Добавляем...') : createSlotState?.mode === 'edit' ? 'Сохранить' : 'Добавить'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={Boolean(templateSlotState)} onOpenChange={(open) => !open && setTemplateSlotState(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {templateSlotState
+                ? `${templateSlotState.slotId ? 'Редактировать шаблон' : 'Новый слот шаблона'}: ${DAYS.find((item) => item.weekday === templateSlotState.weekday)?.full ?? ''}`
+                : 'Шаблон недели'}
+            </DialogTitle>
+          </DialogHeader>
+
+          {templateSlotState ? (
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-2">
+                <span className="text-sm text-muted-foreground">Время</span>
+                <div className="grid grid-cols-6 gap-2">
+                  {HOURLY_TIME_OPTIONS.map((option) => {
+                    const selectedTime = dayDrafts[templateSlotState.weekday]?.time ?? '10:00';
+                    const isOccupied = (weeklyTemplateByWeekday.get(templateSlotState.weekday) ?? []).some(
+                      (slot) => slot.start_time === option.value && slot.id !== templateSlotState.slotId
+                    );
+                    const isActive = selectedTime === option.value;
+
+                    return (
+                      <Button
+                        key={option.value}
+                        type="button"
+                        size="sm"
+                        variant={isActive ? 'default' : 'outline'}
+                        className={isOccupied ? 'h-12 cursor-not-allowed opacity-60' : 'h-12 cursor-pointer'}
+                        disabled={isOccupied}
+                        onClick={() =>
+                          setDayDrafts((prev) => ({
+                            ...prev,
+                            [templateSlotState.weekday]: {
+                              ...(prev[templateSlotState.weekday] ?? createDayDraft()),
+                              time: option.value,
+                              repeatWeekly: true
+                            }
+                          }))
+                        }
+                      >
+                        {option.label}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <Select
+                value={dayDrafts[templateSlotState.weekday]?.studentId ?? FREE_SLOT_VALUE}
+                onValueChange={(value) =>
+                  setDayDrafts((prev) => ({
+                    ...prev,
+                    [templateSlotState.weekday]: {
+                      ...(prev[templateSlotState.weekday] ?? createDayDraft()),
+                      studentId: value === FREE_SLOT_VALUE ? null : value,
+                      repeatWeekly: true
+                    }
+                  }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Ученик (опционально)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={FREE_SLOT_VALUE}>Без ученика</SelectItem>
+                  {studentOptions
+                    .filter((option) => option.value !== FREE_SLOT_VALUE)
+                    .map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setTemplateSlotState(null)}>
+              Отмена
+            </Button>
+            <Button onClick={() => void saveTemplateSlot()} disabled={!templateSlotState || !(dayDrafts[templateSlotState.weekday]?.time ?? '')}>
+              Сохранить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Sheet open={templateSheetOpen} onOpenChange={setTemplateSheetOpen}>
+        <SheetContent side="right" className="w-full max-w-[760px] p-0 sm:max-w-[760px]">
+          <SheetHeader className="space-y-3 border-b">
+            <SheetTitle>{selectedTeacherName}</SheetTitle>
+            <SheetDescription>Шаблон недели</SheetDescription>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Загруженность</span>
+                <span className="font-medium">{`${templateAssignedSlots} из ${templateTotalSlots} (${templateLoadPercent}%)`}</span>
+              </div>
+              <Progress value={templateLoadPercent} />
+            </div>
+          </SheetHeader>
+          <div className="flex-1 overflow-auto p-4">
+            <div className="flex flex-col gap-4">
+              {DAYS.map((day) => {
+                const daySlots = weeklyTemplateByWeekday.get(day.weekday) ?? [];
+                return (
+                  <section key={`template-sheet-${day.weekday}`} className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <h4 className="text-xl font-semibold tracking-wide">{day.full.toUpperCase()}</h4>
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        className="border-dashed"
+                        aria-label={`Добавить слот в ${day.full}`}
+                        onClick={() => openTemplateSlotModal(day.weekday)}
+                      >
+                        <Plus absoluteStrokeWidth className="size-4" />
+                      </Button>
+                    </div>
+
+                    {daySlots.length === 0 ? (
+                      <div className="rounded-lg border border-dashed px-3 py-5 text-center text-muted-foreground">Нет слотов</div>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        {daySlots.map((slot) => (
+                          <button
+                            key={slot.id}
+                            type="button"
+                            className="flex w-full items-center justify-between gap-3 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-left"
+                            onClick={() => openTemplateSlotModal(day.weekday, slot)}
+                          >
+                            <div className="flex min-w-0 items-center gap-2">
+                              <Clock3 absoluteStrokeWidth className="size-4 text-muted-foreground" />
+                              <span className="font-medium">{formatOneHourRange(slot.start_time)}</span>
+                            </div>
+                            <div className="flex min-w-0 items-center gap-2">
+                              {slot.student_id ? (
+                                <>
+                                  <UIAvatar size="sm" className="ring-1 ring-border/40">
+                                    <AvatarFallback
+                                      className="font-semibold text-white"
+                                      style={{
+                                        backgroundColor: getStableAvatarColor(
+                                          getStableAvatarSeed({
+                                            id: slot.student_id,
+                                            firstName: (studentNameById.get(slot.student_id) ?? '').split(/\s+/)[0] ?? null,
+                                            fallbackFullName: studentNameById.get(slot.student_id) ?? null
+                                          })
+                                        )
+                                      }}
+                                    >
+                                      {getStableAvatarInitial({
+                                        firstName: (studentNameById.get(slot.student_id) ?? '').split(/\s+/)[0] ?? null,
+                                        fallbackFullName: studentNameById.get(slot.student_id) ?? null
+                                      })}
+                                    </AvatarFallback>
+                                  </UIAvatar>
+                                  <span className="truncate text-sm text-sky-800">
+                                    {studentNameById.get(slot.student_id) ?? 'Ученик не найден'}
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="text-sm text-muted-foreground">Без ученика</span>
+                              )}
+                            </div>
+                            <Button
+                              type="button"
+                              size="icon-xs"
+                              variant="ghost"
+                              aria-label="Удалить слот из шаблона"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void removeTemplateSlot(slot.id);
+                              }}
+                            >
+                              <CircleX absoluteStrokeWidth className="size-4" />
+                            </Button>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                );
+              })}
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <Dialog open={Boolean(rescheduleState)} onOpenChange={(open) => !open && setRescheduleState(null)}>
         <DialogContent>
@@ -658,13 +1461,24 @@ export function JournalSection() {
                 ))}
               </SelectContent>
             </Select>
+
+            <Input
+              value={rescheduleState?.reason ?? ''}
+              onChange={(event) => setRescheduleState((prev) => (prev ? { ...prev, reason: event.target.value } : prev))}
+              placeholder="Причина переноса"
+            />
           </div>
 
           <DialogFooter>
             <Button variant="secondary" onClick={() => setRescheduleState(null)}>
               Отмена
             </Button>
-            <Button onClick={() => void submitReschedule()}>Сохранить перенос</Button>
+            <Button
+              onClick={() => void submitReschedule()}
+              disabled={!rescheduleState?.reason?.trim() || statusUpdatingSlotId === rescheduleState?.slotId}
+            >
+              Сохранить перенос
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -689,17 +1503,51 @@ function createDayDraft(): DayDraft {
 }
 
 function statusLabel(status: LessonStatus): string {
-  if (status === 'completed') return 'Подтверждено';
+  if (status === 'completed') return 'Завершено';
   if (status === 'rescheduled') return 'Перенесено';
   if (status === 'canceled') return 'Отменено';
   return 'Запланировано';
 }
 
-function statusBadgeVariant(status: LessonStatus): 'default' | 'secondary' | 'destructive' | 'outline' {
-  if (status === 'completed') return 'default';
-  if (status === 'rescheduled') return 'secondary';
-  if (status === 'canceled') return 'destructive';
-  return 'outline';
+function statusBadgeClass(status: LessonStatus): string {
+  if (status === 'completed') return 'bg-emerald-100 text-emerald-800 border border-emerald-200';
+  if (status === 'rescheduled') return 'bg-amber-100 text-amber-800 border border-amber-200';
+  if (status === 'canceled') return 'bg-rose-100 text-rose-800 border border-rose-200';
+  return 'bg-slate-100 text-slate-800 border border-slate-200';
+}
+
+function formatOneHourRange(startTime: string): string {
+  const [hoursRaw, minutesRaw] = startTime.split(':');
+  const hours = Number(hoursRaw);
+  const minutes = Number(minutesRaw);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return `${startTime} — ${startTime}`;
+
+  const startTotalMinutes = hours * 60 + minutes;
+  const endTotalMinutes = (startTotalMinutes + 60) % (24 * 60);
+  const endHours = String(Math.floor(endTotalMinutes / 60)).padStart(2, '0');
+  const endMinutes = String(endTotalMinutes % 60).padStart(2, '0');
+  return `${startTime} — ${endHours}:${endMinutes}`;
+}
+
+function getOccupiedTimesForDay(
+  weekday: number,
+  date: string,
+  weeklyTemplate: WeeklySlot[],
+  slotMapByDate: Map<string, LessonSlot[]>
+): Set<string> {
+  const occupied = new Set<string>();
+
+  for (const slot of weeklyTemplate) {
+    if (slot.weekday === weekday && slot.is_active === 1) {
+      occupied.add(slot.start_time);
+    }
+  }
+
+  for (const slot of slotMapByDate.get(date) ?? []) {
+    occupied.add(slot.start_time);
+  }
+
+  return occupied;
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -718,6 +1566,19 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(payload?.message ?? 'Запрос завершился с ошибкой');
   }
   return payload as T;
+}
+
+function withIdempotencyHeaders(init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers ?? {});
+  if (!headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+  headers.set('Idempotency-Key', crypto.randomUUID());
+
+  return {
+    ...init,
+    headers
+  };
 }
 
 function getWeekStart(value: Date): Date {

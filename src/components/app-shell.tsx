@@ -17,6 +17,7 @@ import type { SessionUser } from '@/lib/session';
 export function AppShell({ children, session }: { children: React.ReactNode; session: SessionUser | null }) {
   const pathname = usePathname() ?? '';
   const isPublicPaymentPage = pathname.startsWith('/payment-links/');
+  const isFunnelPage = pathname === '/funnel';
 
   if (isPublicPaymentPage) {
     return (
@@ -56,7 +57,7 @@ export function AppShell({ children, session }: { children: React.ReactNode; ses
         </SidebarContent>
       </Sidebar>
       <SidebarInset className="bg-background/70">
-        <main className="mx-auto w-full max-w-7xl p-6">{children}</main>
+        <main className={isFunnelPage ? 'w-full px-6 py-6' : 'mx-auto w-full max-w-7xl p-6'}>{children}</main>
       </SidebarInset>
     </SidebarProvider>
   );

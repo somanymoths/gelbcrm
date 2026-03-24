@@ -2,11 +2,14 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { updateTeacherLessonSlotStatus, type JournalLessonStatus } from '@/lib/db';
+import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const bodySchema = z.object({
   teacherId: z.string().trim().optional(),
   status: z.enum(['planned', 'completed', 'rescheduled', 'canceled']),
+  studentId: z.string().uuid().nullable().optional(),
+  reason: z.string().trim().max(500).optional(),
   rescheduleToDate: z.string().trim().optional(),
   rescheduleToTime: z.string().trim().optional()
 });
@@ -28,17 +31,22 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
 
     const scope = await resolveJournalScope(guard.session, parsed.data.teacherId);
+    const idempotencyKey = getIdempotencyKeyFromRequest(request);
 
-    await updateTeacherLessonSlotStatus({
-      id,
-      teacherId: scope.teacherId,
-      actorUserId: guard.session.id,
-      status: parsed.data.status as JournalLessonStatus,
-      rescheduleToDate: parsed.data.rescheduleToDate ? normalizeIsoDate(parsed.data.rescheduleToDate) : undefined,
-      rescheduleToTime: parsed.data.rescheduleToTime ? normalizeHmTime(parsed.data.rescheduleToTime) : undefined
-    });
+    const updated = await runIdempotent(`journal:slots:status:${scope.teacherId}:${id}`, idempotencyKey, () =>
+      updateTeacherLessonSlotStatus({
+        id,
+        teacherId: scope.teacherId,
+        actorUserId: guard.session.id,
+        status: parsed.data.status as JournalLessonStatus,
+        studentId: parsed.data.studentId,
+        reason: parsed.data.reason,
+        rescheduleToDate: parsed.data.rescheduleToDate ? normalizeIsoDate(parsed.data.rescheduleToDate) : undefined,
+        rescheduleToTime: parsed.data.rescheduleToTime ? normalizeHmTime(parsed.data.rescheduleToTime) : undefined
+      })
+    );
 
-    return new NextResponse(null, { status: 204 });
+    return NextResponse.json(updated);
   } catch (error) {
     return mapJournalError(error, 'Не удалось изменить статус слота');
   }
@@ -62,8 +70,20 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   if (message === 'RESCHEDULE_TARGET_REQUIRED') {
     return NextResponse.json({ code: 'RESCHEDULE_TARGET_REQUIRED', message: 'Укажите новую дату и время для переноса' }, { status: 422 });
   }
+  if (message === 'STATUS_REASON_REQUIRED') {
+    return NextResponse.json({ code: 'STATUS_REASON_REQUIRED', message: 'Укажите причину изменения статуса' }, { status: 422 });
+  }
+  if (message === 'SLOT_COMPLETED_STATUS_CHANGE_FORBIDDEN') {
+    return NextResponse.json(
+      { code: 'SLOT_COMPLETED_STATUS_CHANGE_FORBIDDEN', message: 'Завершенное занятие нельзя перенести или отменить' },
+      { status: 422 }
+    );
+  }
   if (message === 'STUDENT_BALANCE_EMPTY') {
     return NextResponse.json({ code: 'STUDENT_BALANCE_EMPTY', message: 'Недостаточно оплаченных занятий у ученика' }, { status: 422 });
+  }
+  if (message === 'STUDENT_TIME_CONFLICT') {
+    return NextResponse.json({ code: 'STUDENT_TIME_CONFLICT', message: 'У ученика уже есть занятие в это время' }, { status: 409 });
   }
   if (message === 'FORBIDDEN') {
     return NextResponse.json({ code: 'FORBIDDEN', message: 'Недостаточно прав' }, { status: 403 });

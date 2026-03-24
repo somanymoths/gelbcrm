@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { deleteTeacherLessonSlot, deleteTeacherWeeklySeriesFromSlot, updateTeacherLessonSlot } from '@/lib/db';
+import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const bodySchema = z.object({
@@ -28,15 +29,18 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     }
 
     const scope = await resolveJournalScope(guard.session, parsed.data.teacherId);
+    const idempotencyKey = getIdempotencyKeyFromRequest(request);
 
-    const updated = await updateTeacherLessonSlot({
-      id,
-      teacherId: scope.teacherId,
-      actorUserId: guard.session.id,
-      studentId: parsed.data.studentId,
-      date: parsed.data.date ? normalizeIsoDate(parsed.data.date) : undefined,
-      startTime: parsed.data.startTime ? normalizeHmTime(parsed.data.startTime) : undefined
-    });
+    const updated = await runIdempotent(`journal:slots:update:${scope.teacherId}:${id}`, idempotencyKey, () =>
+      updateTeacherLessonSlot({
+        id,
+        teacherId: scope.teacherId,
+        actorUserId: guard.session.id,
+        studentId: parsed.data.studentId,
+        date: parsed.data.date ? normalizeIsoDate(parsed.data.date) : undefined,
+        startTime: parsed.data.startTime ? normalizeHmTime(parsed.data.startTime) : undefined
+      })
+    );
 
     return NextResponse.json(updated);
   } catch (error) {
@@ -58,20 +62,24 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     const teacherId = searchParams.get('teacherId') ?? undefined;
     const deleteMode = searchParams.get('deleteMode');
     const scope = await resolveJournalScope(guard.session, teacherId);
+    const idempotencyKey = getIdempotencyKeyFromRequest(request);
 
-    if (deleteMode === 'series') {
-      await deleteTeacherWeeklySeriesFromSlot({
-        id,
-        teacherId: scope.teacherId,
-        actorUserId: guard.session.id
-      });
-    } else {
-      await deleteTeacherLessonSlot({
-        id,
-        teacherId: scope.teacherId,
-        actorUserId: guard.session.id
-      });
-    }
+    await runIdempotent(`journal:slots:delete:${scope.teacherId}:${id}:${deleteMode ?? 'single'}`, idempotencyKey, async () => {
+      if (deleteMode === 'series') {
+        await deleteTeacherWeeklySeriesFromSlot({
+          id,
+          teacherId: scope.teacherId,
+          actorUserId: guard.session.id
+        });
+      } else {
+        await deleteTeacherLessonSlot({
+          id,
+          teacherId: scope.teacherId,
+          actorUserId: guard.session.id
+        });
+      }
+      return true;
+    });
 
     return new NextResponse(null, { status: 204 });
   } catch (error) {
@@ -94,6 +102,9 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   if (message === 'SLOT_DELETE_ONLY_PLANNED') {
     return NextResponse.json({ code: 'SLOT_DELETE_ONLY_PLANNED', message: 'Удалять можно только запланированные занятия' }, { status: 422 });
   }
+  if (message === 'SLOT_EDIT_COMPLETED_FORBIDDEN') {
+    return NextResponse.json({ code: 'SLOT_EDIT_COMPLETED_FORBIDDEN', message: 'Завершенное занятие нельзя редактировать' }, { status: 422 });
+  }
   if (message === 'SLOT_DELETE_COMPLETED') {
     return NextResponse.json({ code: 'SLOT_DELETE_COMPLETED', message: 'Завершенные занятия удалить нельзя' }, { status: 422 });
   }
@@ -102,6 +113,9 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   }
   if (message === 'SLOT_ALREADY_EXISTS') {
     return NextResponse.json({ code: 'SLOT_ALREADY_EXISTS', message: 'Слот с этим временем уже существует' }, { status: 409 });
+  }
+  if (message === 'STUDENT_TIME_CONFLICT') {
+    return NextResponse.json({ code: 'STUDENT_TIME_CONFLICT', message: 'У ученика уже есть занятие в это время' }, { status: 409 });
   }
   if (message === 'STUDENT_NOT_ASSIGNED_TO_TEACHER') {
     return NextResponse.json({ code: 'STUDENT_NOT_ASSIGNED_TO_TEACHER', message: 'Ученик не закреплён за преподавателем' }, { status: 422 });

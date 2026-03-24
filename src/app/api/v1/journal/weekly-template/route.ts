@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { getTeacherWeeklyTemplate, replaceTeacherWeeklyTemplate } from '@/lib/db';
+import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, resolveJournalScope } from '@/lib/journal';
 
 const querySchema = z.object({
@@ -14,6 +15,7 @@ const bodySchema = z.object({
       z.object({
         weekday: z.number().int().min(1).max(7),
         startTime: z.string().trim(),
+        studentId: z.string().uuid().nullable().optional(),
         isActive: z.boolean().optional()
       })
     )
@@ -61,15 +63,20 @@ export async function PUT(request: Request) {
     }
 
     const scope = await resolveJournalScope(guard.session, parsedQuery.data.teacherId);
+    const idempotencyKey = getIdempotencyKeyFromRequest(request);
 
-    await replaceTeacherWeeklyTemplate({
-      teacherId: scope.teacherId,
-      actorUserId: guard.session.id,
-      slots: parsedBody.data.slots.map((slot) => ({
-        weekday: slot.weekday,
-        startTime: normalizeHmTime(slot.startTime),
-        isActive: slot.isActive ?? true
-      }))
+    await runIdempotent(`journal:weekly-template:${scope.teacherId}`, idempotencyKey, async () => {
+      await replaceTeacherWeeklyTemplate({
+        teacherId: scope.teacherId,
+        actorUserId: guard.session.id,
+        slots: parsedBody.data.slots.map((slot) => ({
+          weekday: slot.weekday,
+          startTime: normalizeHmTime(slot.startTime),
+          studentId: slot.studentId ?? null,
+          isActive: slot.isActive ?? true
+        }))
+      });
+      return true;
     });
 
     return new NextResponse(null, { status: 204 });

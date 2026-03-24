@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
+import { FunnelCacheKeys, invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
 import { getFunnelCardById, updateFunnelCard } from '@/lib/funnel';
 import { normalizePhone } from '@/lib/phone';
+import { withShortTtlCache } from '@/lib/request-cache';
 
 const patchSchema = z
   .object({
@@ -23,7 +25,7 @@ export async function GET(_: Request, context: { params: Promise<{ id: string }>
   if (guard.error) return guard.error;
 
   const { id } = await context.params;
-  const item = await getFunnelCardById({ cardId: id });
+  const item = await withShortTtlCache(FunnelCacheKeys.card(id), 2_000, () => getFunnelCardById({ cardId: id }));
 
   if (!item) {
     return NextResponse.json({ code: 'STUDENT_NOT_FOUND', message: 'Карточка не найдена' }, { status: 404 });
@@ -73,6 +75,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       startLessonsAt: parsed.data.startLessonsAt,
       lastLessonAt: parsed.data.lastLessonAt
     });
+    invalidateFunnelCardCache(id);
+    invalidateFunnelBoardRelatedCache();
 
     return new NextResponse(null, { status: 204 });
   } catch (error) {
