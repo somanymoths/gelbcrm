@@ -10,9 +10,11 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Input as UIInput } from '@/components/ui/input';
 import { NativeSelect } from '@/components/ui/native-select';
 import { Separator } from '@/components/ui/separator';
-import { Sheet, SheetContent } from '@/components/ui/sheet';
+import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
+import { getStableAvatarColor, getStableAvatarInitial, getStableAvatarSeed } from '@/lib/avatar-color';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -226,6 +228,99 @@ function formatCountdown(targetDate: string | null, nowTs: number): string {
   return days > 0 ? `${days}д ${hh}:${mm}:${ss}` : `${hh}:${mm}:${ss}`;
 }
 
+function BoardSkeleton() {
+  return (
+    <div className="w-full overflow-x-auto rounded-xl bg-muted/30 p-2">
+      <div className="flex min-w-max items-start gap-4">
+        {Array.from({ length: 4 }).map((_, columnIndex) => (
+          <div key={`stage-skeleton-${columnIndex}`} className="w-[296px] min-w-[296px] flex-none">
+            <UICard className="bg-card/95 ring-1 ring-border/50 shadow-sm">
+              <CardHeader className="px-4 pb-3">
+                <div className="flex items-center justify-between gap-2">
+                  <Skeleton className="h-5 w-36" />
+                  <Skeleton className="h-5 w-6" />
+                </div>
+              </CardHeader>
+              <CardContent className="px-4 pb-4">
+                <div className="flex w-full flex-col gap-2">
+                  {Array.from({ length: 3 }).map((_, cardIndex) => (
+                    <UICard key={`card-skeleton-${columnIndex}-${cardIndex}`} size="sm" className="bg-background/90 ring-1 ring-border/40 shadow-sm">
+                      <CardContent className="px-3 pb-3">
+                        <div className="flex w-full flex-col gap-2">
+                          <Skeleton className="h-4 w-40" />
+                          <Skeleton className="h-3 w-48" />
+                          <Skeleton className="h-3 w-44" />
+                          <Skeleton className="h-3 w-32" />
+                          <Skeleton className="h-7 w-full" />
+                        </div>
+                      </CardContent>
+                    </UICard>
+                  ))}
+                </div>
+              </CardContent>
+            </UICard>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DrawerSkeleton() {
+  return (
+    <div className="flex min-w-0 w-full flex-col gap-4">
+      <UICard size="sm" className="min-w-0 bg-card ring-1 ring-border/50 shadow-sm">
+        <CardContent className="px-4 pb-4">
+          <div className="mt-1 flex items-start gap-3">
+            <Skeleton className="size-14 rounded-full" />
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <Skeleton className="h-6 w-44" />
+              <Skeleton className="h-4 w-56" />
+              <Skeleton className="h-6 w-20" />
+            </div>
+          </div>
+          <div className="mt-4">
+            <Skeleton className="mb-1 h-3 w-14" />
+            <Skeleton className="h-9 w-full" />
+          </div>
+        </CardContent>
+      </UICard>
+
+      {Array.from({ length: 4 }).map((_, index) => (
+        <UICard key={`drawer-section-skeleton-${index}`} size="sm" className="min-w-0 bg-card ring-1 ring-border/50 shadow-sm">
+          <CardHeader className="px-4 pb-2">
+            <Skeleton className="h-5 w-40" />
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-9 w-2/3" />
+            </div>
+          </CardContent>
+        </UICard>
+      ))}
+    </div>
+  );
+}
+
+function ArchiveListSkeleton() {
+  return (
+    <div className="flex w-full flex-col gap-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <UICard key={`archive-skeleton-${index}`} size="sm" className="bg-background/80 ring-1 ring-border/40 shadow-sm">
+          <CardContent className="px-3 pb-3">
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-4 w-44" />
+              <Skeleton className="h-3 w-28" />
+            </div>
+          </CardContent>
+        </UICard>
+      ))}
+    </div>
+  );
+}
+
 export function FunnelBoard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -264,6 +359,7 @@ export function FunnelBoard() {
   const [nowTs, setNowTs] = useState(Date.now());
 
   const [archivedCards, setArchivedCards] = useState<ArchivedCard[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
   const [archiveModalOpen, setArchiveModalOpen] = useState(false);
   const [restoreStageCode, setRestoreStageCode] = useState<string | null>(null);
   const [restoreCardId, setRestoreCardId] = useState<string | null>(null);
@@ -332,14 +428,19 @@ export function FunnelBoard() {
   }, [loading, cards, stages]);
 
   const loadArchived = useCallback(async () => {
-    const response = await fetch('/api/v1/funnel/archived', { cache: 'no-store' });
-    if (!response.ok) {
-      toast.error('Не удалось загрузить архив');
-      return;
-    }
+    setArchivedLoading(true);
+    try {
+      const response = await fetch('/api/v1/funnel/archived', { cache: 'no-store' });
+      if (!response.ok) {
+        toast.error('Не удалось загрузить архив');
+        return;
+      }
 
-    const data = (await response.json()) as ArchivedCard[];
-    setArchivedCards(data);
+      const data = (await response.json()) as ArchivedCard[];
+      setArchivedCards(data);
+    } finally {
+      setArchivedLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -642,6 +743,7 @@ export function FunnelBoard() {
     toast.success('Карточка сохранена');
     await loadBoard();
     await refreshSelectedCard(selectedCard.id);
+    setEditMode(false);
   }
 
   async function onAddManualLessons() {
@@ -849,6 +951,7 @@ export function FunnelBoard() {
   }
 
   async function onOpenArchive() {
+    setArchivedCards([]);
     await loadArchived();
     setArchiveModalOpen(true);
     setRestoreCardId(null);
@@ -930,12 +1033,7 @@ export function FunnelBoard() {
       ) : null}
 
       {loading ? (
-        <div className="py-8 text-center">
-          <div className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-            <Spinner className="size-5" />
-            <span>Загрузка...</span>
-          </div>
-        </div>
+        <BoardSkeleton />
       ) : (
         <div ref={boardScrollContainerRef} className="w-full overflow-x-auto rounded-xl bg-muted/30 p-2">
           <div className="flex min-w-max items-start gap-4">
@@ -1057,40 +1155,48 @@ export function FunnelBoard() {
       )}
 
       <Sheet open={drawerOpen} onOpenChange={(nextOpen) => !nextOpen && closeCardDrawer()}>
-        <SheetContent side="right" className="w-full max-w-[560px] p-0 sm:max-w-[560px]">
+        <SheetContent
+          side="right"
+          showCloseButton={false}
+          className="w-full max-w-[680px] p-0 sm:max-w-[680px]"
+        >
+          <SheetTitle className="sr-only">Карточка ученика</SheetTitle>
+          <SheetClose asChild>
+            <UIButton
+              variant="outline"
+              size="icon-sm"
+              aria-label="Закрыть карточку"
+              className="absolute top-4 -left-12 z-50 bg-background shadow-sm"
+            >
+              <CloseOutlined />
+            </UIButton>
+          </SheetClose>
           <div className="h-full overflow-auto overflow-x-hidden bg-muted/20 p-4 sm:p-5">
             {detailsLoading || !selectedCard ? (
-              <div className="py-8 text-center">
-                <div className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-                  <Spinner />
-                  <span>Загрузка карточки...</span>
-                </div>
-              </div>
+              <DrawerSkeleton />
             ) : (
               <div className="flex min-w-0 w-full flex-col gap-4">
                 <UICard size="sm" className="min-w-0 bg-card ring-1 ring-border/50 shadow-sm">
                   <CardContent className="px-4 pb-4">
-                    <div className="flex items-start justify-between gap-2">
-                      <UIButton
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Закрыть карточку"
-                        onClick={closeCardDrawer}
-                      >
-                        <CloseOutlined />
-                      </UIButton>
-                      <UIButton
-                        variant={editMode ? 'outline' : 'default'}
-                        size="sm"
-                        onClick={() => setEditMode((prev) => !prev)}
-                      >
-                        {editMode ? 'Готово' : 'Редактировать'}
-                      </UIButton>
-                    </div>
-
-                    <div className="mt-3 flex items-start gap-3">
+                    <div className="mt-1 flex items-start gap-3">
                       <UIAvatar className="size-14 ring-1 ring-border/50">
-                        <AvatarFallback className="text-xl font-medium text-foreground">{selectedCard.first_name?.[0] ?? 'У'}</AvatarFallback>
+                        <AvatarFallback
+                          className="text-xl font-semibold text-white"
+                          style={{
+                            backgroundColor: getStableAvatarColor(
+                              getStableAvatarSeed({
+                                id: selectedCard.id,
+                                firstName: selectedCard.first_name,
+                                fallbackFullName: selectedCard.full_name
+                              })
+                            )
+                          }}
+                        >
+                          {getStableAvatarInitial({
+                            firstName: selectedCard.first_name,
+                            fallbackFullName: selectedCard.full_name
+                          })}
+                        </AvatarFallback>
                       </UIAvatar>
                       <div className="flex min-w-0 flex-1 flex-col gap-1">
                         <span className="text-lg font-semibold leading-tight">
@@ -1112,7 +1218,6 @@ export function FunnelBoard() {
                           >
                             {selectedCard.entity_type === 'student' ? 'Ученик' : 'Лид'}
                           </Badge>
-                          <Badge variant="outline">{selectedCard.stage_name}</Badge>
                         </div>
                       </div>
                     </div>
@@ -1136,7 +1241,16 @@ export function FunnelBoard() {
 
                 <UICard size="sm" className="min-w-0 bg-card ring-1 ring-border/50 shadow-sm">
                   <CardHeader className="px-4 pb-2">
-                    <CardTitle>Основные данные</CardTitle>
+                    <div className="flex items-center justify-between gap-2">
+                      <CardTitle>Основные данные</CardTitle>
+                      <UIButton
+                        variant={editMode ? 'outline' : 'default'}
+                        size="sm"
+                        onClick={() => setEditMode((prev) => !prev)}
+                      >
+                        {editMode ? 'Готово' : 'Редактировать'}
+                      </UIButton>
+                    </div>
                   </CardHeader>
                   <CardContent className="px-4 pb-4">
                     {editMode ? (
@@ -1255,31 +1369,6 @@ export function FunnelBoard() {
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm text-muted-foreground">Осталось занятий</span>
                       <span className="text-base font-semibold">{selectedCard.paid_lessons_left}</span>
-                    </div>
-
-                    <div className="mt-3 relative h-3 w-full rounded-full bg-secondary">
-                      <div
-                        style={{
-                          position: 'absolute',
-                          left: 0,
-                          top: 0,
-                          height: 12,
-                          borderRadius: 11,
-                          background: 'var(--primary)',
-                          width: `${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}%`
-                        }}
-                      />
-                      <div
-                        style={{
-                          position: 'absolute',
-                          top: -3,
-                          left: `calc(${Math.max(12, Math.min(100, selectedCard.paid_lessons_left * 15))}% - 10px)`,
-                          width: 20,
-                          height: 18,
-                          borderRadius: 11,
-                          background: 'var(--foreground)'
-                        }}
-                      />
                     </div>
 
                     <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[120px_minmax(0,1fr)_auto]">
@@ -1597,7 +1686,11 @@ export function FunnelBoard() {
             <DialogTitle>Архив карточек</DialogTitle>
           </DialogHeader>
           <div className="flex w-full flex-col gap-2">
-            <NativeSelect value={restoreCardId ?? ''} onChange={(event) => setRestoreCardId(event.target.value)}>
+            <NativeSelect
+              value={restoreCardId ?? ''}
+              disabled={archivedLoading}
+              onChange={(event) => setRestoreCardId(event.target.value)}
+            >
               <option value="" disabled>
                 Выберите карточку
               </option>
@@ -1612,7 +1705,11 @@ export function FunnelBoard() {
               ))}
             </NativeSelect>
 
-            <NativeSelect value={restoreStageCode ?? ''} onChange={(event) => setRestoreStageCode(event.target.value)}>
+            <NativeSelect
+              value={restoreStageCode ?? ''}
+              disabled={archivedLoading}
+              onChange={(event) => setRestoreStageCode(event.target.value)}
+            >
               <option value="" disabled>
                 Выберите этап восстановления
               </option>
@@ -1625,7 +1722,9 @@ export function FunnelBoard() {
 
             <Separator className="my-3" />
 
-            {archivedCards.length === 0 ? (
+            {archivedLoading ? (
+              <ArchiveListSkeleton />
+            ) : archivedCards.length === 0 ? (
               <span className="text-muted-foreground">Архив пуст</span>
             ) : (
               <div className="flex w-full flex-col gap-2">
@@ -1650,7 +1749,7 @@ export function FunnelBoard() {
           </div>
           <DialogFooter>
             <UIButton onClick={() => setArchiveModalOpen(false)}>Отмена</UIButton>
-            <UIButton variant="default" onClick={() => void onRestoreCard()}>
+            <UIButton variant="default" disabled={archivedLoading} onClick={() => void onRestoreCard()}>
               Восстановить
             </UIButton>
           </DialogFooter>

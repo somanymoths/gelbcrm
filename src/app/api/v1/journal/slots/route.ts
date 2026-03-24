@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { createTeacherLessonSlot, listTeacherLessonSlots } from '@/lib/db';
+import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const listSchema = z.object({
@@ -14,7 +15,8 @@ const createSchema = z.object({
   teacherId: z.string().trim().optional(),
   studentId: z.string().uuid().nullable().optional(),
   date: z.string().trim(),
-  startTime: z.string().trim()
+  startTime: z.string().trim(),
+  repeatWeekly: z.boolean().optional()
 });
 
 export async function GET(request: Request) {
@@ -60,14 +62,18 @@ export async function POST(request: Request) {
     }
 
     const scope = await resolveJournalScope(guard.session, parsed.data.teacherId);
+    const idempotencyKey = getIdempotencyKeyFromRequest(request);
 
-    const created = await createTeacherLessonSlot({
-      teacherId: scope.teacherId,
-      actorUserId: guard.session.id,
-      studentId: parsed.data.studentId ?? null,
-      date: normalizeIsoDate(parsed.data.date),
-      startTime: normalizeHmTime(parsed.data.startTime)
-    });
+    const created = await runIdempotent(`journal:slots:create:${scope.teacherId}`, idempotencyKey, () =>
+      createTeacherLessonSlot({
+        teacherId: scope.teacherId,
+        actorUserId: guard.session.id,
+        studentId: parsed.data.studentId,
+        date: normalizeIsoDate(parsed.data.date),
+        startTime: normalizeHmTime(parsed.data.startTime),
+        repeatWeekly: parsed.data.repeatWeekly ?? false
+      })
+    );
 
     return NextResponse.json(created, { status: 201 });
   } catch (error) {
@@ -92,6 +98,12 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   }
   if (message === 'SLOT_ALREADY_EXISTS') {
     return NextResponse.json({ code: 'SLOT_ALREADY_EXISTS', message: 'Слот с этим временем уже существует' }, { status: 409 });
+  }
+  if (message === 'STUDENT_TIME_CONFLICT') {
+    return NextResponse.json({ code: 'STUDENT_TIME_CONFLICT', message: 'У ученика уже есть занятие в это время' }, { status: 409 });
+  }
+  if (message === 'WEEKLY_TEMPLATE_SLOT_NOT_FOUND') {
+    return NextResponse.json({ code: 'WEEKLY_TEMPLATE_SLOT_NOT_FOUND', message: 'Не найден слот в недельном шаблоне для выбранного времени' }, { status: 422 });
   }
   if (message === 'FORBIDDEN') {
     return NextResponse.json({ code: 'FORBIDDEN', message: 'Недостаточно прав' }, { status: 403 });

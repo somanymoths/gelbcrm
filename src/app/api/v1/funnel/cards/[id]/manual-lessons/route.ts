@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
+import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
 import { addFunnelCardManualLessons } from '@/lib/funnel';
 
 const manualLessonsSchema = z
@@ -30,6 +31,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       comment: parsed.data.comment,
       actorUserId: guard.session.id
     });
+    invalidateFunnelCardCache(id);
+    invalidateFunnelBoardRelatedCache();
 
     return NextResponse.json({ paidLessonsLeft });
   } catch (error) {

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
+import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
 import { updateFunnelCardStage } from '@/lib/funnel';
 
 const bodySchema = z.object({
@@ -28,6 +29,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       lossReasonId: parsed.data.lossReasonId,
       actorUserId: guard.session.id
     });
+    invalidateFunnelCardCache(id);
+    invalidateFunnelBoardRelatedCache();
 
     return new NextResponse(null, { status: 204 });
   } catch (error) {

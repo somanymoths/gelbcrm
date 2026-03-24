@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
+import { invalidateFunnelBoardRelatedCache } from '@/lib/funnel-cache';
 import { createFunnelCard } from '@/lib/funnel';
 import { normalizePhone } from '@/lib/phone';
 
@@ -58,6 +59,7 @@ export async function POST(request: Request) {
       startLessonsAt,
       actorUserId: guard.session.id
     });
+    invalidateFunnelBoardRelatedCache();
 
     return NextResponse.json(created, { status: 201 });
   } catch (error) {

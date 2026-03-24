@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
+import { FunnelCacheKeys, invalidateFunnelCardCache } from '@/lib/funnel-cache';
 import { addCardComment, listCardComments } from '@/lib/funnel';
+import { withShortTtlCache } from '@/lib/request-cache';
 
 const createSchema = z.object({
   stageId: z.number().int().positive().optional().nullable(),
@@ -13,7 +15,7 @@ export async function GET(_: Request, context: { params: Promise<{ id: string }>
   if (guard.error) return guard.error;
 
   const { id } = await context.params;
-  const items = await listCardComments({ cardId: id });
+  const items = await withShortTtlCache(FunnelCacheKeys.cardComments(id), 2_000, () => listCardComments({ cardId: id }));
   return NextResponse.json(items);
 }
 
@@ -37,6 +39,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       body: parsed.data.body,
       authorId: guard.session.id
     });
+    invalidateFunnelCardCache(id);
 
     return new NextResponse(null, { status: 201 });
   } catch (error) {

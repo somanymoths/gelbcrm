@@ -24,6 +24,10 @@ function getYooKassaCredentials() {
   return { shopId, secretKey };
 }
 
+function isMockPaymentsModeEnabled(): boolean {
+  return process.env.PAYMENTS_MOCK_MODE === '1';
+}
+
 export async function POST(request: Request) {
   const json = await request.json().catch(() => null);
   const parsed = schema.safeParse(json);
@@ -34,18 +38,46 @@ export async function POST(request: Request) {
 
   let credentials: { shopId: string; secretKey: string };
 
-  try {
-    credentials = getYooKassaCredentials();
-  } catch {
-    return NextResponse.json(
-      { code: 'YOOKASSA_NOT_CONFIGURED', message: 'Платежная система не настроена на сервере' },
-      { status: 503 }
-    );
-  }
-
   const payload = parsed.data;
 
   try {
+    if (isMockPaymentsModeEnabled()) {
+      const paymentId = `mock-${Date.now()}`;
+      await upsertYookassaPayment({
+        providerPaymentId: paymentId,
+        status: 'succeeded',
+        amount: payload.amount,
+        currency: 'RUB',
+        payerName: payload.payerName,
+        payerEmail: payload.payerEmail,
+        tariffName: payload.tariffName,
+        lessonsCount: payload.lessonsCount,
+        metadata: {
+          payer_name: payload.payerName,
+          payer_email: payload.payerEmail,
+          lessons_count: String(payload.lessonsCount),
+          ...payload.metadata
+        },
+        paidAt: new Date().toISOString()
+      });
+
+      return NextResponse.json({
+        paymentId,
+        status: 'succeeded',
+        paid: true,
+        confirmationUrl: payload.returnUrl
+      });
+    }
+
+    try {
+      credentials = getYooKassaCredentials();
+    } catch {
+      return NextResponse.json(
+        { code: 'YOOKASSA_NOT_CONFIGURED', message: 'Платежная система не настроена на сервере' },
+        { status: 503 }
+      );
+    }
+
     const payment = await createYooKassaPayment({
       shopId: credentials.shopId,
       secretKey: credentials.secretKey,

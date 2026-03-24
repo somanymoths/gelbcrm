@@ -1,26 +1,9 @@
 import mysql from 'mysql2/promise';
 import { randomUUID } from 'crypto';
-import { getMysqlConfig } from '@/lib/env';
-
-const globalForFunnelDb = globalThis as unknown as { funnelPool?: mysql.Pool };
+import { getMysqlPool } from '@/lib/mysql-pool';
 
 function getPool(): mysql.Pool {
-  if (!globalForFunnelDb.funnelPool) {
-    const config = getMysqlConfig();
-
-    globalForFunnelDb.funnelPool = mysql.createPool({
-      host: config.host,
-      port: config.port,
-      database: config.database,
-      user: config.user,
-      password: config.password,
-      connectionLimit: 10,
-      connectTimeout: 15000,
-      charset: 'utf8mb4'
-    });
-  }
-
-  return globalForFunnelDb.funnelPool;
+  return getMysqlPool();
 }
 
 const LOSS_STAGE_CODES = new Set(['declined', 'stopped']);
@@ -166,6 +149,13 @@ function parseJsonColumn(value: unknown): Record<string, unknown> | null {
   }
 
   return null;
+}
+
+function toMysqlTimestamp(value?: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
 export async function listFunnelStages(): Promise<FunnelStageItem[]> {
@@ -1226,7 +1216,7 @@ export async function createCardPaymentLinkRecord(input: {
         input.paymentUrl,
         input.amount,
         input.currency,
-        input.expiresAt ?? null,
+        toMysqlTimestamp(input.expiresAt),
         input.actorUserId
       ]
     );

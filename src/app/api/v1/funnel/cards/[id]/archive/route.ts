@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/api-auth';
+import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
 import { archiveFunnelCard } from '@/lib/funnel';
 
 export async function POST(_: Request, context: { params: Promise<{ id: string }> }) {
@@ -10,6 +11,8 @@ export async function POST(_: Request, context: { params: Promise<{ id: string }
 
   try {
     await archiveFunnelCard({ cardId: id, actorUserId: guard.session.id });
+    invalidateFunnelCardCache(id);
+    invalidateFunnelBoardRelatedCache();
     return new NextResponse(null, { status: 204 });
   } catch (error) {
     if (error instanceof Error && error.message === 'STUDENT_NOT_FOUND') {
