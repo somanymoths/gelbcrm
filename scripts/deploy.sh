@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/ops.sh"
+init_ops "$ROOT_DIR"
 HOST="${DEPLOY_HOST:-85.117.235.173}"
 USER="${DEPLOY_USER:-root}"
 TARGET_DIR="${DEPLOY_PATH:-/var/www/gelbcrm}"
@@ -9,21 +12,20 @@ SSH_TARGET="${USER}@${HOST}"
 REMOTE_REF="origin/main"
 
 if ! git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "[deploy] Not a git repository: ${ROOT_DIR}"
-  exit 1
+  fail "$EXIT_REPO_NOT_FOUND" "[deploy] Not a git repository: ${ROOT_DIR}"
 fi
 
-echo "[deploy] Fetching latest ${REMOTE_REF}"
+log_info "[deploy] Fetching latest ${REMOTE_REF}"
 git -C "${ROOT_DIR}" fetch --prune origin main
 
 DEPLOY_COMMIT="$(git -C "${ROOT_DIR}" rev-parse "${REMOTE_REF}")"
-echo "[deploy] Deploying ${REMOTE_REF} at commit ${DEPLOY_COMMIT}"
+log_info "[deploy] Deploying ${REMOTE_REF} at commit ${DEPLOY_COMMIT}"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 git -C "${ROOT_DIR}" archive "${REMOTE_REF}" | tar -x -C "${TMP_DIR}"
 
-echo "[deploy] Syncing files to ${SSH_TARGET}:${TARGET_DIR}"
+log_info "[deploy] Syncing files to ${SSH_TARGET}:${TARGET_DIR}"
 ssh "$SSH_TARGET" "mkdir -p '$TARGET_DIR'"
 
 rsync -az --delete \
@@ -34,7 +36,7 @@ rsync -az --delete \
   --exclude '.DS_Store' \
   "${TMP_DIR}/" "$SSH_TARGET:$TARGET_DIR/"
 
-echo "[deploy] Installing and restarting app on server"
+log_info "[deploy] Installing and restarting app on server"
 ssh "$SSH_TARGET" "TARGET_DIR='$TARGET_DIR' bash -se" <<'REMOTE'
 set -euo pipefail
 cd "$TARGET_DIR"
@@ -72,4 +74,4 @@ else
 fi
 REMOTE
 
-echo "[deploy] Done"
+log_info "[deploy] Done"

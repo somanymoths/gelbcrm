@@ -45,6 +45,9 @@ npm run task:start -- "Добавить фильтр по преподавате
 5. Перед PR: `npm run task:review` (прогон проверок + файл финального ревью)
 6. После merge в `main`: `npm run deploy` (деплоит именно `origin/main`)
 
+Операционные скрипты пишут события в общий лог:
+- `.codex/logs/task-tools.log`
+
 Подробный процесс: `docs/WORKFLOW_RU.md`.
 
 ## Изолированное тестовое пространство (Sandbox)
