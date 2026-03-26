@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { spawn, execSync } = require('child_process');
+const { spawn, execSync, execFileSync } = require('child_process');
 
 function findRunningNextDevInRepo(repoRoot) {
   let output = '';
@@ -25,21 +25,24 @@ function findRunningNextDevInRepo(repoRoot) {
     });
 }
 
-function ensureJournalSectionAlias(repoRoot) {
-  const journalDir = path.join(repoRoot, 'src', 'components', 'journal');
-  const aliasPath = path.join(journalDir, 'journal-section.tsx');
-  const fallbackPath = path.join(journalDir, 'journal-section 4.tsx');
-
-  if (fs.existsSync(aliasPath)) return;
-
-  if (fs.existsSync(fallbackPath)) {
-    fs.writeFileSync(aliasPath, "export { JournalSection } from './journal-section 4';\n", 'utf8');
-    console.warn('[build-safe] Восстановлен src/components/journal/journal-section.tsx');
-    return;
+function runEnvPreflight(repoRoot) {
+  const preflightPath = path.join(repoRoot, 'scripts', 'env-preflight.cjs');
+  try {
+    execFileSync(process.execPath, [preflightPath], { stdio: 'inherit', env: process.env });
+  } catch (error) {
+    const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 1;
+    process.exit(Number.isFinite(status) ? status : 1);
   }
+}
 
-  console.error('[build-safe] Не найден ни journal-section.tsx, ни journal-section 4.tsx.');
-  console.error('[build-safe] Восстановите файл журнала перед сборкой.');
+function ensureJournalSectionExists(repoRoot) {
+  const journalDir = path.join(repoRoot, 'src', 'components', 'journal');
+  const journalPath = path.join(journalDir, 'journal-section.tsx');
+
+  if (fs.existsSync(journalPath)) return;
+
+  console.error('[build-safe] Не найден src/components/journal/journal-section.tsx.');
+  console.error('[build-safe] Восстановите канонический файл журнала перед сборкой.');
   process.exit(1);
 }
 
@@ -54,8 +57,9 @@ function run() {
     process.exit(1);
   }
 
+  runEnvPreflight(repoRoot);
   fs.rmSync(path.join(repoRoot, '.next-build'), { recursive: true, force: true });
-  ensureJournalSectionAlias(repoRoot);
+  ensureJournalSectionExists(repoRoot);
 
   const nextBin = path.join(repoRoot, 'node_modules', '.bin', 'next');
   const child = spawn(nextBin, ['build'], {

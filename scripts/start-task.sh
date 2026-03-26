@@ -119,6 +119,8 @@ if [ "$START_DEV" -eq 1 ] && [ -f "${ROOT_DIR}/package.json" ]; then
   DEV_LOG="${ROOT_DIR}/.codex/logs/dev-${PORT}.log"
   DEV_PID_FILE="${ROOT_DIR}/.codex/dev-${PORT}.pid"
 
+  HEALTH_URL="http://localhost:${PORT}/api/health"
+
   if lsof -iTCP:"${PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Dev server is already listening on port ${PORT}."
   else
@@ -130,13 +132,13 @@ if [ "$START_DEV" -eq 1 ] && [ -f "${ROOT_DIR}/package.json" ]; then
     )
 
     for _ in $(seq 1 30); do
-      if curl -fsS "http://localhost:${PORT}" >/dev/null 2>&1; then
+      if curl -fsS "${HEALTH_URL}" >/dev/null 2>&1; then
         break
       fi
       sleep 1
     done
 
-    if curl -fsS "http://localhost:${PORT}" >/dev/null 2>&1; then
+    if curl -fsS "${HEALTH_URL}" >/dev/null 2>&1; then
       printf 'Dev server: http://localhost:%s\n' "$PORT"
       printf 'Dev log: %s\n' "$DEV_LOG"
     else

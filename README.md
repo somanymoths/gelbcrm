@@ -18,6 +18,10 @@
 7. Открыть:
    http://localhost:3000
 
+Важно:
+- Перед `dev/build` выполняется preflight обязательных переменных окружения (`DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `SESSION_SECRET`).
+- Канонический файл журнала: `src/components/journal/journal-section.tsx` (без fallback-алиасов).
+
 Для старта новой задачи используйте bootstrap-скрипт:
 
 ```bash
@@ -30,6 +34,7 @@ npm run task:start -- "Добавить фильтр по преподавате
 - инициализирует task-файлы в `.codex/tasks/<branch>/` (`TASK.md`, `SUMMARY.md`);
 - при наличии токена создаёт страницу в Notion;
 - запускает локальный dev-сервер.
+- проверяет готовность dev-сервера через `GET /api/health`.
 
 ## Workflow задачи
 
