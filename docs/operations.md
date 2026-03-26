@@ -23,6 +23,26 @@ npm run ops:smoke
 npm run ops:smoke -- --require-health
 ```
 
+## 1.1 Release gate перед релизом
+
+Единая команда предрелизного барьера:
+
+```bash
+npm run release:gate
+```
+
+Состав проверок:
+- `ops:smoke`
+- `npm test`
+- `npm run typecheck`
+- `npm run lint`
+- `npm run build`
+
+Флаги:
+- `--require-health` — требовать `GET /api/health`;
+- `--skip-tests` — пропустить тесты;
+- `--skip-build` — пропустить build.
+
 ## 2. Типовые сбои и действия
 
 ### 2.1 Missing required env vars
@@ -62,6 +82,17 @@ npm run ops:smoke -- --require-health
    - `POST /api/v1/system/runtime-cache?scope=request`
    - `POST /api/v1/system/runtime-cache?scope=idempotency`
 
+### 2.6 Трассировка запроса по request id
+Симптом: трудно сопоставить ошибку API и конкретный запрос.
+
+Действия:
+1. Проверить заголовок ответа `x-request-id`.
+2. Использовать этот id при поиске JSON-логов backend (см. поля `requestId`, `event`, `route`).
+3. Для infra-ошибок (env/db) смотреть события:
+   - `infra.server_misconfigured`
+   - `infra.db_unreachable`
+   - `infra.db_auth_failed`
+
 ### 2.5 Ошибки localStorage в оплатах
 Симптом: пропажа/повреждение локальных данных в UI оплат.
 
@@ -76,4 +107,5 @@ npm run ops:smoke -- --require-health
 npm run task:checkpoint
 npm run task:review
 npm run ops:smoke -- --require-health
+npm run release:gate -- --require-health
 ```

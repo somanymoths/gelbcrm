@@ -27,11 +27,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Lint
-        run: npm run lint
+      - name: Release Gate (without build)
+        run: npm run release:gate -- --skip-build
 
       - name: Build
         run: npm run build
+
+      - name: Upload Ops Logs On Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-tools-log
+          path: .codex/logs/task-tools.log
+          if-no-files-found: ignore

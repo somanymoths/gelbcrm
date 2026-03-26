@@ -83,6 +83,7 @@ PR создаётся только на русском языке.
 После merge в `main`:
 
 ```bash
+npm run release:gate
 npm run deploy
 ```
 

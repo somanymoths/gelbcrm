@@ -15,6 +15,9 @@ if ! git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   fail "$EXIT_REPO_NOT_FOUND" "[deploy] Not a git repository: ${ROOT_DIR}"
 fi
 
+log_info "[deploy] Running local release gate"
+npm run release:gate -- --skip-build
+
 log_info "[deploy] Fetching latest ${REMOTE_REF}"
 git -C "${ROOT_DIR}" fetch --prune origin main
 
