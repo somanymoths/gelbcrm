@@ -36,13 +36,21 @@ import {
 import { Toggle } from '@/components/ui/toggle';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { calculateForecastBySlotId } from '@/lib/journal-forecast';
 import { toast } from 'sonner';
 
 type RoleUser = { id: string; role: 'admin' | 'teacher'; login: string };
 type TeacherItem = { id: string; full_name: string };
 type StudentItem = { id: string; full_name: string; paid_lessons_left: number };
-type WeeklySlot = { id: string; weekday: number; start_time: string; is_active: 0 | 1; student_id?: string | null };
-type LessonStatus = 'planned' | 'completed' | 'rescheduled' | 'canceled';
+type WeeklySlot = {
+  id: string;
+  weekday: number;
+  start_time: string;
+  start_from: string | null;
+  is_active: 0 | 1;
+  student_id?: string | null;
+};
+type LessonStatus = 'planned' | 'overdue' | 'completed' | 'rescheduled' | 'canceled';
 type LessonSlot = {
   id: string;
   student_id: string | null;
@@ -59,9 +67,11 @@ type LessonSlot = {
   status_reason?: string | null;
   source_weekly_slot_id?: string | null;
 };
+type PlannedForecastBaseline = { student_id: string; planned_count: number };
 
 type DayDraft = {
   time: string;
+  startFrom: string | null;
   studentId: string | null;
   repeatWeekly: boolean;
 };
@@ -100,6 +110,7 @@ export function JournalSection() {
   const [students, setStudents] = useState<StudentItem[]>([]);
   const [weeklyTemplate, setWeeklyTemplate] = useState<WeeklySlot[]>([]);
   const [slots, setSlots] = useState<LessonSlot[]>([]);
+  const [plannedBaselineByStudentId, setPlannedBaselineByStudentId] = useState<Record<string, number>>({});
   const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()));
   const [dayDrafts, setDayDrafts] = useState<Record<number, DayDraft>>(() => createInitialDayDrafts());
   const [createSlotState, setCreateSlotState] = useState<CreateSlotState | null>(null);
@@ -145,6 +156,30 @@ export function JournalSection() {
       }
     }
   }, [selectedTeacherId]);
+
+  const syncStudentBalanceFromSlot = useCallback(
+    (slot: LessonSlot) => {
+      if (!slot.student_id || slot.student_paid_lessons_left === null) return;
+      const nextBalance = Math.max(0, Number(slot.student_paid_lessons_left));
+
+      setStudents((prev) =>
+        prev.map((student) => (student.id === slot.student_id ? { ...student, paid_lessons_left: nextBalance } : student))
+      );
+
+      if (selectedTeacherId) {
+        const cached = studentsCacheRef.current.get(selectedTeacherId);
+        if (cached) {
+          studentsCacheRef.current.set(selectedTeacherId, {
+            ts: Date.now(),
+            data: cached.data.map((student) =>
+              student.id === slot.student_id ? { ...student, paid_lessons_left: nextBalance } : student
+            )
+          });
+        }
+      }
+    },
+    [selectedTeacherId]
+  );
 
   const upsertSlotInState = useCallback((slot: LessonSlot) => {
     setSlots((prev) => {
@@ -206,6 +241,7 @@ export function JournalSection() {
         setStudents([]);
         setWeeklyTemplate([]);
         setSlots([]);
+        setPlannedBaselineByStudentId({});
         return;
       }
 
@@ -233,13 +269,21 @@ export function JournalSection() {
       }
       const dateFrom = toIsoDate(weekStart);
       const dateTo = toIsoDate(addDays(weekStart, 6));
-      const slotsData = await fetchJson<LessonSlot[]>(
-        `/api/v1/journal/slots?teacherId=${encodeURIComponent(nextTeacherId)}&dateFrom=${dateFrom}&dateTo=${dateTo}`
-      );
+      const [slotsData, baselineData] = await Promise.all([
+        fetchJson<LessonSlot[]>(
+          `/api/v1/journal/slots?teacherId=${encodeURIComponent(nextTeacherId)}&dateFrom=${dateFrom}&dateTo=${dateTo}`
+        ),
+        fetchJson<PlannedForecastBaseline[]>(
+          `/api/v1/journal/slots/forecast-baseline?teacherId=${encodeURIComponent(nextTeacherId)}&dateFrom=${dateFrom}`
+        )
+      ]);
 
       setStudents(studentsData);
       setWeeklyTemplate(templateData);
       setSlots(slotsData);
+      setPlannedBaselineByStudentId(
+        Object.fromEntries(baselineData.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
+      );
     } catch (error) {
       const messageText = error instanceof Error ? error.message : '';
       if (messageText === 'Профиль преподавателя не найден') {
@@ -249,6 +293,7 @@ export function JournalSection() {
         setStudents([]);
         setWeeklyTemplate([]);
         setSlots([]);
+        setPlannedBaselineByStudentId({});
         return;
       }
       showError(error instanceof Error ? error.message : 'Не удалось загрузить журнал');
@@ -279,6 +324,7 @@ export function JournalSection() {
           slots: nextTemplate.map((slot) => ({
             weekday: slot.weekday,
             startTime: slot.start_time,
+            startFrom: sanitizeIsoDate(slot.start_from),
             studentId: slot.student_id ?? null,
             isActive: true
           }))
@@ -405,6 +451,7 @@ export function JournalSection() {
         })
       });
       upsertSlotInState(updated);
+      syncStudentBalanceFromSlot(updated);
       setEditingStudentSlotId(null);
     } catch (error) {
       if (slot.status !== 'completed' && status === 'completed') {
@@ -434,6 +481,7 @@ export function JournalSection() {
         })
       });
       upsertSlotInState(updated);
+      syncStudentBalanceFromSlot(updated);
       setRescheduleState(null);
       showSuccess('Занятие перенесено');
     } catch (error) {
@@ -634,6 +682,22 @@ export function JournalSection() {
     return map;
   }, [students]);
 
+  const studentPaidLessonsById = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const student of students) {
+      map.set(student.id, Math.max(0, Number(student.paid_lessons_left ?? 0)));
+    }
+    return map;
+  }, [students]);
+
+  const forecastBySlotId = useMemo(() => {
+    return calculateForecastBySlotId({
+      slots,
+      studentPaidLessonsById,
+      plannedBaselineByStudentId
+    });
+  }, [slots, studentPaidLessonsById, plannedBaselineByStudentId]);
+
   const selectedTeacherName = useMemo(() => {
     if (!selectedTeacherId) return 'Преподаватель';
     return teachers.find((item) => item.id === selectedTeacherId)?.full_name ?? 'Преподаватель';
@@ -653,6 +717,7 @@ export function JournalSection() {
         [weekday]: {
           ...(prev[weekday] ?? createDayDraft()),
           time: slot.start_time,
+          startFrom: sanitizeIsoDate(slot.start_from) ?? toIsoDate(new Date()),
           studentId: slot.student_id ?? null,
           repeatWeekly: true
         }
@@ -665,12 +730,13 @@ export function JournalSection() {
     const firstAvailableTime = HOURLY_TIME_OPTIONS.find((option) => !occupiedTimes.has(option.value))?.value ?? '10:00';
     setDayDrafts((prev) => ({
       ...prev,
-      [weekday]: {
-        ...(prev[weekday] ?? createDayDraft()),
-        time: firstAvailableTime,
-        studentId: null,
-        repeatWeekly: true
-      }
+        [weekday]: {
+          ...(prev[weekday] ?? createDayDraft()),
+          time: firstAvailableTime,
+          startFrom: toIsoDate(new Date()),
+          studentId: null,
+          repeatWeekly: true
+        }
     }));
     setTemplateSlotState({ weekday });
   };
@@ -680,6 +746,10 @@ export function JournalSection() {
     const draft = dayDrafts[templateSlotState.weekday];
     if (!draft?.time) {
       showError('Выберите время');
+      return;
+    }
+    if (!draft.startFrom) {
+      showError('Укажите дату начала занятий');
       return;
     }
 
@@ -697,6 +767,7 @@ export function JournalSection() {
             ? {
                 ...slot,
                 start_time: draft.time,
+                start_from: draft.startFrom,
                 student_id: draft.studentId
               }
             : slot
@@ -707,6 +778,7 @@ export function JournalSection() {
             id: `temp-${templateSlotState.weekday}-${draft.time}-${Date.now()}`,
             weekday: templateSlotState.weekday,
             start_time: draft.time,
+            start_from: draft.startFrom,
             student_id: draft.studentId,
             is_active: 1
           } as WeeklySlot
@@ -819,12 +891,25 @@ export function JournalSection() {
                             : slot.status === 'completed'
                               ? 'Нажмите, чтобы вернуть в Запланировано'
                               : undefined;
+                        const forecastPaidLessonsLeft = forecastBySlotId.get(slot.id);
 
                         return (
                           <>
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge className={statusBadgeClass(slot.status)}>{statusLabel(slot.status)}</Badge>
                         <Badge variant="outline">{slot.start_time}</Badge>
+                        {typeof forecastPaidLessonsLeft === 'number' ? (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Badge variant="outline">{forecastPaidLessonsLeft}</Badge>
+                              </TooltipTrigger>
+                              <TooltipContent sideOffset={6}>
+                                <span>Прогноз оставшихся занятий</span>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        ) : null}
                         {!slot.source_weekly_slot_id ? <Badge variant="secondary">Разовое занятие</Badge> : null}
                       </div>
 
@@ -1318,6 +1403,24 @@ export function JournalSection() {
                     ))}
                 </SelectContent>
               </Select>
+
+              <div className="flex flex-col gap-2">
+                <span className="text-sm text-muted-foreground">Дата начала занятий</span>
+                <Input
+                  type="date"
+                  value={dayDrafts[templateSlotState.weekday]?.startFrom ?? ''}
+                  onChange={(event) =>
+                    setDayDrafts((prev) => ({
+                      ...prev,
+                      [templateSlotState.weekday]: {
+                        ...(prev[templateSlotState.weekday] ?? createDayDraft()),
+                        startFrom: event.target.value || null,
+                        repeatWeekly: true
+                      }
+                    }))
+                  }
+                />
+              </div>
             </div>
           ) : null}
 
@@ -1325,7 +1428,14 @@ export function JournalSection() {
             <Button variant="secondary" onClick={() => setTemplateSlotState(null)}>
               Отмена
             </Button>
-            <Button onClick={() => void saveTemplateSlot()} disabled={!templateSlotState || !(dayDrafts[templateSlotState.weekday]?.time ?? '')}>
+            <Button
+              onClick={() => void saveTemplateSlot()}
+              disabled={
+                !templateSlotState ||
+                !(dayDrafts[templateSlotState.weekday]?.time ?? '') ||
+                !(dayDrafts[templateSlotState.weekday]?.startFrom ?? '')
+              }
+            >
               Сохранить
             </Button>
           </DialogFooter>
@@ -1369,15 +1479,26 @@ export function JournalSection() {
                     ) : (
                       <div className="flex flex-col gap-2">
                         {daySlots.map((slot) => (
-                          <button
+                          <div
                             key={slot.id}
-                            type="button"
-                            className="flex w-full items-center justify-between gap-3 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-left"
+                            role="button"
+                            tabIndex={0}
+                            className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-left"
                             onClick={() => openTemplateSlotModal(day.weekday, slot)}
+                            onKeyDown={(event) => {
+                              if (event.key !== 'Enter' && event.key !== ' ') return;
+                              event.preventDefault();
+                              openTemplateSlotModal(day.weekday, slot);
+                            }}
                           >
                             <div className="flex min-w-0 items-center gap-2">
                               <Clock3 absoluteStrokeWidth className="size-4 text-muted-foreground" />
-                              <span className="font-medium">{formatOneHourRange(slot.start_time)}</span>
+                              <div className="flex min-w-0 flex-col">
+                                <span className="font-medium">{formatOneHourRange(slot.start_time)}</span>
+                                {sanitizeIsoDate(slot.start_from) ? (
+                                  <span className="text-xs text-muted-foreground">{`с ${new Date(`${sanitizeIsoDate(slot.start_from)}T00:00:00`).toLocaleDateString('ru-RU')}`}</span>
+                                ) : null}
+                              </div>
                             </div>
                             <div className="flex min-w-0 items-center gap-2">
                               {slot.student_id ? (
@@ -1421,7 +1542,7 @@ export function JournalSection() {
                             >
                               <CircleX absoluteStrokeWidth className="size-4" />
                             </Button>
-                          </button>
+                          </div>
                         ))}
                       </div>
                     )}
@@ -1497,6 +1618,7 @@ function createInitialDayDrafts(): Record<number, DayDraft> {
 function createDayDraft(): DayDraft {
   return {
     time: '10:00',
+    startFrom: null,
     studentId: null,
     repeatWeekly: true
   };
@@ -1504,6 +1626,7 @@ function createDayDraft(): DayDraft {
 
 function statusLabel(status: LessonStatus): string {
   if (status === 'completed') return 'Завершено';
+  if (status === 'overdue') return 'Просрочено';
   if (status === 'rescheduled') return 'Перенесено';
   if (status === 'canceled') return 'Отменено';
   return 'Запланировано';
@@ -1511,6 +1634,7 @@ function statusLabel(status: LessonStatus): string {
 
 function statusBadgeClass(status: LessonStatus): string {
   if (status === 'completed') return 'bg-emerald-100 text-emerald-800 border border-emerald-200';
+  if (status === 'overdue') return 'bg-orange-100 text-orange-800 border border-orange-200';
   if (status === 'rescheduled') return 'bg-amber-100 text-amber-800 border border-amber-200';
   if (status === 'canceled') return 'bg-rose-100 text-rose-800 border border-rose-200';
   return 'bg-slate-100 text-slate-800 border border-slate-200';
@@ -1527,6 +1651,15 @@ function formatOneHourRange(startTime: string): string {
   const endHours = String(Math.floor(endTotalMinutes / 60)).padStart(2, '0');
   const endMinutes = String(endTotalMinutes % 60).padStart(2, '0');
   return `${startTime} — ${endHours}:${endMinutes}`;
+}
+
+function sanitizeIsoDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  const date = new Date(`${trimmed}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  return trimmed;
 }
 
 function getOccupiedTimesForDay(

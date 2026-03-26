@@ -44,7 +44,11 @@ export async function GET(request: Request) {
       dateTo
     });
 
-    return NextResponse.json(slots);
+    return NextResponse.json(slots, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0'
+      }
+    });
   } catch (error) {
     return mapJournalError(error, 'Не удалось загрузить слоты');
   }

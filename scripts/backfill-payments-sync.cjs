@@ -139,6 +139,7 @@ async function run() {
     syncedLinks: 0,
     alreadyPaidLinks: 0,
     lessonsAddedTotal: 0,
+    promotedToStudent: 0,
     unresolvedPayments: 0,
     unresolvedByMode: {
       payment_link_id: 0,
@@ -239,6 +240,16 @@ async function run() {
             );
           }
 
+          const [promoteResult] = await conn.query(
+            `
+              UPDATE students
+              SET entity_type = 'student'
+              WHERE id = ? AND entity_type = 'lead' AND paid_lessons_left > 0
+            `,
+            [lockedStudentId]
+          );
+          stats.promotedToStudent += Number(promoteResult.affectedRows ?? 0);
+
           await conn.query(
             `
               UPDATE student_payment_links
@@ -263,6 +274,7 @@ async function run() {
     console.log(`- syncedLinks: ${stats.syncedLinks}`);
     console.log(`- alreadyPaidLinks: ${stats.alreadyPaidLinks}`);
     console.log(`- lessonsAddedTotal: ${stats.lessonsAddedTotal}`);
+    console.log(`- promotedToStudent: ${stats.promotedToStudent}`);
     console.log(`- unresolvedPayments: ${stats.unresolvedPayments}`);
     console.log(`- modeMatches.payment_link_id: ${stats.modeMatches.payment_link_id}`);
     console.log(`- modeMatches.provider_payment_id: ${stats.modeMatches.provider_payment_id}`);

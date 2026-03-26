@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { getTeacherWeeklyTemplate, replaceTeacherWeeklyTemplate } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
-import { normalizeHmTime, resolveJournalScope } from '@/lib/journal';
+import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const querySchema = z.object({
   teacherId: z.string().trim().optional()
@@ -15,6 +15,7 @@ const bodySchema = z.object({
       z.object({
         weekday: z.number().int().min(1).max(7),
         startTime: z.string().trim(),
+        startFrom: z.string().trim().optional().nullable(),
         studentId: z.string().uuid().nullable().optional(),
         isActive: z.boolean().optional()
       })
@@ -72,6 +73,7 @@ export async function PUT(request: Request) {
         slots: parsedBody.data.slots.map((slot) => ({
           weekday: slot.weekday,
           startTime: normalizeHmTime(slot.startTime),
+          startFrom: slot.startFrom ? normalizeIsoDate(slot.startFrom) : null,
           studentId: slot.studentId ?? null,
           isActive: slot.isActive ?? true
         }))
@@ -106,6 +108,9 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
 
   if (message === 'INVALID_TIME') {
     return NextResponse.json({ code: 'INVALID_TIME', message: 'Некорректный формат времени' }, { status: 400 });
+  }
+  if (message === 'INVALID_DATE') {
+    return NextResponse.json({ code: 'INVALID_DATE', message: 'Некорректная дата начала занятий' }, { status: 400 });
   }
 
   console.error(error);
