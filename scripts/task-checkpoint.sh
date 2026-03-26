@@ -60,6 +60,21 @@ if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
   fail "$EXIT_BASE_REF_NOT_FOUND" "Base ref not found: $BASE_REF"
 fi
 
+PROTECTED_JOURNAL_PATH="src/components/journal/journal-section.tsx"
+if [ ! -f "$PROTECTED_JOURNAL_PATH" ]; then
+  echo "Checkpoint blocked: required file is missing: $PROTECTED_JOURNAL_PATH"
+  echo "This usually means accidental rename or move."
+  exit 2
+fi
+
+JOURNAL_DUPLICATES="$(find src/components/journal -maxdepth 1 -type f -name 'journal-section *.tsx' 2>/dev/null | sed '/^$/d')"
+if [ -n "$JOURNAL_DUPLICATES" ]; then
+  echo "Checkpoint blocked: suspicious duplicate journal files detected:"
+  printf '%s\n' "$JOURNAL_DUPLICATES"
+  echo "Keep only src/components/journal/journal-section.tsx"
+  exit 2
+fi
+
 MERGE_BASE="$(git merge-base HEAD "$BASE_REF")"
 # Compare working tree (committed + staged + unstaged) against merge-base.
 CHANGED_FILES="$(git diff --name-only "$MERGE_BASE" | sed '/^$/d')"

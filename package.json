@@ -26,7 +26,8 @@
     "db:seed:admin:sandbox": "bash scripts/with-sandbox-env.sh node scripts/seed-admin.cjs",
     "payments:backfill-sync": "node scripts/backfill-payments-sync.cjs",
     "sandbox:up": "bash scripts/sandbox-up.sh",
-    "sandbox:down": "bash scripts/sandbox-down.sh"
+    "sandbox:down": "bash scripts/sandbox-down.sh",
+    "ops:watch-journal-rename": "bash scripts/watch-journal-rename.sh"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",

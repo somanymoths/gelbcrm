@@ -13,7 +13,8 @@ const bodySchema = z.object({
   studentId: z.string().uuid().nullable().optional(),
   reason: z.string().trim().max(500).optional(),
   rescheduleToDate: z.string().trim().optional(),
-  rescheduleToTime: z.string().trim().optional()
+  rescheduleToTime: z.string().trim().optional(),
+  expectedLockVersion: z.number().int().nonnegative().optional()
 });
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -40,6 +41,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         id,
         teacherId: scope.teacherId,
         actorUserId: guard.session.id,
+        actorRole: guard.session.role,
+        expectedLockVersion: parsed.data.expectedLockVersion,
         status: parsed.data.status as JournalLessonStatus,
         studentId: parsed.data.studentId,
         reason: parsed.data.reason,
@@ -71,6 +74,12 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   if (message === 'SLOT_NOT_FOUND') {
     return NextResponse.json({ code: 'SLOT_NOT_FOUND', message: 'Слот не найден' }, { status: 404 });
   }
+  if (message === 'SLOT_CONFLICT_ADMIN_WON') {
+    return NextResponse.json(
+      { code: 'SLOT_CONFLICT_ADMIN_WON', message: 'Занятие уже изменено администратором. Обновите журнал.' },
+      { status: 409 }
+    );
+  }
   if (message === 'SLOT_STUDENT_REQUIRED') {
     return NextResponse.json({ code: 'SLOT_STUDENT_REQUIRED', message: 'Для подтверждения укажите ученика в слоте' }, { status: 422 });
   }
@@ -89,6 +98,18 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   if (message === 'SLOT_OVERDUE_TO_PLANNED_FORBIDDEN') {
     return NextResponse.json(
       { code: 'SLOT_OVERDUE_TO_PLANNED_FORBIDDEN', message: 'Просроченное занятие нельзя вернуть в Запланировано' },
+      { status: 422 }
+    );
+  }
+  if (message === 'SLOT_CANCELED_RESCHEDULE_FORBIDDEN') {
+    return NextResponse.json(
+      { code: 'SLOT_CANCELED_RESCHEDULE_FORBIDDEN', message: 'Сначала верните занятие в Запланировано, затем переносите' },
+      { status: 422 }
+    );
+  }
+  if (message === 'SLOT_COMPLETED_FUTURE_DATE_FORBIDDEN') {
+    return NextResponse.json(
+      { code: 'SLOT_COMPLETED_FUTURE_DATE_FORBIDDEN', message: 'Нельзя завершить занятие будущего дня' },
       { status: 422 }
     );
   }

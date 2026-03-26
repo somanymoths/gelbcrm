@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
-import { CalendarDays, CircleArrowRight, CircleX, Clock3, Ellipsis, Plus } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CalendarDays, CircleArrowRight, CircleX, Clock3, Ellipsis, Plus } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Avatar as UIAvatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -62,6 +62,7 @@ type LessonSlot = {
   rescheduled_to_slot_id: string | null;
   reschedule_target_date: string | null;
   reschedule_target_time: string | null;
+  lock_version: number;
   status_changed_by_login: string | null;
   status_changed_at: string | null;
   status_reason?: string | null;
@@ -95,6 +96,7 @@ const DAYS: Array<{ weekday: number; short: string; full: string }> = [
 
 const FREE_SLOT_VALUE = '__free_slot__';
 const ADMIN_JOURNAL_TEACHER_STORAGE_KEY = 'gelbcrm:journal:selectedTeacherId';
+const JOURNAL_WEEK_START_STORAGE_KEY = 'gelbcrm:journal:weekStart';
 const REFERENCE_CACHE_TTL_MS = 60_000;
 const HOURLY_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
   const value = `${String(hour).padStart(2, '0')}:00`;
@@ -111,7 +113,12 @@ export function JournalSection() {
   const [weeklyTemplate, setWeeklyTemplate] = useState<WeeklySlot[]>([]);
   const [slots, setSlots] = useState<LessonSlot[]>([]);
   const [plannedBaselineByStudentId, setPlannedBaselineByStudentId] = useState<Record<string, number>>({});
-  const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()));
+  const [weekStart, setWeekStart] = useState(() => {
+    if (typeof window === 'undefined') return getWeekStart(new Date());
+    const persisted = localStorage.getItem(JOURNAL_WEEK_START_STORAGE_KEY);
+    const parsed = parseIsoDateToDate(persisted);
+    return parsed ? getWeekStart(parsed) : getWeekStart(new Date());
+  });
   const [dayDrafts, setDayDrafts] = useState<Record<number, DayDraft>>(() => createInitialDayDrafts());
   const [createSlotState, setCreateSlotState] = useState<CreateSlotState | null>(null);
   const [templateSlotState, setTemplateSlotState] = useState<{ weekday: number; slotId?: string } | null>(null);
@@ -131,6 +138,9 @@ export function JournalSection() {
   }, []);
   const showSuccess = useCallback((text: string) => {
     toast.success('Готово', { description: text });
+  }, []);
+  const isAdminConflictError = useCallback((error: unknown): boolean => {
+    return error instanceof Error && error.message.includes('Занятие уже изменено администратором');
   }, []);
 
   const applyStudentBalanceDelta = useCallback((studentId: string | null, delta: number) => {
@@ -314,6 +324,11 @@ export function JournalSection() {
     localStorage.setItem(ADMIN_JOURNAL_TEACHER_STORAGE_KEY, selectedTeacherId);
   }, [roleUser?.role, selectedTeacherId]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(JOURNAL_WEEK_START_STORAGE_KEY, toIsoDate(weekStart));
+  }, [weekStart]);
+
   const saveTemplate = async (nextTemplate: WeeklySlot[]) => {
     if (!selectedTeacherId) return;
     try {
@@ -357,6 +372,7 @@ export function JournalSection() {
         })
       });
       upsertSlotInState(created);
+      await loadAll();
       showSuccess('Разовое занятие создано');
       return true;
     } catch (error) {
@@ -376,13 +392,18 @@ export function JournalSection() {
         method: 'PATCH',
         body: JSON.stringify({
           teacherId: selectedTeacherId,
-          studentId
+          studentId,
+          expectedLockVersion: slot.lock_version
         })
       });
       upsertSlotInState(updated);
+      await loadAll();
       setEditingStudentSlotId(null);
     } catch (error) {
       showError(error instanceof Error ? error.message : 'Не удалось назначить ученика');
+      if (isAdminConflictError(error)) {
+        await loadAll();
+      }
     } finally {
       setAssigningStudentSlotId((prev) => (prev === slot.id ? null : prev));
     }
@@ -430,6 +451,10 @@ export function JournalSection() {
     if (slot.status === status) return;
     if (!selectedTeacherId) return;
     if (statusUpdatingSlotId === slot.id) return;
+    if (status === 'completed' && isFutureMskDate(slot.date)) {
+      showError('Нельзя завершить занятие будущего дня');
+      return;
+    }
     setStatusUpdatingSlotId(slot.id);
     try {
       const previousStatus = slot.status;
@@ -447,11 +472,13 @@ export function JournalSection() {
           teacherId: selectedTeacherId,
           status,
           studentId: options?.studentId,
-          reason: options?.reason
+          reason: options?.reason,
+          expectedLockVersion: slot.lock_version
         })
       });
       upsertSlotInState(updated);
       syncStudentBalanceFromSlot(updated);
+      await loadAll();
       setEditingStudentSlotId(null);
     } catch (error) {
       if (slot.status !== 'completed' && status === 'completed') {
@@ -460,6 +487,9 @@ export function JournalSection() {
         applyStudentBalanceDelta(options?.studentId ?? slot.student_id, -1);
       }
       showError(error instanceof Error ? error.message : 'Не удалось изменить статус');
+      if (isAdminConflictError(error)) {
+        await loadAll();
+      }
     } finally {
       setStatusUpdatingSlotId((prev) => (prev === slot.id ? null : prev));
     }
@@ -477,15 +507,20 @@ export function JournalSection() {
           status: 'rescheduled',
           rescheduleToDate: rescheduleState.date,
           rescheduleToTime: rescheduleState.time,
-          reason: rescheduleState.reason
+          reason: rescheduleState.reason,
+          expectedLockVersion: slots.find((slot) => slot.id === rescheduleState.slotId)?.lock_version
         })
       });
       upsertSlotInState(updated);
       syncStudentBalanceFromSlot(updated);
+      await loadAll();
       setRescheduleState(null);
       showSuccess('Занятие перенесено');
     } catch (error) {
       showError(error instanceof Error ? error.message : 'Не удалось перенести занятие');
+      if (isAdminConflictError(error)) {
+        await loadAll();
+      }
     } finally {
       setStatusUpdatingSlotId((prev) => (prev === rescheduleState.slotId ? null : prev));
     }
@@ -495,14 +530,21 @@ export function JournalSection() {
     if (!selectedTeacherId) return;
     setDeletingSlotId(slot.id);
     try {
-      await fetchJson(`/api/v1/journal/slots/${slot.id}?teacherId=${encodeURIComponent(selectedTeacherId)}`, {
+      await fetchJson(
+        `/api/v1/journal/slots/${slot.id}?teacherId=${encodeURIComponent(selectedTeacherId)}&expectedLockVersion=${encodeURIComponent(String(slot.lock_version))}`,
+        {
         ...withIdempotencyHeaders(),
         method: 'DELETE'
-      });
+        }
+      );
       removeSlotFromState(slot.id);
+      await loadAll();
       showSuccess('Слот удалён');
     } catch (error) {
       showError(error instanceof Error ? error.message : 'Не удалось удалить слот');
+      if (isAdminConflictError(error)) {
+        await loadAll();
+      }
     } finally {
       setDeletingSlotId((prev) => (prev === slot.id ? null : prev));
     }
@@ -524,7 +566,7 @@ export function JournalSection() {
     setDeletingSlotId(slot.id);
     try {
       await fetchJson(
-        `/api/v1/journal/slots/${slot.id}?teacherId=${encodeURIComponent(selectedTeacherId)}&deleteMode=series`,
+        `/api/v1/journal/slots/${slot.id}?teacherId=${encodeURIComponent(selectedTeacherId)}&deleteMode=series&expectedLockVersion=${encodeURIComponent(String(slot.lock_version))}`,
         withIdempotencyHeaders({ method: 'DELETE' })
       );
       setWeeklyTemplate((prev) => prev.filter((item) => item.id !== slot.source_weekly_slot_id));
@@ -539,13 +581,18 @@ export function JournalSection() {
       showSuccess('Слоты удалены');
     } catch (error) {
       showError(error instanceof Error ? error.message : 'Не удалось удалить еженедельный слот');
+      if (isAdminConflictError(error)) {
+        await loadAll();
+      }
     } finally {
       setDeletingSlotId((prev) => (prev === slot.id ? null : prev));
     }
   };
 
   const openDeleteConfirm = (slot: LessonSlot) => {
-    if (slot.status === 'completed') return;
+    const isRescheduledTarget = rescheduledSourceByTargetSlotId.has(slot.id);
+    if (slot.status !== 'planned' && !isRescheduledTarget) return;
+    if (slot.rescheduled_to_slot_id) return;
     const ok = window.confirm('Удалить слот? Действие нельзя отменить.');
     if (!ok) return;
     if (slot.source_weekly_slot_id) {
@@ -563,6 +610,25 @@ export function JournalSection() {
     }
     for (const value of map.values()) {
       value.sort((a, b) => a.start_time.localeCompare(b.start_time));
+    }
+    return map;
+  }, [slots]);
+
+  const rescheduledSourceByTargetSlotId = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        sourceDate: string;
+        sourceWeeklySlotId: string | null;
+      }
+    >();
+    for (const slot of slots) {
+      if (slot.status !== 'rescheduled' || !slot.rescheduled_to_slot_id) continue;
+      if (map.has(slot.rescheduled_to_slot_id)) continue;
+      map.set(slot.rescheduled_to_slot_id, {
+        sourceDate: slot.date,
+        sourceWeeklySlotId: slot.source_weekly_slot_id ?? null
+      });
     }
     return map;
   }, [slots]);
@@ -614,6 +680,7 @@ export function JournalSection() {
 
       setCreatingSlot(true);
       try {
+        const currentSlot = slots.find((slot) => slot.id === createSlotState.slotId);
         const updated = await fetchJson<LessonSlot>(`/api/v1/journal/slots/${createSlotState.slotId}`, {
           ...withIdempotencyHeaders(),
           method: 'PATCH',
@@ -621,7 +688,8 @@ export function JournalSection() {
             teacherId: selectedTeacherId,
             date: createSlotState.date,
             startTime: draft.time,
-            studentId: draft.studentId
+            studentId: draft.studentId,
+            expectedLockVersion: currentSlot?.lock_version
           })
         });
         upsertSlotInState(updated);
@@ -629,6 +697,9 @@ export function JournalSection() {
         showSuccess('Слот обновлен');
       } catch (error) {
         showError(error instanceof Error ? error.message : 'Не удалось обновить слот');
+        if (isAdminConflictError(error)) {
+          await loadAll();
+        }
       } finally {
         setCreatingSlot(false);
       }
@@ -888,17 +959,44 @@ export function JournalSection() {
                           ? 'Нельзя подтвердить занятие без ученика'
                           : isStudentConflict
                             ? 'У выбранного ученика уже есть занятие в это время'
+                            : slot.status !== 'completed' && isFutureMskDate(slot.date)
+                              ? 'Нельзя завершить занятие будущего дня'
                             : slot.status === 'completed'
                               ? 'Нажмите, чтобы вернуть в Запланировано'
                               : undefined;
+                        const isFutureDayCompletionForbidden = slot.status !== 'completed' && isFutureMskDate(slot.date);
                         const forecastPaidLessonsLeft = forecastBySlotId.get(slot.id);
+                        const rescheduledSource = rescheduledSourceByTargetSlotId.get(slot.id);
+                        const isRegularLesson = rescheduledSource
+                          ? Boolean(rescheduledSource.sourceWeeklySlotId)
+                          : Boolean(slot.source_weekly_slot_id);
+                        const lessonTypeLabel = isRegularLesson ? 'Регулярное' : 'Разовое';
+                        const isRescheduledSourceSlot = slot.status === 'rescheduled' && Boolean(slot.reschedule_target_date);
+                        const isRescheduledTargetSlot = Boolean(rescheduledSource);
+                        const canDeleteSlot =
+                          !slot.source_weekly_slot_id &&
+                          !slot.rescheduled_to_slot_id &&
+                          (slot.status === 'planned' || isRescheduledTargetSlot);
 
                         return (
                           <>
                       <div className="flex flex-wrap items-center gap-2">
-                        <Badge className={statusBadgeClass(slot.status)}>{statusLabel(slot.status)}</Badge>
                         <Badge variant="outline">{slot.start_time}</Badge>
-                        {typeof forecastPaidLessonsLeft === 'number' ? (
+                        <Badge variant="secondary">{lessonTypeLabel}</Badge>
+                        {isRescheduledSourceSlot ? (
+                          <Badge className="bg-amber-100 text-amber-800 border border-amber-200">
+                            <ArrowRight className="mr-1 size-3.5" />
+                            {formatDayMonthRu(slot.reschedule_target_date)}
+                          </Badge>
+                        ) : isRescheduledTargetSlot ? (
+                          <Badge className="bg-amber-100 text-amber-800 border border-amber-200">
+                            <ArrowLeft className="mr-1 size-3.5" />
+                            {formatDayMonthRu(rescheduledSource?.sourceDate ?? null)}
+                          </Badge>
+                        ) : (
+                          <Badge className={statusBadgeClass(slot.status)}>{statusLabel(slot.status)}</Badge>
+                        )}
+                        {!isRescheduledSourceSlot && typeof forecastPaidLessonsLeft === 'number' ? (
                           <TooltipProvider>
                             <Tooltip>
                               <TooltipTrigger asChild>
@@ -910,7 +1008,6 @@ export function JournalSection() {
                             </Tooltip>
                           </TooltipProvider>
                         ) : null}
-                        {!slot.source_weekly_slot_id ? <Badge variant="secondary">Разовое занятие</Badge> : null}
                       </div>
 
                       {editingStudentSlotId === slot.id ? (
@@ -1008,7 +1105,7 @@ export function JournalSection() {
                                 disabled={
                                   deletingSlotId === slot.id ||
                                   statusUpdatingSlotId === slot.id ||
-                                  (slot.status !== 'completed' && (isStudentMissing || isStudentConflict))
+                                  (slot.status !== 'completed' && (isStudentMissing || isStudentConflict || isFutureDayCompletionForbidden))
                                 }
                                 onPressedChange={(pressed) =>
                                   void setStatus(slot, pressed ? 'completed' : 'planned', {
@@ -1125,7 +1222,7 @@ export function JournalSection() {
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               variant="destructive"
-                              disabled={slot.status === 'completed' || Boolean(slot.source_weekly_slot_id)}
+                              disabled={!canDeleteSlot}
                               onSelect={() => openDeleteConfirm(slot)}
                             >
                               Удалить слот
@@ -1190,7 +1287,7 @@ export function JournalSection() {
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 variant="destructive"
-                                disabled={slot.status === 'completed' || Boolean(slot.source_weekly_slot_id)}
+                                disabled={!canDeleteSlot}
                                 onSelect={() => openDeleteConfirm(slot)}
                               >
                                 Удалить слот
@@ -1660,6 +1757,48 @@ function sanitizeIsoDate(value: string | null | undefined): string | null {
   const date = new Date(`${trimmed}T00:00:00Z`);
   if (Number.isNaN(date.getTime())) return null;
   return trimmed;
+}
+
+function formatDayMonthRu(value: string | null | undefined): string {
+  if (!value) return '—';
+  const [yearRaw, monthRaw, dayRaw] = value.split('-');
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return value;
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (Number.isNaN(date.getTime())) return value;
+
+  const dayMonth = new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    timeZone: 'UTC'
+  }).format(date);
+
+  const weekdayShort = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][date.getUTCDay()] ?? '';
+  return `${weekdayShort}, ${dayMonth}`;
+}
+
+function parseIsoDateToDate(value: string | null): Date | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
+function getCurrentMskIsoDate(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(now);
+}
+
+function isFutureMskDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  return value > getCurrentMskIsoDate();
 }
 
 function getOccupiedTimesForDay(
