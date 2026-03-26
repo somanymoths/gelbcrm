@@ -12,6 +12,7 @@
     "task:summary": "bash scripts/task-summary.sh",
     "task:checkpoint": "bash scripts/task-checkpoint.sh",
     "task:review": "bash scripts/task-final-review.sh --run-checks",
+    "ops:smoke": "bash scripts/ops-smoke.sh",
     "build": "node scripts/build-safe.cjs",
     "start": "next start",
     "deploy": "bash scripts/deploy.sh",
