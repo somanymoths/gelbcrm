@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
+import { mapInfraError } from '@/lib/api-error-mappers';
 import { createTeacher, listTeachers, type TeacherSortBy } from '@/lib/db';
 import { normalizeTeacherPhone, normalizeTelegramRaw } from '@/lib/teachers';
 
@@ -99,6 +100,13 @@ export async function POST(request: Request) {
         { status: 409 }
       );
     }
+
+    const infraError = mapInfraError(error, {
+      misconfiguredMessage: 'Сервер не настроен: проверьте DB_* в .env.local',
+      dbUnreachableMessage: 'Нет подключения к БД: проверьте DB_HOST/DB_PORT и доступность MySQL',
+      dbAuthFailedMessage: 'Доступ к БД отклонён: проверьте DB_USERNAME/DB_PASSWORD/DB_DATABASE и права пользователя'
+    });
+    if (infraError) return infraError;
 
     console.error(error);
     return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось создать преподавателя' }, { status: 500 });
