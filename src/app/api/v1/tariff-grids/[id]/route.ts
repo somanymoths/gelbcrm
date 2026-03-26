@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
+import { mapInfraError } from '@/lib/api-error-mappers';
 import { deleteTariffGrid, getTariffGridById, updateTariffGrid } from '@/lib/db';
 
 const patchSchema = z
@@ -48,6 +49,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return NextResponse.json({ code: 'TARIFF_GRID_NOT_FOUND', message: 'Тариф не найден' }, { status: 404 });
     }
 
+    const infraError = mapInfraError(error, {
+      misconfiguredMessage: 'Сервер не настроен: проверьте DB_* в .env.local',
+      dbUnreachableMessage: 'Нет подключения к БД: проверьте DB_HOST/DB_PORT и доступность MySQL',
+      dbAuthFailedMessage: 'Доступ к БД отклонён: проверьте DB_USERNAME/DB_PASSWORD/DB_DATABASE и права пользователя'
+    });
+    if (infraError) return infraError;
+
     console.error(error);
     return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось обновить тариф' }, { status: 500 });
   }
@@ -73,6 +81,13 @@ export async function DELETE(_: Request, context: { params: Promise<{ id: string
     if (error instanceof Error && error.message === 'TARIFF_GRID_NOT_FOUND') {
       return NextResponse.json({ code: 'TARIFF_GRID_NOT_FOUND', message: 'Тариф не найден' }, { status: 404 });
     }
+
+    const infraError = mapInfraError(error, {
+      misconfiguredMessage: 'Сервер не настроен: проверьте DB_* в .env.local',
+      dbUnreachableMessage: 'Нет подключения к БД: проверьте DB_HOST/DB_PORT и доступность MySQL',
+      dbAuthFailedMessage: 'Доступ к БД отклонён: проверьте DB_USERNAME/DB_PASSWORD/DB_DATABASE и права пользователя'
+    });
+    if (infraError) return infraError;
 
     console.error(error);
     return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось удалить тариф' }, { status: 500 });
