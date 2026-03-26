@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
+import { mapInfraError } from '@/lib/api-error-mappers';
 import { getTeacherWeeklyTemplate, replaceTeacherWeeklyTemplate } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
@@ -112,6 +113,13 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   if (message === 'INVALID_DATE') {
     return NextResponse.json({ code: 'INVALID_DATE', message: 'Некорректная дата начала занятий' }, { status: 400 });
   }
+
+  const infraError = mapInfraError(error, {
+    misconfiguredMessage: 'Сервер не настроен: проверьте DB_* в .env.local',
+    dbUnreachableMessage: 'Нет подключения к БД: проверьте DB_HOST/DB_PORT и доступность MySQL',
+    dbAuthFailedMessage: 'Доступ к БД отклонён: проверьте DB_USERNAME/DB_PASSWORD/DB_DATABASE и права пользователя'
+  });
+  if (infraError) return infraError;
 
   console.error(error);
   return NextResponse.json({ code: 'INTERNAL_ERROR', message: fallbackMessage }, { status: 500 });

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/api-auth';
+import { mapInfraError } from '@/lib/api-error-mappers';
 import { FunnelCacheKeys, invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
 import { getFunnelCardById, updateFunnelCard } from '@/lib/funnel';
 import { normalizePhone } from '@/lib/phone';
@@ -91,6 +92,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (isDuplicateError(error, 'uq_students_email_active')) {
       return NextResponse.json({ code: 'DUPLICATE_EMAIL', message: 'Карточка с таким email уже существует' }, { status: 409 });
     }
+
+    const infraError = mapInfraError(error, {
+      misconfiguredMessage: 'Сервер не настроен: проверьте DB_* в .env.local',
+      dbUnreachableMessage: 'Нет подключения к БД: проверьте DB_HOST/DB_PORT и доступность MySQL',
+      dbAuthFailedMessage: 'Доступ к БД отклонён: проверьте DB_USERNAME/DB_PASSWORD/DB_DATABASE и права пользователя'
+    });
+    if (infraError) return infraError;
 
     console.error(error);
     return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось обновить карточку' }, { status: 500 });
