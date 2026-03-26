@@ -10,7 +10,8 @@ const bodySchema = z.object({
   teacherId: z.string().trim().optional(),
   studentId: z.string().uuid().nullable().optional(),
   date: z.string().trim().optional(),
-  startTime: z.string().trim().optional()
+  startTime: z.string().trim().optional(),
+  expectedLockVersion: z.number().int().nonnegative().optional()
 });
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -37,6 +38,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
         id,
         teacherId: scope.teacherId,
         actorUserId: guard.session.id,
+        actorRole: guard.session.role,
+        expectedLockVersion: parsed.data.expectedLockVersion,
         studentId: parsed.data.studentId,
         date: parsed.data.date ? normalizeIsoDate(parsed.data.date) : undefined,
         startTime: parsed.data.startTime ? normalizeHmTime(parsed.data.startTime) : undefined
@@ -62,6 +65,9 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     const { searchParams } = new URL(request.url);
     const teacherId = searchParams.get('teacherId') ?? undefined;
     const deleteMode = searchParams.get('deleteMode');
+    const expectedLockVersionRaw = searchParams.get('expectedLockVersion');
+    const expectedLockVersion =
+      expectedLockVersionRaw && /^\d+$/.test(expectedLockVersionRaw) ? Number(expectedLockVersionRaw) : undefined;
     const scope = await resolveJournalScope(guard.session, teacherId);
     const idempotencyKey = getIdempotencyKeyFromRequest(request);
 
@@ -70,13 +76,17 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
         await deleteTeacherWeeklySeriesFromSlot({
           id,
           teacherId: scope.teacherId,
-          actorUserId: guard.session.id
+          actorUserId: guard.session.id,
+          actorRole: guard.session.role,
+          expectedLockVersion
         });
       } else {
         await deleteTeacherLessonSlot({
           id,
           teacherId: scope.teacherId,
-          actorUserId: guard.session.id
+          actorUserId: guard.session.id,
+          actorRole: guard.session.role,
+          expectedLockVersion
         });
       }
       return true;
@@ -100,8 +110,23 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   if (message === 'SLOT_NOT_FOUND') {
     return NextResponse.json({ code: 'SLOT_NOT_FOUND', message: 'Слот не найден' }, { status: 404 });
   }
+  if (message === 'SLOT_CONFLICT_ADMIN_WON') {
+    return NextResponse.json(
+      { code: 'SLOT_CONFLICT_ADMIN_WON', message: 'Занятие уже изменено администратором. Обновите журнал.' },
+      { status: 409 }
+    );
+  }
   if (message === 'SLOT_DELETE_ONLY_PLANNED') {
-    return NextResponse.json({ code: 'SLOT_DELETE_ONLY_PLANNED', message: 'Удалять можно только запланированные занятия' }, { status: 422 });
+    return NextResponse.json(
+      { code: 'SLOT_DELETE_ONLY_PLANNED', message: 'Удалять можно только запланированные занятия или новое перенесённое занятие' },
+      { status: 422 }
+    );
+  }
+  if (message === 'SLOT_RESCHEDULE_SOURCE_DELETE_FORBIDDEN') {
+    return NextResponse.json(
+      { code: 'SLOT_RESCHEDULE_SOURCE_DELETE_FORBIDDEN', message: 'Сначала удалите новое перенесённое занятие' },
+      { status: 422 }
+    );
   }
   if (message === 'SLOT_EDIT_COMPLETED_FORBIDDEN') {
     return NextResponse.json({ code: 'SLOT_EDIT_COMPLETED_FORBIDDEN', message: 'Завершенное занятие нельзя редактировать' }, { status: 422 });

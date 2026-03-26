@@ -72,7 +72,8 @@ describe('Journal RBAC integration', () => {
       start_time: '10:00',
       status: 'planned',
       rescheduled_to_slot_id: null,
-      source_weekly_slot_id: null
+      source_weekly_slot_id: null,
+      lock_version: 1
     });
 
     const response = await patchSlot(
@@ -93,7 +94,8 @@ describe('Journal RBAC integration', () => {
       expect.objectContaining({
         id: 'slot-1',
         teacherId: 'teacher-own-2',
-        actorUserId: 'user-teacher-2'
+        actorUserId: 'user-teacher-2',
+        actorRole: 'teacher'
       })
     );
   });

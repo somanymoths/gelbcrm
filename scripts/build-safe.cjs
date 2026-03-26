@@ -38,8 +38,16 @@ function runEnvPreflight(repoRoot) {
 function ensureJournalSectionExists(repoRoot) {
   const journalDir = path.join(repoRoot, 'src', 'components', 'journal');
   const journalPath = path.join(journalDir, 'journal-section.tsx');
+  const legacyAliases = ['journal-section 4.tsx', 'journal-section 5.tsx'].map((name) => path.join(journalDir, name));
 
   if (fs.existsSync(journalPath)) return;
+
+  const existingAlias = legacyAliases.find((candidate) => fs.existsSync(candidate));
+  if (existingAlias) {
+    fs.renameSync(existingAlias, journalPath);
+    console.warn(`[build-safe] Восстановлен канонический файл: ${path.basename(existingAlias)} -> journal-section.tsx`);
+    return;
+  }
 
   console.error('[build-safe] Не найден src/components/journal/journal-section.tsx.');
   console.error('[build-safe] Восстановите канонический файл журнала перед сборкой.');

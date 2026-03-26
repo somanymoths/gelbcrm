@@ -1484,6 +1484,7 @@ export type JournalLessonSlot = {
   reschedule_target_date?: string | null;
   reschedule_target_time?: string | null;
   source_weekly_slot_id: string | null;
+  lock_version: number;
   status_changed_by_login?: string | null;
   status_changed_at?: string | null;
   status_reason?: string | null;
@@ -1947,7 +1948,7 @@ export async function listTeacherLessonSlots(input: {
               THEN 'planned'
             WHEN ls.status = 'planned'
               AND ls.student_id IS NOT NULL
-              AND (ls.date < CURDATE() OR (ls.date = CURDATE() AND ls.start_time < CURTIME()))
+              AND ls.date < DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
               THEN 'overdue'
             ELSE ls.status
           END AS status,
@@ -1955,6 +1956,7 @@ export async function listTeacherLessonSlots(input: {
           DATE_FORMAT(rsl.date, '%Y-%m-%d') AS reschedule_target_date,
           TIME_FORMAT(rsl.start_time, '%H:%i') AS reschedule_target_time,
           ls.source_weekly_slot_id,
+          UNIX_TIMESTAMP(ls.updated_at) AS lock_version,
           status_audit.created_at AS status_changed_at,
           actor.login AS status_changed_by_login,
           JSON_UNQUOTE(JSON_EXTRACT(status_audit.diff_after, '$.reason')) AS status_reason
@@ -1993,6 +1995,7 @@ export async function listTeacherLessonSlots(input: {
       reschedule_target_date: row.reschedule_target_date ? String(row.reschedule_target_date) : null,
       reschedule_target_time: row.reschedule_target_time ? String(row.reschedule_target_time) : null,
       source_weekly_slot_id: row.source_weekly_slot_id ? String(row.source_weekly_slot_id) : null,
+      lock_version: Number(row.lock_version ?? 0),
       status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
       status_changed_at: row.status_changed_at ? new Date(row.status_changed_at).toISOString() : null,
       status_reason: row.status_reason ? String(row.status_reason) : null
@@ -2145,6 +2148,8 @@ export async function updateTeacherLessonSlot(input: {
   id: string;
   teacherId: string;
   actorUserId: string;
+  actorRole: 'admin' | 'teacher';
+  expectedLockVersion?: number;
   date?: string;
   startTime?: string;
   studentId?: string | null;
@@ -2158,6 +2163,7 @@ export async function updateTeacherLessonSlot(input: {
     const current = await getLessonSlotByIdForUpdate(connection, input.id);
     if (!current) throw new Error('SLOT_NOT_FOUND');
     if (current.teacher_id !== input.teacherId) throw new Error('FORBIDDEN');
+    assertTeacherConflictLock(input.expectedLockVersion, current.lock_version, input.actorRole);
     if (current.status === 'completed') throw new Error('SLOT_EDIT_COMPLETED_FORBIDDEN');
 
     const nextDate = input.date ?? current.date;
@@ -2234,6 +2240,8 @@ export async function deleteTeacherLessonSlot(input: {
   id: string;
   teacherId: string;
   actorUserId: string;
+  actorRole: 'admin' | 'teacher';
+  expectedLockVersion?: number;
 }): Promise<void> {
   const pool = getPool();
   const connection = await pool.getConnection();
@@ -2244,7 +2252,47 @@ export async function deleteTeacherLessonSlot(input: {
     const current = await getLessonSlotByIdForUpdate(connection, input.id);
     if (!current) throw new Error('SLOT_NOT_FOUND');
     if (current.teacher_id !== input.teacherId) throw new Error('FORBIDDEN');
-    if (current.status !== 'planned') throw new Error('SLOT_DELETE_ONLY_PLANNED');
+    assertTeacherConflictLock(input.expectedLockVersion, current.lock_version, input.actorRole);
+    const [rescheduleSourceRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id
+        FROM lesson_slots
+        WHERE rescheduled_to_slot_id = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [input.id]
+    );
+    const isRescheduleTarget = rescheduleSourceRows.length > 0;
+    if (current.rescheduled_to_slot_id) {
+      throw new Error('SLOT_RESCHEDULE_SOURCE_DELETE_FORBIDDEN');
+    }
+    if (current.status !== 'planned' && !isRescheduleTarget) {
+      throw new Error('SLOT_DELETE_ONLY_PLANNED');
+    }
+
+    // If this slot is a reschedule target, detach all sources first so the target can be safely removed.
+    await connection.query(
+      `
+        UPDATE lesson_slots
+        SET
+          status = CASE
+            WHEN status = 'rescheduled'
+              THEN CASE
+                WHEN date < DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR) THEN 'overdue'
+                ELSE 'planned'
+              END
+            ELSE status
+          END,
+          rescheduled_to_slot_id = NULL
+        WHERE rescheduled_to_slot_id = ?
+      `,
+      [input.id]
+    );
+
+    if (isRescheduleTarget && current.status === 'completed') {
+      await adjustStudentPaidLessons(connection, current.student_id, +1);
+    }
 
     await connection.query(`DELETE FROM lesson_slots WHERE id = ?`, [input.id]);
 
@@ -2277,6 +2325,8 @@ export async function deleteTeacherWeeklySeriesFromSlot(input: {
   id: string;
   teacherId: string;
   actorUserId: string;
+  actorRole: 'admin' | 'teacher';
+  expectedLockVersion?: number;
 }): Promise<void> {
   const pool = getPool();
   const connection = await pool.getConnection();
@@ -2287,6 +2337,7 @@ export async function deleteTeacherWeeklySeriesFromSlot(input: {
     const current = await getLessonSlotByIdForUpdate(connection, input.id);
     if (!current) throw new Error('SLOT_NOT_FOUND');
     if (current.teacher_id !== input.teacherId) throw new Error('FORBIDDEN');
+    assertTeacherConflictLock(input.expectedLockVersion, current.lock_version, input.actorRole);
     if (!current.source_weekly_slot_id) throw new Error('WEEKLY_SLOT_REQUIRED');
     if (current.status !== 'planned') throw new Error('SLOT_DELETE_COMPLETED');
 
@@ -2298,6 +2349,53 @@ export async function deleteTeacherWeeklySeriesFromSlot(input: {
       `,
       [current.source_weekly_slot_id, input.teacherId]
     );
+
+    const [rescheduleSourceRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id, rescheduled_to_slot_id
+        FROM lesson_slots
+        WHERE teacher_id = ?
+          AND source_weekly_slot_id = ?
+          AND date >= ?
+          AND rescheduled_to_slot_id IS NOT NULL
+        FOR UPDATE
+      `,
+      [input.teacherId, current.source_weekly_slot_id, current.date]
+    );
+    const rescheduleSourceIds = rescheduleSourceRows.map((row) => String(row.id));
+    const targetIds = Array.from(
+      new Set(
+        rescheduleSourceRows
+          .map((row) => row.rescheduled_to_slot_id)
+          .filter((value): value is string => Boolean(value))
+          .map((value) => String(value))
+      )
+    );
+
+    if (rescheduleSourceIds.length > 0) {
+      const placeholders = rescheduleSourceIds.map(() => '?').join(', ');
+      await connection.query(
+        `
+          UPDATE lesson_slots
+          SET
+            status = CASE
+              WHEN status = 'rescheduled'
+                THEN CASE
+                  WHEN date < DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR) THEN 'overdue'
+                  ELSE 'planned'
+                END
+              ELSE status
+            END,
+            rescheduled_to_slot_id = NULL
+          WHERE id IN (${placeholders})
+        `,
+        rescheduleSourceIds
+      );
+    }
+
+    for (const targetId of targetIds) {
+      await releaseRescheduledTargetSlot(connection, { slotId: targetId, allowCompleted: true });
+    }
 
     await connection.query(
       `
@@ -2335,6 +2433,8 @@ export async function updateTeacherLessonSlotStatus(input: {
   id: string;
   teacherId: string;
   actorUserId: string;
+  actorRole: 'admin' | 'teacher';
+  expectedLockVersion?: number;
   status: JournalLessonStatus;
   studentId?: string | null;
   reason?: string;
@@ -2351,21 +2451,34 @@ export async function updateTeacherLessonSlotStatus(input: {
     const current = await getLessonSlotByIdForUpdate(connection, input.id);
     if (!current) throw new Error('SLOT_NOT_FOUND');
     if (current.teacher_id !== input.teacherId) throw new Error('FORBIDDEN');
+    assertTeacherConflictLock(input.expectedLockVersion, current.lock_version, input.actorRole);
+    const isRescheduleToSourceDate =
+      input.status === 'rescheduled' &&
+      input.rescheduleToDate === current.date &&
+      input.rescheduleToTime === current.start_time;
+    const normalizedStatus: JournalLessonStatus = isRescheduleToSourceDate ? 'planned' : input.status;
+
     if (current.status === 'completed' && (input.status === 'canceled' || input.status === 'rescheduled')) {
       throw new Error('SLOT_COMPLETED_STATUS_CHANGE_FORBIDDEN');
     }
-    if (current.status === 'overdue' && input.status === 'planned') {
+    if (current.status === 'overdue' && normalizedStatus === 'planned') {
       throw new Error('SLOT_OVERDUE_TO_PLANNED_FORBIDDEN');
+    }
+    if (current.status === 'canceled' && normalizedStatus === 'rescheduled') {
+      throw new Error('SLOT_CANCELED_RESCHEDULE_FORBIDDEN');
+    }
+    if (normalizedStatus === 'completed' && current.date > getCurrentMskIsoDate()) {
+      throw new Error('SLOT_COMPLETED_FUTURE_DATE_FORBIDDEN');
     }
 
     const nextStudentId = input.studentId !== undefined ? input.studentId : current.student_id;
     await assertStudentBelongsToTeacher(connection, input.teacherId, nextStudentId);
 
-    if (input.status === 'completed' && !nextStudentId) {
+    if (normalizedStatus === 'completed' && !nextStudentId) {
       throw new Error('SLOT_STUDENT_REQUIRED');
     }
 
-    if (input.status === 'rescheduled' && (!input.rescheduleToDate || !input.rescheduleToTime)) {
+    if (normalizedStatus === 'rescheduled' && (!input.rescheduleToDate || !input.rescheduleToTime)) {
       throw new Error('RESCHEDULE_TARGET_REQUIRED');
     }
 
@@ -2374,8 +2487,78 @@ export async function updateTeacherLessonSlotStatus(input: {
       throw new Error('STATUS_REASON_REQUIRED');
     }
 
-    if (current.status === input.status) {
-      if (input.status !== 'rescheduled') {
+    const rescheduleSourceSlot = await getRescheduleSourceSlotByTargetForUpdate(connection, current.id, current.teacher_id);
+    if (normalizedStatus === 'rescheduled' && rescheduleSourceSlot) {
+      const sourceIsRescheduleToSourceDate =
+        input.rescheduleToDate === rescheduleSourceSlot.date && input.rescheduleToTime === rescheduleSourceSlot.start_time;
+      const sourceNextStatus: JournalLessonStatus = sourceIsRescheduleToSourceDate ? 'planned' : 'rescheduled';
+      const sourceNextStudentId =
+        input.studentId !== undefined ? input.studentId : rescheduleSourceSlot.student_id;
+      await assertStudentBelongsToTeacher(connection, input.teacherId, sourceNextStudentId);
+
+      const sourcePrevTargetId = rescheduleSourceSlot.rescheduled_to_slot_id;
+      let sourceNextTargetId: string | null = sourcePrevTargetId;
+
+      if (sourceNextStatus === 'rescheduled') {
+        sourceNextTargetId = await upsertRescheduledTargetSlot(connection, {
+          teacherId: rescheduleSourceSlot.teacher_id,
+          studentId: sourceNextStudentId,
+          date: input.rescheduleToDate!,
+          startTime: input.rescheduleToTime!
+        });
+      } else {
+        sourceNextTargetId = null;
+      }
+
+      await connection.query(
+        `
+          UPDATE lesson_slots
+          SET student_id = ?, status = ?, rescheduled_to_slot_id = ?
+          WHERE id = ?
+        `,
+        [sourceNextStudentId, sourceNextStatus, sourceNextTargetId, rescheduleSourceSlot.id]
+      );
+
+      if (sourcePrevTargetId && sourcePrevTargetId !== sourceNextTargetId) {
+        await releaseRescheduledTargetSlot(connection, { slotId: sourcePrevTargetId });
+      }
+
+      await markOverduePlannedSlots(connection, { slotId: rescheduleSourceSlot.id });
+
+      await writeAuditLog(connection, {
+        actorUserId: input.actorUserId,
+        entityType: 'lesson_slot',
+        entityId: rescheduleSourceSlot.id,
+        action: 'status_update',
+        diffBefore: {
+          student_id: rescheduleSourceSlot.student_id,
+          status: rescheduleSourceSlot.status,
+          rescheduled_to_slot_id: rescheduleSourceSlot.rescheduled_to_slot_id
+        },
+        diffAfter: {
+          student_id: sourceNextStudentId,
+          status: sourceNextStatus,
+          rescheduled_to_slot_id: sourceNextTargetId,
+          reason: normalizedReason ?? null
+        }
+      });
+
+      if (sourceNextTargetId !== current.id) {
+        await deleteDetachedRescheduleIntermediateSlot(connection, {
+          slotId: current.id,
+          teacherId: current.teacher_id
+        });
+      }
+
+      const slot = await getLessonSlotById(connection, rescheduleSourceSlot.id);
+      if (!slot) throw new Error('SLOT_NOT_FOUND');
+
+      await connection.commit();
+      return slot;
+    }
+
+    if (current.status === normalizedStatus) {
+      if (normalizedStatus !== 'rescheduled') {
         const unchanged = await getLessonSlotById(connection, input.id);
         if (!unchanged) throw new Error('SLOT_NOT_FOUND');
         await connection.commit();
@@ -2402,16 +2585,17 @@ export async function updateTeacherLessonSlotStatus(input: {
       });
     }
 
-    if (current.status !== 'completed' && input.status === 'completed') {
+    if (current.status !== 'completed' && normalizedStatus === 'completed') {
       await adjustStudentPaidLessons(connection, nextStudentId, -1);
     }
 
-    if (current.status === 'completed' && input.status !== 'completed') {
+    if (current.status === 'completed' && normalizedStatus !== 'completed') {
       await adjustStudentPaidLessons(connection, current.student_id, +1);
     }
 
+    const previousRescheduledToSlotId = current.rescheduled_to_slot_id;
     let rescheduledToSlotId: string | null = current.rescheduled_to_slot_id;
-    if (input.status === 'rescheduled') {
+    if (normalizedStatus === 'rescheduled') {
       rescheduledToSlotId = await upsertRescheduledTargetSlot(connection, {
         teacherId: current.teacher_id,
         studentId: nextStudentId,
@@ -2428,8 +2612,14 @@ export async function updateTeacherLessonSlotStatus(input: {
         SET student_id = ?, status = ?, rescheduled_to_slot_id = ?
         WHERE id = ?
       `,
-      [nextStudentId, input.status, rescheduledToSlotId, input.id]
+      [nextStudentId, normalizedStatus, rescheduledToSlotId, input.id]
     );
+
+    if (previousRescheduledToSlotId && previousRescheduledToSlotId !== rescheduledToSlotId) {
+      await releaseRescheduledTargetSlot(connection, {
+        slotId: previousRescheduledToSlotId
+      });
+    }
 
     await markOverduePlannedSlots(connection, { slotId: input.id });
 
@@ -2445,7 +2635,7 @@ export async function updateTeacherLessonSlotStatus(input: {
       },
       diffAfter: {
         student_id: nextStudentId,
-        status: input.status,
+        status: normalizedStatus,
         rescheduled_to_slot_id: rescheduledToSlotId,
         reason: normalizedReason ?? null
       }
@@ -2465,6 +2655,101 @@ export async function updateTeacherLessonSlotStatus(input: {
   } finally {
     connection.release();
   }
+}
+
+async function releaseRescheduledTargetSlot(
+  connection: mysql.PoolConnection,
+  input: { slotId: string; allowCompleted?: boolean }
+): Promise<void> {
+  const [referenceRows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT COUNT(*) AS refs_count
+      FROM lesson_slots
+      WHERE rescheduled_to_slot_id = ?
+    `,
+    [input.slotId]
+  );
+  const refsCount = Number(referenceRows[0]?.refs_count ?? 0);
+  if (refsCount > 0) return;
+
+  const [slotRows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT id, status, student_id, source_weekly_slot_id
+      FROM lesson_slots
+      WHERE id = ?
+      LIMIT 1
+      FOR UPDATE
+    `,
+    [input.slotId]
+  );
+  if (slotRows.length === 0) return;
+
+  const slotStatus = String(slotRows[0].status ?? '');
+  const sourceWeeklySlotId = slotRows[0].source_weekly_slot_id ? String(slotRows[0].source_weekly_slot_id) : null;
+  if (sourceWeeklySlotId) return;
+
+  if (slotStatus === 'completed') {
+    if (!input.allowCompleted) return;
+    const studentId = slotRows[0].student_id ? String(slotRows[0].student_id) : null;
+    await adjustStudentPaidLessons(connection, studentId, +1);
+    await connection.query(`DELETE FROM lesson_slots WHERE id = ?`, [input.slotId]);
+    return;
+  }
+
+  await connection.query(
+    `
+      DELETE FROM lesson_slots
+      WHERE id = ?
+        AND status IN ('planned', 'overdue')
+    `,
+    [input.slotId]
+  );
+}
+
+async function getRescheduleSourceSlotByTargetForUpdate(
+  connection: mysql.PoolConnection,
+  targetSlotId: string,
+  teacherId: string
+): Promise<JournalLessonSlot | null> {
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT id
+      FROM lesson_slots
+      WHERE teacher_id = ?
+        AND rescheduled_to_slot_id = ?
+      LIMIT 1
+      FOR UPDATE
+    `,
+    [teacherId, targetSlotId]
+  );
+  if (rows.length === 0) return null;
+  return getLessonSlotById(connection, String(rows[0].id));
+}
+
+async function deleteDetachedRescheduleIntermediateSlot(
+  connection: mysql.PoolConnection,
+  input: { slotId: string; teacherId: string }
+): Promise<void> {
+  const [referenceRows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT COUNT(*) AS refs_count
+      FROM lesson_slots
+      WHERE rescheduled_to_slot_id = ?
+    `,
+    [input.slotId]
+  );
+  const refsCount = Number(referenceRows[0]?.refs_count ?? 0);
+  if (refsCount > 0) return;
+
+  await connection.query(
+    `
+      DELETE FROM lesson_slots
+      WHERE id = ?
+        AND teacher_id = ?
+        AND source_weekly_slot_id IS NULL
+    `,
+    [input.slotId, input.teacherId]
+  );
 }
 
 async function ensureTemplateSlotsForRange(
@@ -2645,7 +2930,7 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
             THEN 'planned'
           WHEN ls.status = 'planned'
             AND ls.student_id IS NOT NULL
-            AND (ls.date < CURDATE() OR (ls.date = CURDATE() AND ls.start_time < CURTIME()))
+            AND ls.date < DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
             THEN 'overdue'
           ELSE ls.status
         END AS status,
@@ -2653,6 +2938,7 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
         DATE_FORMAT(rsl.date, '%Y-%m-%d') AS reschedule_target_date,
         TIME_FORMAT(rsl.start_time, '%H:%i') AS reschedule_target_time,
         ls.source_weekly_slot_id,
+        UNIX_TIMESTAMP(ls.updated_at) AS lock_version,
         status_audit.created_at AS status_changed_at,
         actor.login AS status_changed_by_login,
         JSON_UNQUOTE(JSON_EXTRACT(status_audit.diff_after, '$.reason')) AS status_reason
@@ -2692,6 +2978,7 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
     reschedule_target_date: row.reschedule_target_date ? String(row.reschedule_target_date) : null,
     reschedule_target_time: row.reschedule_target_time ? String(row.reschedule_target_time) : null,
     source_weekly_slot_id: row.source_weekly_slot_id ? String(row.source_weekly_slot_id) : null,
+    lock_version: Number(row.lock_version ?? 0),
     status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
     status_changed_at: row.status_changed_at ? new Date(row.status_changed_at).toISOString() : null,
     status_reason: row.status_reason ? String(row.status_reason) : null
@@ -2710,6 +2997,7 @@ async function getLessonSlotByIdForUpdate(
   status: JournalLessonStatus;
   source_weekly_slot_id: string | null;
   rescheduled_to_slot_id: string | null;
+  lock_version: number;
 } | null> {
   const [rows] = await connection.query<mysql.RowDataPacket[]>(
     `
@@ -2721,7 +3009,8 @@ async function getLessonSlotByIdForUpdate(
         TIME_FORMAT(start_time, '%H:%i') AS start_time,
         status,
         source_weekly_slot_id,
-        rescheduled_to_slot_id
+        rescheduled_to_slot_id,
+        UNIX_TIMESTAMP(updated_at) AS lock_version
       FROM lesson_slots
       WHERE id = ?
       LIMIT 1
@@ -2740,7 +3029,8 @@ async function getLessonSlotByIdForUpdate(
     start_time: String(rows[0].start_time),
     status: String(rows[0].status) as JournalLessonStatus,
     source_weekly_slot_id: rows[0].source_weekly_slot_id ? String(rows[0].source_weekly_slot_id) : null,
-    rescheduled_to_slot_id: rows[0].rescheduled_to_slot_id ? String(rows[0].rescheduled_to_slot_id) : null
+    rescheduled_to_slot_id: rows[0].rescheduled_to_slot_id ? String(rows[0].rescheduled_to_slot_id) : null,
+    lock_version: Number(rows[0].lock_version ?? 0)
   };
 }
 
@@ -2845,7 +3135,8 @@ async function markOverduePlannedSlots(
       UPDATE lesson_slots
       SET status = 'planned'
       WHERE status = 'overdue'
-        AND student_id IS NULL
+        AND student_id IS NOT NULL
+        AND date >= DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
         ${whereParts.length > 0 ? `AND ${whereParts.join(' AND ')}` : ''}
     `,
     params
@@ -2857,7 +3148,7 @@ async function markOverduePlannedSlots(
       SET status = 'overdue'
       WHERE status = 'planned'
         AND student_id IS NOT NULL
-        AND TIMESTAMP(date, start_time) < NOW()
+        AND date < DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
         ${whereParts.length > 0 ? `AND ${whereParts.join(' AND ')}` : ''}
     `,
     params
@@ -2945,6 +3236,17 @@ function isMysqlUnknownColumnError(error: unknown, columnName: string): boolean 
   return candidate.code === 'ER_BAD_FIELD_ERROR' && Boolean(candidate.message?.includes(columnName));
 }
 
+function assertTeacherConflictLock(
+  expectedLockVersion: number | undefined,
+  currentLockVersion: number,
+  actorRole: 'admin' | 'teacher'
+): void {
+  if (typeof expectedLockVersion !== 'number') return;
+  if (expectedLockVersion === currentLockVersion) return;
+  if (actorRole === 'admin') return;
+  throw new Error('SLOT_CONFLICT_ADMIN_WON');
+}
+
 async function hasTeacherWeeklySlotStudentIdColumn(connection: mysql.PoolConnection): Promise<boolean> {
   if (hasWeeklySlotStudentIdColumnCache !== null) return hasWeeklySlotStudentIdColumnCache;
   const [rows] = await connection.query<mysql.RowDataPacket[]>(
@@ -2987,6 +3289,15 @@ function formatIsoDate(value: Date): string {
   const month = String(value.getUTCMonth() + 1).padStart(2, '0');
   const day = String(value.getUTCDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function getCurrentMskIsoDate(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(now);
 }
 
 function* iterateDatesInclusive(start: Date, end: Date): Generator<Date> {
