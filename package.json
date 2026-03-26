@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node scripts/dev-safe.cjs",
     "dev:sandbox": "bash scripts/with-sandbox-env.sh npm run dev",
-    "dev:clean": "node -e \"require('fs').rmSync('.next-dev',{recursive:true,force:true})\" && NEXT_DIST_DIR=.next-dev next dev --turbopack",
+    "dev:clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true});require('fs').rmSync('.next-dev',{recursive:true,force:true})\" && npm run dev",
     "task:new": "bash scripts/new-task-branch.sh",
     "task:start": "bash scripts/start-task.sh",
     "task:init": "bash scripts/task-init.sh",

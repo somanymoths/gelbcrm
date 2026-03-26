@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { randomUUID } from 'crypto';
 import { SESSION_COOKIE_NAME } from '@/lib/constants';
 import { verifySessionToken } from '@/lib/session';
 
@@ -13,7 +12,7 @@ function isPublicPath(pathname: string): boolean {
 
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  const requestId = request.headers.get('x-request-id') ?? randomUUID();
+  const requestId = request.headers.get('x-request-id') ?? createRequestId();
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set('x-request-id', requestId);
 
@@ -52,7 +51,6 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  runtime: 'nodejs',
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)']
 };
 
@@ -77,4 +75,12 @@ function redirectTo(request: NextRequest, path: string) {
 function withRequestId(response: NextResponse, requestId: string) {
   response.headers.set('x-request-id', requestId);
   return response;
+}
+
+function createRequestId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }

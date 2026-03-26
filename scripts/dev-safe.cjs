@@ -26,8 +26,10 @@ function isRunningNextDevInRepo(repoRoot) {
 }
 
 function clearNextCache(repoRoot) {
-  const nextDir = path.join(repoRoot, '.next-dev');
+  const nextDir = path.join(repoRoot, '.next');
+  const nextDevDir = path.join(repoRoot, '.next-dev');
   fs.rmSync(nextDir, { recursive: true, force: true });
+  fs.rmSync(nextDevDir, { recursive: true, force: true });
 }
 
 function sleep(ms) {
@@ -77,12 +79,16 @@ function run() {
   ensureJournalSectionExists(repoRoot);
 
   const nextBin = path.join(repoRoot, 'node_modules', '.bin', 'next');
-  const child = spawn(nextBin, ['dev', '--turbopack'], {
+  const useTurbopack = process.env.NEXT_USE_TURBOPACK === '1';
+  const args = useTurbopack ? ['dev', '--turbopack'] : ['dev'];
+
+  if (!useTurbopack) {
+    console.log('[dev-safe] Запуск в стабильном режиме (webpack). Для Turbopack: NEXT_USE_TURBOPACK=1 npm run dev');
+  }
+
+  const child = spawn(nextBin, args, {
     stdio: 'inherit',
-    env: {
-      ...process.env,
-      NEXT_DIST_DIR: '.next-dev'
-    }
+    env: process.env
   });
 
   child.on('exit', (code, signal) => {
