@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
+import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
 import { updateTeacherLessonSlotStatus, type JournalLessonStatus } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
@@ -46,6 +47,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       })
     );
 
+    invalidateFunnelBoardRelatedCache();
+    if (updated.student_id) {
+      invalidateFunnelCardCache(updated.student_id);
+    }
+
     return NextResponse.json(updated);
   } catch (error) {
     return mapJournalError(error, 'Не удалось изменить статус слота');
@@ -76,6 +82,12 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   if (message === 'SLOT_COMPLETED_STATUS_CHANGE_FORBIDDEN') {
     return NextResponse.json(
       { code: 'SLOT_COMPLETED_STATUS_CHANGE_FORBIDDEN', message: 'Завершенное занятие нельзя перенести или отменить' },
+      { status: 422 }
+    );
+  }
+  if (message === 'SLOT_OVERDUE_TO_PLANNED_FORBIDDEN') {
+    return NextResponse.json(
+      { code: 'SLOT_OVERDUE_TO_PLANNED_FORBIDDEN', message: 'Просроченное занятие нельзя вернуть в Запланировано' },
       { status: 422 }
     );
   }

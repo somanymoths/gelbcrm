@@ -8,6 +8,7 @@ function getPool(): mysql.Pool {
 }
 
 let hasWeeklySlotStudentIdColumnCache: boolean | null = null;
+let hasWeeklySlotStartFromColumnCache: boolean | null = null;
 
 export type DbUser = {
   id: string;
@@ -1452,7 +1453,7 @@ export async function updateTariffPackage(input: {
   }
 }
 
-export type JournalLessonStatus = 'planned' | 'completed' | 'rescheduled' | 'canceled';
+export type JournalLessonStatus = 'planned' | 'overdue' | 'completed' | 'rescheduled' | 'canceled';
 
 export type JournalTeacherBasic = {
   id: string;
@@ -1465,6 +1466,7 @@ export type WeeklyTemplateSlot = {
   id: string;
   weekday: number;
   start_time: string;
+  start_from: string | null;
   is_active: 0 | 1;
   student_id?: string | null;
 };
@@ -1565,30 +1567,60 @@ export async function listTeacherStudentsForJournal(teacherId: string): Promise<
   }));
 }
 
+export async function listTeacherPlannedSlotCountsBeforeDate(input: {
+  teacherId: string;
+  date: string;
+}): Promise<Array<{ student_id: string; planned_count: number }>> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT student_id, COUNT(*) AS planned_count
+      FROM lesson_slots
+      WHERE teacher_id = ?
+        AND student_id IS NOT NULL
+        AND status = 'planned'
+        AND date < ?
+      GROUP BY student_id
+    `,
+    [input.teacherId, input.date]
+  );
+
+  return rows.map((row) => ({
+    student_id: String(row.student_id),
+    planned_count: Number(row.planned_count ?? 0)
+  }));
+}
+
 export async function getTeacherWeeklyTemplate(teacherId: string): Promise<WeeklyTemplateSlot[]> {
   const pool = getPool();
   let hasStudentIdColumn = true;
+  let hasStartFromColumn = true;
   let rows: mysql.RowDataPacket[] = [];
+  const connection = await pool.getConnection();
   try {
-    const [withStudentRows] = await pool.query<mysql.RowDataPacket[]>(
+    hasStudentIdColumn = await hasTeacherWeeklySlotStudentIdColumn(connection);
+    hasStartFromColumn = await hasTeacherWeeklySlotStartFromColumn(connection);
+
+    const [fetchedRows] = await connection.query<mysql.RowDataPacket[]>(
       `
         SELECT
           id,
           weekday,
           TIME_FORMAT(start_time, '%H:%i') AS start_time,
-          is_active,
-          student_id
+          is_active
+          ${hasStudentIdColumn ? ', student_id' : ''}
+          ${hasStartFromColumn ? ", DATE_FORMAT(start_from, '%Y-%m-%d') AS start_from" : ''}
         FROM teacher_weekly_slots
         WHERE teacher_id = ? AND is_active = 1
         ORDER BY weekday ASC, start_time ASC
       `,
       [teacherId]
     );
-    rows = withStudentRows;
+    rows = fetchedRows;
   } catch (error) {
-    if (!isMysqlUnknownColumnError(error, 'student_id')) throw error;
+    if (!isMysqlUnknownColumnError(error, 'student_id') && !isMysqlUnknownColumnError(error, 'start_from')) throw error;
     hasStudentIdColumn = false;
-    const [fallbackRows] = await pool.query<mysql.RowDataPacket[]>(
+    hasStartFromColumn = false;
+    const [fallbackRows] = await connection.query<mysql.RowDataPacket[]>(
       `
         SELECT
           id,
@@ -1602,12 +1634,15 @@ export async function getTeacherWeeklyTemplate(teacherId: string): Promise<Weekl
       [teacherId]
     );
     rows = fallbackRows;
+  } finally {
+    connection.release();
   }
 
   const result: WeeklyTemplateSlot[] = rows.map((row) => ({
     id: String(row.id),
     weekday: Number(row.weekday),
     start_time: String(row.start_time),
+    start_from: hasStartFromColumn && row.start_from ? String(row.start_from) : null,
     is_active: Number(row.is_active) ? 1 : 0,
     student_id: row.student_id ? String(row.student_id) : null
   }));
@@ -1651,7 +1686,7 @@ export async function getTeacherWeeklyTemplate(teacherId: string): Promise<Weekl
 export async function replaceTeacherWeeklyTemplate(input: {
   teacherId: string;
   actorUserId: string;
-  slots: Array<{ weekday: number; startTime: string; studentId?: string | null; isActive?: boolean }>;
+  slots: Array<{ weekday: number; startTime: string; startFrom?: string | null; studentId?: string | null; isActive?: boolean }>;
 }): Promise<void> {
   const pool = getPool();
   const connection = await pool.getConnection();
@@ -1666,11 +1701,13 @@ export async function replaceTeacherWeeklyTemplate(input: {
     if (teacherRows.length === 0) throw new Error('TEACHER_NOT_FOUND');
 
     const hasWeeklySlotStudentIdColumn = await hasTeacherWeeklySlotStudentIdColumn(connection);
+    const hasWeeklySlotStartFromColumn = await hasTeacherWeeklySlotStartFromColumn(connection);
 
     const [existingRows] = hasWeeklySlotStudentIdColumn
       ? await connection.query<mysql.RowDataPacket[]>(
           `
             SELECT id, student_id, weekday, TIME_FORMAT(start_time, '%H:%i') AS start_time
+            ${hasWeeklySlotStartFromColumn ? ", DATE_FORMAT(start_from, '%Y-%m-%d') AS start_from" : ''}
             FROM teacher_weekly_slots
             WHERE teacher_id = ?
           `,
@@ -1679,30 +1716,40 @@ export async function replaceTeacherWeeklyTemplate(input: {
       : await connection.query<mysql.RowDataPacket[]>(
           `
             SELECT id, weekday, TIME_FORMAT(start_time, '%H:%i') AS start_time
+            ${hasWeeklySlotStartFromColumn ? ", DATE_FORMAT(start_from, '%Y-%m-%d') AS start_from" : ''}
             FROM teacher_weekly_slots
             WHERE teacher_id = ?
           `,
           [input.teacherId]
         );
 
-    const existingByKey = new Map<string, { id: string; weekday: number; start_time: string; student_id: string | null }>();
+    const existingByKey = new Map<string, { id: string; weekday: number; start_time: string; start_from: string | null; student_id: string | null }>();
     for (const row of existingRows) {
       const weekday = Number(row.weekday);
       const startTime = String(row.start_time);
+      const startFrom = hasWeeklySlotStartFromColumn && row.start_from ? String(row.start_from) : null;
       const studentId = hasWeeklySlotStudentIdColumn && row.student_id ? String(row.student_id) : null;
-      existingByKey.set(`${weekday}-${startTime}`, { id: String(row.id), weekday, start_time: startTime, student_id: studentId });
+      existingByKey.set(`${weekday}-${startTime}`, {
+        id: String(row.id),
+        weekday,
+        start_time: startTime,
+        start_from: startFrom,
+        student_id: studentId
+      });
     }
 
     const nextKeys = new Set<string>();
-    const uniqueSlots: Array<{ weekday: number; startTime: string; studentId: string | null; isActive: boolean }> = [];
+    const uniqueSlots: Array<{ weekday: number; startTime: string; startFrom: string | null; studentId: string | null; isActive: boolean }> = [];
     for (const slot of input.slots) {
       const key = `${slot.weekday}-${slot.startTime}`;
       if (nextKeys.has(key)) continue;
       nextKeys.add(key);
       await assertStudentBelongsToTeacher(connection, input.teacherId, slot.studentId ?? null);
+      const normalizedStartFrom = slot.startFrom ?? null;
       uniqueSlots.push({
         weekday: slot.weekday,
         startTime: slot.startTime,
+        startFrom: normalizedStartFrom,
         studentId: slot.studentId ?? null,
         isActive: slot.isActive ?? true
       });
@@ -1718,11 +1765,20 @@ export async function replaceTeacherWeeklyTemplate(input: {
       const existing = existingByKey.get(slotKey);
       if (existing) {
         if (hasWeeklySlotStudentIdColumn) {
-          await connection.query(`UPDATE teacher_weekly_slots SET is_active = ?, student_id = ? WHERE id = ?`, [
-            slot.isActive ? 1 : 0,
-            slot.studentId,
-            existing.id
-          ]);
+          if (hasWeeklySlotStartFromColumn) {
+            await connection.query(`UPDATE teacher_weekly_slots SET is_active = ?, student_id = ?, start_from = ? WHERE id = ?`, [
+              slot.isActive ? 1 : 0,
+              slot.studentId,
+              slot.startFrom,
+              existing.id
+            ]);
+          } else {
+            await connection.query(`UPDATE teacher_weekly_slots SET is_active = ?, student_id = ? WHERE id = ?`, [
+              slot.isActive ? 1 : 0,
+              slot.studentId,
+              existing.id
+            ]);
+          }
           if (existing.student_id !== slot.studentId) {
             await syncWeeklyStudentAssignment(connection, {
               teacherId: input.teacherId,
@@ -1732,7 +1788,29 @@ export async function replaceTeacherWeeklyTemplate(input: {
             });
           }
         } else {
-          await connection.query(`UPDATE teacher_weekly_slots SET is_active = ? WHERE id = ?`, [slot.isActive ? 1 : 0, existing.id]);
+          if (hasWeeklySlotStartFromColumn) {
+            await connection.query(`UPDATE teacher_weekly_slots SET is_active = ?, start_from = ? WHERE id = ?`, [
+              slot.isActive ? 1 : 0,
+              slot.startFrom,
+              existing.id
+            ]);
+          } else {
+            await connection.query(`UPDATE teacher_weekly_slots SET is_active = ? WHERE id = ?`, [slot.isActive ? 1 : 0, existing.id]);
+          }
+        }
+
+        if (hasWeeklySlotStartFromColumn && existing.start_from !== slot.startFrom && slot.startFrom) {
+          await connection.query(
+            `
+              DELETE FROM lesson_slots
+              WHERE teacher_id = ?
+                AND source_weekly_slot_id = ?
+                AND status = 'planned'
+                AND date >= CURRENT_DATE()
+                AND date < ?
+            `,
+            [input.teacherId, existing.id, slot.startFrom]
+          );
         }
         weeklySlotIdByKey.set(slotKey, existing.id);
         continue;
@@ -1740,23 +1818,43 @@ export async function replaceTeacherWeeklyTemplate(input: {
 
       if (hasWeeklySlotStudentIdColumn) {
         const newId = randomUUID();
-        await connection.query(
-          `
-            INSERT INTO teacher_weekly_slots (id, teacher_id, student_id, weekday, start_time, is_active)
-            VALUES (?, ?, ?, ?, ?, ?)
-          `,
-          [newId, input.teacherId, slot.studentId, slot.weekday, `${slot.startTime}:00`, slot.isActive ? 1 : 0]
-        );
+        if (hasWeeklySlotStartFromColumn) {
+          await connection.query(
+            `
+              INSERT INTO teacher_weekly_slots (id, teacher_id, student_id, weekday, start_time, start_from, is_active)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `,
+            [newId, input.teacherId, slot.studentId, slot.weekday, `${slot.startTime}:00`, slot.startFrom, slot.isActive ? 1 : 0]
+          );
+        } else {
+          await connection.query(
+            `
+              INSERT INTO teacher_weekly_slots (id, teacher_id, student_id, weekday, start_time, is_active)
+              VALUES (?, ?, ?, ?, ?, ?)
+            `,
+            [newId, input.teacherId, slot.studentId, slot.weekday, `${slot.startTime}:00`, slot.isActive ? 1 : 0]
+          );
+        }
         weeklySlotIdByKey.set(slotKey, newId);
       } else {
         const newId = randomUUID();
-        await connection.query(
-          `
-            INSERT INTO teacher_weekly_slots (id, teacher_id, weekday, start_time, is_active)
-            VALUES (?, ?, ?, ?, ?)
-          `,
-          [newId, input.teacherId, slot.weekday, `${slot.startTime}:00`, slot.isActive ? 1 : 0]
-        );
+        if (hasWeeklySlotStartFromColumn) {
+          await connection.query(
+            `
+              INSERT INTO teacher_weekly_slots (id, teacher_id, weekday, start_time, start_from, is_active)
+              VALUES (?, ?, ?, ?, ?, ?)
+            `,
+            [newId, input.teacherId, slot.weekday, `${slot.startTime}:00`, slot.startFrom, slot.isActive ? 1 : 0]
+          );
+        } else {
+          await connection.query(
+            `
+              INSERT INTO teacher_weekly_slots (id, teacher_id, weekday, start_time, is_active)
+              VALUES (?, ?, ?, ?, ?)
+            `,
+            [newId, input.teacherId, slot.weekday, `${slot.startTime}:00`, slot.isActive ? 1 : 0]
+          );
+        }
         weeklySlotIdByKey.set(slotKey, newId);
       }
     }
@@ -1831,6 +1929,7 @@ export async function listTeacherLessonSlots(input: {
   try {
     await connection.beginTransaction();
 
+    await markOverduePlannedSlots(connection, { teacherId: input.teacherId });
     await ensureTemplateSlotsForRange(connection, input.teacherId, input.dateFrom, input.dateTo);
 
     const [rows] = await connection.query<mysql.RowDataPacket[]>(
@@ -1843,7 +1942,15 @@ export async function listTeacherLessonSlots(input: {
           s.paid_lessons_left AS student_paid_lessons_left,
           DATE_FORMAT(ls.date, '%Y-%m-%d') AS date,
           TIME_FORMAT(ls.start_time, '%H:%i') AS start_time,
-          ls.status,
+          CASE
+            WHEN ls.status = 'overdue' AND ls.student_id IS NULL
+              THEN 'planned'
+            WHEN ls.status = 'planned'
+              AND ls.student_id IS NOT NULL
+              AND (ls.date < CURDATE() OR (ls.date = CURDATE() AND ls.start_time < CURTIME()))
+              THEN 'overdue'
+            ELSE ls.status
+          END AS status,
           ls.rescheduled_to_slot_id,
           DATE_FORMAT(rsl.date, '%Y-%m-%d') AS reschedule_target_date,
           TIME_FORMAT(rsl.start_time, '%H:%i') AS reschedule_target_time,
@@ -2083,6 +2190,10 @@ export async function updateTeacherLessonSlot(input: {
       [nextStudentId, nextDate, `${nextStartTime}:00`, input.id]
     );
 
+    if (!nextStudentId) {
+      await connection.query(`UPDATE lesson_slots SET status = 'planned' WHERE id = ? AND status = 'overdue'`, [input.id]);
+    }
+
     await writeAuditLog(connection, {
       actorUserId: input.actorUserId,
       entityType: 'lesson_slot',
@@ -2236,11 +2347,15 @@ export async function updateTeacherLessonSlotStatus(input: {
   try {
     await connection.beginTransaction();
 
+    await markOverduePlannedSlots(connection, { slotId: input.id });
     const current = await getLessonSlotByIdForUpdate(connection, input.id);
     if (!current) throw new Error('SLOT_NOT_FOUND');
     if (current.teacher_id !== input.teacherId) throw new Error('FORBIDDEN');
     if (current.status === 'completed' && (input.status === 'canceled' || input.status === 'rescheduled')) {
       throw new Error('SLOT_COMPLETED_STATUS_CHANGE_FORBIDDEN');
+    }
+    if (current.status === 'overdue' && input.status === 'planned') {
+      throw new Error('SLOT_OVERDUE_TO_PLANNED_FORBIDDEN');
     }
 
     const nextStudentId = input.studentId !== undefined ? input.studentId : current.student_id;
@@ -2316,6 +2431,8 @@ export async function updateTeacherLessonSlotStatus(input: {
       [nextStudentId, input.status, rescheduledToSlotId, input.id]
     );
 
+    await markOverduePlannedSlots(connection, { slotId: input.id });
+
     await writeAuditLog(connection, {
       actorUserId: input.actorUserId,
       entityType: 'lesson_slot',
@@ -2357,10 +2474,12 @@ async function ensureTemplateSlotsForRange(
   dateTo: string
 ): Promise<void> {
   const hasWeeklySlotStudentIdColumn = await hasTeacherWeeklySlotStudentIdColumn(connection);
+  const hasWeeklySlotStartFromColumn = await hasTeacherWeeklySlotStartFromColumn(connection);
   const [templateRows] = hasWeeklySlotStudentIdColumn
     ? await connection.query<mysql.RowDataPacket[]>(
         `
           SELECT id, student_id, weekday, TIME_FORMAT(start_time, '%H:%i') AS start_time
+          ${hasWeeklySlotStartFromColumn ? ", DATE_FORMAT(start_from, '%Y-%m-%d') AS start_from" : ''}
           FROM teacher_weekly_slots
           WHERE teacher_id = ? AND is_active = 1
         `,
@@ -2369,6 +2488,7 @@ async function ensureTemplateSlotsForRange(
     : await connection.query<mysql.RowDataPacket[]>(
         `
           SELECT id, weekday, TIME_FORMAT(start_time, '%H:%i') AS start_time
+          ${hasWeeklySlotStartFromColumn ? ", DATE_FORMAT(start_from, '%Y-%m-%d') AS start_from" : ''}
           FROM teacher_weekly_slots
           WHERE teacher_id = ? AND is_active = 1
         `,
@@ -2383,6 +2503,7 @@ async function ensureTemplateSlotsForRange(
   const templates = templateRows.map((row) => ({
     id: String(row.id),
     studentId: hasWeeklySlotStudentIdColumn && row.student_id ? String(row.student_id) : null,
+    startFrom: hasWeeklySlotStartFromColumn && row.start_from ? String(row.start_from) : null,
     weekday: Number(row.weekday),
     startTime: String(row.start_time)
   }));
@@ -2414,12 +2535,13 @@ async function ensureTemplateSlotsForRange(
   }
 
   for (const date of iterateDatesInclusive(startDate, endDate)) {
-    const weekday = isoWeekday(date);
-    for (const slot of templates) {
-      if (slot.weekday !== weekday) continue;
-      candidates.push({
-        id: randomUUID(),
-        date: formatIsoDate(date),
+      const weekday = isoWeekday(date);
+      for (const slot of templates) {
+        if (slot.weekday !== weekday) continue;
+        if (slot.startFrom && formatIsoDate(date) < slot.startFrom) continue;
+        candidates.push({
+          id: randomUUID(),
+          date: formatIsoDate(date),
         startTime: slot.startTime,
         weeklySlotId: slot.id,
         studentId: slot.studentId
@@ -2518,7 +2640,15 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
         s.paid_lessons_left AS student_paid_lessons_left,
         DATE_FORMAT(ls.date, '%Y-%m-%d') AS date,
         TIME_FORMAT(ls.start_time, '%H:%i') AS start_time,
-        ls.status,
+        CASE
+          WHEN ls.status = 'overdue' AND ls.student_id IS NULL
+            THEN 'planned'
+          WHEN ls.status = 'planned'
+            AND ls.student_id IS NOT NULL
+            AND (ls.date < CURDATE() OR (ls.date = CURDATE() AND ls.start_time < CURTIME()))
+            THEN 'overdue'
+          ELSE ls.status
+        END AS status,
         ls.rescheduled_to_slot_id,
         DATE_FORMAT(rsl.date, '%Y-%m-%d') AS reschedule_target_date,
         TIME_FORMAT(rsl.start_time, '%H:%i') AS reschedule_target_time,
@@ -2692,6 +2822,48 @@ async function adjustStudentPaidLessons(connection: mysql.PoolConnection, studen
   await connection.query(`UPDATE students SET paid_lessons_left = ? WHERE id = ?`, [next, studentId]);
 }
 
+async function markOverduePlannedSlots(
+  connection: mysql.PoolConnection,
+  input: { teacherId?: string; slotId?: string }
+): Promise<void> {
+  if (!input.teacherId && !input.slotId) return;
+
+  const whereParts: string[] = [];
+  const params: Array<string> = [];
+
+  if (input.teacherId) {
+    whereParts.push('teacher_id = ?');
+    params.push(input.teacherId);
+  }
+  if (input.slotId) {
+    whereParts.push('id = ?');
+    params.push(input.slotId);
+  }
+
+  await connection.query(
+    `
+      UPDATE lesson_slots
+      SET status = 'planned'
+      WHERE status = 'overdue'
+        AND student_id IS NULL
+        ${whereParts.length > 0 ? `AND ${whereParts.join(' AND ')}` : ''}
+    `,
+    params
+  );
+
+  await connection.query(
+    `
+      UPDATE lesson_slots
+      SET status = 'overdue'
+      WHERE status = 'planned'
+        AND student_id IS NOT NULL
+        AND TIMESTAMP(date, start_time) < NOW()
+        ${whereParts.length > 0 ? `AND ${whereParts.join(' AND ')}` : ''}
+    `,
+    params
+  );
+}
+
 async function upsertRescheduledTargetSlot(
   connection: mysql.PoolConnection,
   input: { teacherId: string; studentId: string | null; date: string; startTime: string }
@@ -2787,6 +2959,22 @@ async function hasTeacherWeeklySlotStudentIdColumn(connection: mysql.PoolConnect
   );
   hasWeeklySlotStudentIdColumnCache = rows.length > 0;
   return hasWeeklySlotStudentIdColumnCache;
+}
+
+async function hasTeacherWeeklySlotStartFromColumn(connection: mysql.PoolConnection): Promise<boolean> {
+  if (hasWeeklySlotStartFromColumnCache !== null) return hasWeeklySlotStartFromColumnCache;
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT 1
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'teacher_weekly_slots'
+        AND COLUMN_NAME = 'start_from'
+      LIMIT 1
+    `
+  );
+  hasWeeklySlotStartFromColumnCache = rows.length > 0;
+  return hasWeeklySlotStartFromColumnCache;
 }
 
 function parseIsoDate(value: string): Date {

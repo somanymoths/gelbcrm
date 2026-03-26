@@ -550,7 +550,14 @@ export async function addFunnelCardManualLessons(input: {
     const currentPaidLessons = Number(rows[0].paid_lessons_left ?? 0);
     const nextPaidLessons = currentPaidLessons + input.lessonsToAdd;
 
-    await connection.query(`UPDATE students SET paid_lessons_left = ? WHERE id = ?`, [nextPaidLessons, input.cardId]);
+    await connection.query(
+      `
+        UPDATE students
+        SET paid_lessons_left = ?, entity_type = CASE WHEN ? > 0 THEN 'student' ELSE entity_type END
+        WHERE id = ?
+      `,
+      [nextPaidLessons, nextPaidLessons, input.cardId]
+    );
 
     await writeAuditLog(connection, {
       actorUserId: input.actorUserId,
@@ -1600,6 +1607,17 @@ async function syncCardPaymentStatus(input: {
             WHERE id = ?
           `,
           [lessonsToAdd, studentId]
+        );
+      }
+
+      if (finalStatus === 'paid') {
+        await connection.query(
+          `
+            UPDATE students
+            SET entity_type = 'student'
+            WHERE id = ? AND entity_type = 'lead' AND paid_lessons_left > 0
+          `,
+          [studentId]
         );
       }
 
