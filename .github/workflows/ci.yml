@@ -13,6 +13,12 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      DB_HOST: localhost
+      DB_DATABASE: ci
+      DB_USERNAME: ci
+      DB_PASSWORD: ci
+      SESSION_SECRET: ci-session-secret
 
     steps:
       - name: Checkout
