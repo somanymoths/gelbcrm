@@ -1,58 +1,127 @@
+import { z } from 'zod';
+
 export type PaymentStatus = 'paid';
 
-export type TariffPackage = {
-  id: string;
-  lessonsCount: number;
-  pricePerLesson: number;
-};
+const TariffPackageSchema = z.object({
+  id: z.string().min(1),
+  lessonsCount: z.number().int().positive(),
+  pricePerLesson: z.number().finite().nonnegative()
+});
 
-export type Tariff = {
-  id: string;
-  name: string;
-  paymentLinkSlug: string;
-  createdAt: string;
-  packages: TariffPackage[];
-};
+const TariffSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  paymentLinkSlug: z.string().min(1),
+  createdAt: z.string().min(1),
+  packages: z.array(TariffPackageSchema)
+});
 
-export type PaymentRecord = {
-  id: string;
-  tariffId: string;
-  tariffName: string;
-  packageId: string;
-  lessonsCount: number;
-  amount: number;
-  payerName: string;
-  payerEmail: string;
-  status: PaymentStatus;
-  paidAt: string;
-};
+const PaymentRecordSchema = z.object({
+  id: z.string().min(1),
+  tariffId: z.string().min(1),
+  tariffName: z.string().min(1),
+  packageId: z.string().min(1),
+  lessonsCount: z.number().int().positive(),
+  amount: z.number().finite().positive(),
+  payerName: z.string().min(1),
+  payerEmail: z.string().min(1),
+  status: z.literal('paid'),
+  paidAt: z.string().min(1)
+});
+
+export type TariffPackage = z.infer<typeof TariffPackageSchema>;
+export type Tariff = z.infer<typeof TariffSchema>;
+export type PaymentRecord = z.infer<typeof PaymentRecordSchema>;
 
 const TARIFFS_KEY = 'gelbcrm:tariffs';
 const PAYMENTS_KEY = 'gelbcrm:payments';
 const STORE_UPDATED_EVENT = 'gelbcrm:payments-store-updated';
 
+const memoryStore: { tariffs: Tariff[]; payments: PaymentRecord[] } = {
+  tariffs: [],
+  payments: []
+};
+
+type CollectionKey = keyof typeof memoryStore;
+type CollectionItem<K extends CollectionKey> = (typeof memoryStore)[K][number];
+const forceMemoryRead: Record<CollectionKey, boolean> = {
+  tariffs: false,
+  payments: false
+};
+
 function isBrowser() {
   return typeof window !== 'undefined';
 }
 
-function parseArray<T>(value: string | null): T[] {
-  if (!value) {
-    return [];
-  }
+function parseStoredArray<T>(raw: string | null, itemSchema: z.ZodType<T>): T[] {
+  if (!raw) return [];
 
   try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((item) => {
+      const checked = itemSchema.safeParse(item);
+      return checked.success ? [checked.data] : [];
+    });
   } catch {
     return [];
   }
 }
 
-function broadcastStoreUpdate() {
-  if (!isBrowser()) {
-    return;
+function writeCollection<K extends CollectionKey>(
+  key: string,
+  fallbackKey: K,
+  items: Array<CollectionItem<K>>
+): void {
+  if (fallbackKey === 'tariffs') {
+    memoryStore.tariffs = items as Tariff[];
+  } else {
+    memoryStore.payments = items as PaymentRecord[];
   }
 
+  if (!isBrowser()) return;
+
+  try {
+    window.localStorage.setItem(key, JSON.stringify(items));
+    forceMemoryRead[fallbackKey] = false;
+  } catch {
+    // Keep a valid in-memory snapshot for this tab if localStorage is unavailable.
+    forceMemoryRead[fallbackKey] = true;
+  }
+}
+
+function readCollection<K extends CollectionKey>(
+  key: string,
+  itemSchema: z.ZodType<CollectionItem<K>>,
+  fallbackKey: K
+): Array<CollectionItem<K>> {
+  if (!isBrowser()) {
+    if (fallbackKey === 'tariffs') return [...memoryStore.tariffs] as Array<CollectionItem<K>>;
+    return [...memoryStore.payments] as Array<CollectionItem<K>>;
+  }
+
+  if (forceMemoryRead[fallbackKey]) {
+    if (fallbackKey === 'tariffs') return [...memoryStore.tariffs] as Array<CollectionItem<K>>;
+    return [...memoryStore.payments] as Array<CollectionItem<K>>;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed = parseStoredArray(raw, itemSchema);
+    if (fallbackKey === 'tariffs') {
+      memoryStore.tariffs = parsed as Tariff[];
+    } else {
+      memoryStore.payments = parsed as PaymentRecord[];
+    }
+    return parsed;
+  } catch {
+    if (fallbackKey === 'tariffs') return [...memoryStore.tariffs] as Array<CollectionItem<K>>;
+    return [...memoryStore.payments] as Array<CollectionItem<K>>;
+  }
+}
+
+function broadcastStoreUpdate() {
+  if (!isBrowser()) return;
   window.dispatchEvent(new Event(STORE_UPDATED_EVENT));
 }
 
@@ -73,15 +142,7 @@ export function getStoreUpdateEventName() {
 }
 
 export function getTariffs(): Tariff[] {
-  if (!isBrowser()) {
-    return [];
-  }
-
-  try {
-    return parseArray<Tariff>(window.localStorage.getItem(TARIFFS_KEY));
-  } catch {
-    return [];
-  }
+  return readCollection(TARIFFS_KEY, TariffSchema, 'tariffs');
 }
 
 export function saveTariff(input: { name: string; packages: Array<{ lessonsCount: number; pricePerLesson: number }> }): Tariff {
@@ -97,29 +158,18 @@ export function saveTariff(input: { name: string; packages: Array<{ lessonsCount
     }))
   };
 
-  const tariffs = getTariffs();
-  try {
-    window.localStorage.setItem(TARIFFS_KEY, JSON.stringify([tariff, ...tariffs]));
-  } catch {
-    // Ignore storage write errors, keep in-memory flow functional for this session.
-  }
+  writeCollection(TARIFFS_KEY, 'tariffs', [tariff, ...getTariffs()]);
   broadcastStoreUpdate();
-
   return tariff;
 }
 
 export function renameTariff(input: { tariffId: string; name: string }): Tariff | null {
   const nextName = input.name.trim();
-  if (!nextName) {
-    return null;
-  }
+  if (!nextName) return null;
 
   const tariffs = getTariffs();
   const index = tariffs.findIndex((item) => item.id === input.tariffId);
-
-  if (index < 0) {
-    return null;
-  }
+  if (index < 0) return null;
 
   const updated: Tariff = {
     ...tariffs[index],
@@ -128,49 +178,27 @@ export function renameTariff(input: { tariffId: string; name: string }): Tariff 
 
   const nextTariffs = [...tariffs];
   nextTariffs[index] = updated;
-
-  try {
-    window.localStorage.setItem(TARIFFS_KEY, JSON.stringify(nextTariffs));
-  } catch {
-    // Ignore storage write errors, keep in-memory flow functional for this session.
-  }
+  writeCollection(TARIFFS_KEY, 'tariffs', nextTariffs);
   broadcastStoreUpdate();
-
   return updated;
 }
 
 export function removeTariff(tariffId: string): boolean {
   const tariffs = getTariffs();
   const nextTariffs = tariffs.filter((item) => item.id !== tariffId);
+  if (nextTariffs.length === tariffs.length) return false;
 
-  if (nextTariffs.length === tariffs.length) {
-    return false;
-  }
-
-  try {
-    window.localStorage.setItem(TARIFFS_KEY, JSON.stringify(nextTariffs));
-  } catch {
-    // Ignore storage write errors, keep in-memory flow functional for this session.
-  }
+  writeCollection(TARIFFS_KEY, 'tariffs', nextTariffs);
   broadcastStoreUpdate();
   return true;
 }
 
 export function getTariffBySlug(slug: string): Tariff | null {
-  const tariff = getTariffs().find((item) => item.paymentLinkSlug === slug);
-  return tariff ?? null;
+  return getTariffs().find((item) => item.paymentLinkSlug === slug) ?? null;
 }
 
 export function getPayments(): PaymentRecord[] {
-  if (!isBrowser()) {
-    return [];
-  }
-
-  try {
-    return parseArray<PaymentRecord>(window.localStorage.getItem(PAYMENTS_KEY));
-  } catch {
-    return [];
-  }
+  return readCollection(PAYMENTS_KEY, PaymentRecordSchema, 'payments');
 }
 
 export function savePayment(input: {
@@ -195,14 +223,8 @@ export function savePayment(input: {
     paidAt: new Date().toISOString()
   };
 
-  const payments = getPayments();
-  try {
-    window.localStorage.setItem(PAYMENTS_KEY, JSON.stringify([payment, ...payments]));
-  } catch {
-    // Ignore storage write errors, keep in-memory flow functional for this session.
-  }
+  writeCollection(PAYMENTS_KEY, 'payments', [payment, ...getPayments()]);
   broadcastStoreUpdate();
-
   return payment;
 }
 

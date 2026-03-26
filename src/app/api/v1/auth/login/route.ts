@@ -1,6 +1,7 @@
 import { compare } from 'bcryptjs';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { mapInfraError } from '@/lib/api-error-mappers';
 import { findActiveUserByLogin } from '@/lib/db';
 import { SESSION_COOKIE_NAME, SESSION_MAX_AGE_SECONDS } from '@/lib/env';
 import { createSessionToken } from '@/lib/session';
@@ -56,28 +57,14 @@ export async function POST(request: Request) {
 
     return response;
   } catch (error) {
-    const message = error instanceof Error ? error.message : '';
-    const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
-    if (message.startsWith('Missing required env var:')) {
-      return NextResponse.json(
-        { code: 'SERVER_MISCONFIGURED', message: 'Сервер не настроен: проверьте DB_* и SESSION_SECRET в .env.local' },
-        { status: 500 }
-      );
-    }
-
-    if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ENOTFOUND') {
-      return NextResponse.json(
-        { code: 'DB_UNREACHABLE', message: 'Нет подключения к БД: проверьте DB_HOST/DB_PORT и доступность MySQL' },
-        { status: 500 }
-      );
-    }
-
-    if (code === 'ER_ACCESS_DENIED_ERROR') {
-      return NextResponse.json(
-        { code: 'DB_AUTH_FAILED', message: 'Ошибка авторизации в БД: проверьте DB_USERNAME/DB_PASSWORD' },
-        { status: 500 }
-      );
-    }
+    const infraError = mapInfraError(error, {
+      misconfiguredMessage: 'Сервер не настроен: проверьте DB_* и SESSION_SECRET в .env.local',
+      dbUnreachableMessage: 'Нет подключения к БД: проверьте DB_HOST/DB_PORT и доступность MySQL',
+      dbAuthFailedMessage: 'Ошибка авторизации в БД: проверьте DB_USERNAME/DB_PASSWORD',
+      dbUnreachableStatus: 500,
+      dbAuthFailedStatus: 500
+    });
+    if (infraError) return infraError;
 
     console.error(error);
     return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Внутренняя ошибка входа' }, { status: 500 });

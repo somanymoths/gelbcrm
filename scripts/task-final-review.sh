@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${SCRIPT_DIR}/lib/ops.sh"
+init_ops "$ROOT_DIR"
+
 usage() {
   cat <<'HELP'
 Usage:
@@ -13,6 +18,7 @@ HELP
 BASE_REF="origin/main"
 RUN_CHECKS=0
 OUTPUT_PATH=""
+SHOULD_FETCH=1
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -24,6 +30,10 @@ while [ "$#" -gt 0 ]; do
       RUN_CHECKS=1
       shift
       ;;
+    --no-fetch)
+      SHOULD_FETCH=0
+      shift
+      ;;
     --output)
       OUTPUT_PATH="${2:-}"
       shift 2
@@ -33,19 +43,21 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     *)
-      echo "Unknown argument: $1"
+      log_error "Unknown argument: $1"
       usage
-      exit 1
+      exit "$EXIT_USAGE"
       ;;
   esac
 done
 
-if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
-  echo "Base ref not found: $BASE_REF"
-  exit 1
+if [ "$SHOULD_FETCH" -eq 1 ] && [ "$BASE_REF" = "origin/main" ]; then
+  git fetch --prune origin main >/dev/null 2>&1 || true
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
+  fail "$EXIT_BASE_REF_NOT_FOUND" "Base ref not found: $BASE_REF"
+fi
+
 BRANCH_NAME="$(git branch --show-current)"
 TASK_DIR="${ROOT_DIR}/.codex/tasks/${BRANCH_NAME}"
 SPEC_FILE="${TASK_DIR}/TASK.md"

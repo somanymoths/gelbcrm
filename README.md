@@ -18,6 +18,12 @@
 7. Открыть:
    http://localhost:3000
 
+Важно:
+- Перед `dev/build` выполняется preflight обязательных переменных окружения (`DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `SESSION_SECRET`).
+- Канонический файл журнала: `src/components/journal/journal-section.tsx` (без fallback-алиасов).
+- `npm run dev` запускает стабильный режим (webpack). Turbopack используется только как opt-in:
+  `NEXT_USE_TURBOPACK=1 npm run dev`.
+
 Для старта новой задачи используйте bootstrap-скрипт:
 
 ```bash
@@ -30,6 +36,7 @@ npm run task:start -- "Добавить фильтр по преподавате
 - инициализирует task-файлы в `.codex/tasks/<branch>/` (`TASK.md`, `SUMMARY.md`);
 - при наличии токена создаёт страницу в Notion;
 - запускает локальный dev-сервер.
+- проверяет готовность dev-сервера через `GET /api/health`.
 
 ## Workflow задачи
 
@@ -40,7 +47,24 @@ npm run task:start -- "Добавить фильтр по преподавате
 5. Перед PR: `npm run task:review` (прогон проверок + файл финального ревью)
 6. После merge в `main`: `npm run deploy` (деплоит именно `origin/main`)
 
+Операционные скрипты пишут события в общий лог:
+- `.codex/logs/task-tools.log`
+
 Подробный процесс: `docs/WORKFLOW_RU.md`.
+
+Операционный runbook: `docs/operations.md`.
+
+Быстрый smoke-check перед релизом:
+
+```bash
+npm run ops:smoke
+```
+
+Полный release gate:
+
+```bash
+npm run release:gate
+```
 
 ## Изолированное тестовое пространство (Sandbox)
 

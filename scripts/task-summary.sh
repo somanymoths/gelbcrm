@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${SCRIPT_DIR}/lib/ops.sh"
+init_ops "$ROOT_DIR"
+
 usage() {
   cat <<'HELP'
 Usage:
@@ -15,7 +20,7 @@ HELP
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
-  exit 1
+  exit "$EXIT_USAGE"
 fi
 
 BRANCH_NAME="$(git branch --show-current 2>/dev/null || true)"
@@ -33,34 +38,31 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     *)
-      echo "Unknown argument: $1"
+      log_error "Unknown argument: $1"
       usage
-      exit 1
+      exit "$EXIT_USAGE"
       ;;
   esac
 done
 
 if [ -z "$BRANCH_NAME" ]; then
-  echo "Could not determine git branch. Pass --branch explicitly."
-  exit 1
+  fail "$EXIT_USAGE" "Could not determine git branch. Pass --branch explicitly."
 fi
 
 if [ -z "$MESSAGE" ]; then
   if [ -t 0 ]; then
-    echo "Summary text is required."
+    log_error "Summary text is required."
     usage
-    exit 1
+    exit "$EXIT_USAGE"
   fi
   MESSAGE="$(cat)"
 fi
 
 MESSAGE="$(printf '%s' "$MESSAGE" | sed 's/[[:space:]]*$//')"
 if [ -z "$MESSAGE" ]; then
-  echo "Summary text is empty."
-  exit 1
+  fail "$EXIT_USAGE" "Summary text is empty."
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TASK_DIR="${ROOT_DIR}/.codex/tasks/${BRANCH_NAME}"
 SUMMARY_FILE="${TASK_DIR}/SUMMARY.md"
 TIMESTAMP="$(date '+%Y-%m-%d %H:%M %Z')"
@@ -86,4 +88,4 @@ cat >> "$SUMMARY_FILE" <<ENTRY
 - ${MESSAGE}
 ENTRY
 
-echo "Updated summary: $SUMMARY_FILE"
+log_info "Updated summary: $SUMMARY_FILE"

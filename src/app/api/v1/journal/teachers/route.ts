@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireUser } from '@/lib/api-auth';
+import { mapInfraError } from '@/lib/api-error-mappers';
 import { findTeacherByUserId, listActiveTeachersForJournal } from '@/lib/db';
 
 export async function GET() {
@@ -18,6 +19,13 @@ export async function GET() {
     }
     return NextResponse.json([teacher]);
   } catch (error) {
+    const infraError = mapInfraError(error, {
+      misconfiguredMessage: 'Сервер не настроен: проверьте DB_* в .env.local',
+      dbUnreachableMessage: 'Нет подключения к БД: проверьте DB_HOST/DB_PORT и доступность MySQL',
+      dbAuthFailedMessage: 'Доступ к БД отклонён: проверьте DB_USERNAME/DB_PASSWORD/DB_DATABASE и права пользователя'
+    });
+    if (infraError) return infraError;
+
     console.error(error);
     return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось загрузить преподавателей' }, { status: 500 });
   }

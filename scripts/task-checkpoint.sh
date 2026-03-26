@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${SCRIPT_DIR}/lib/ops.sh"
+init_ops "$ROOT_DIR"
+
 usage() {
   cat <<'HELP'
 Usage:
@@ -15,7 +20,7 @@ HELP
 BASE_REF="origin/main"
 MAX_FILES="${TASK_MAX_FILES:-4}"
 MAX_LINES="${TASK_MAX_LINES:-150}"
-SHOULD_FETCH=0
+SHOULD_FETCH=1
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -40,9 +45,9 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     *)
-      echo "Unknown argument: $1"
+      log_error "Unknown argument: $1"
       usage
-      exit 1
+      exit "$EXIT_USAGE"
       ;;
   esac
 done
@@ -52,8 +57,7 @@ if [ "$SHOULD_FETCH" -eq 1 ] && [ "$BASE_REF" = "origin/main" ]; then
 fi
 
 if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
-  echo "Base ref not found: $BASE_REF"
-  exit 1
+  fail "$EXIT_BASE_REF_NOT_FOUND" "Base ref not found: $BASE_REF"
 fi
 
 MERGE_BASE="$(git merge-base HEAD "$BASE_REF")"

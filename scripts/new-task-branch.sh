@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${SCRIPT_DIR}/lib/ops.sh"
+init_ops "$ROOT_DIR"
+
 usage() {
   cat <<'HELP'
 Usage:
@@ -14,7 +19,7 @@ HELP
 
 if [ "${1:-}" = "" ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
-  exit 1
+  exit "$EXIT_USAGE"
 fi
 
 TASK_TEXT="$1"
@@ -44,9 +49,9 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     *)
-      echo "Unknown argument: $1"
+      log_error "Unknown argument: $1"
       usage
-      exit 1
+      exit "$EXIT_USAGE"
       ;;
   esac
 done
@@ -63,18 +68,15 @@ if [ -z "$TYPE" ]; then
 fi
 
 if ! printf '%s' "$TYPE" | rg -q '^(feat|fix|chore|hotfix)$'; then
-  echo "Invalid --type '$TYPE'. Allowed: feat|fix|chore|hotfix"
-  exit 1
+  fail "$EXIT_USAGE" "Invalid --type '$TYPE'. Allowed: feat|fix|chore|hotfix"
 fi
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "Run this script from inside a git repository."
-  exit 1
+  fail "$EXIT_REPO_NOT_FOUND" "Run this script from inside a git repository."
 fi
 
 if [ -n "$(git status --porcelain)" ]; then
-  echo "Working tree is not clean. Commit or stash changes first."
-  exit 1
+  fail "$EXIT_REPO_DIRTY" "Working tree is not clean. Commit or stash changes first."
 fi
 
 SLUG_SOURCE="$TASK_TEXT"

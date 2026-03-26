@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
+import { mapInfraError } from '@/lib/api-error-mappers';
 import { listTeacherStudentsForJournal } from '@/lib/db';
 import { resolveJournalScope } from '@/lib/journal';
 
@@ -36,6 +37,13 @@ export async function GET(request: Request) {
     if (message === 'FORBIDDEN') {
       return NextResponse.json({ code: 'FORBIDDEN', message: 'Недостаточно прав' }, { status: 403 });
     }
+
+    const infraError = mapInfraError(error, {
+      misconfiguredMessage: 'Сервер не настроен: проверьте DB_* в .env.local',
+      dbUnreachableMessage: 'Нет подключения к БД: проверьте DB_HOST/DB_PORT и доступность MySQL',
+      dbAuthFailedMessage: 'Доступ к БД отклонён: проверьте DB_USERNAME/DB_PASSWORD/DB_DATABASE и права пользователя'
+    });
+    if (infraError) return infraError;
 
     console.error(error);
     return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось загрузить учеников' }, { status: 500 });

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/api-auth';
+import { mapInfraError } from '@/lib/api-error-mappers';
 import { listPaymentHistory, upsertYookassaPayment } from '@/lib/db';
 import { syncCardPaymentStatusByLinkId, syncCardPaymentStatusByProviderPaymentId } from '@/lib/funnel';
 import { getYooKassaPayment } from '@/lib/payments/yookassa';
@@ -69,6 +70,13 @@ export async function GET() {
     const refreshedItems = await listPaymentHistory();
     return NextResponse.json(refreshedItems);
   } catch (error) {
+    const infraError = mapInfraError(error, {
+      misconfiguredMessage: 'Сервер не настроен: проверьте DB_* в .env.local',
+      dbUnreachableMessage: 'Нет подключения к БД: проверьте DB_HOST/DB_PORT и доступность MySQL',
+      dbAuthFailedMessage: 'Доступ к БД отклонён: проверьте DB_USERNAME/DB_PASSWORD/DB_DATABASE и права пользователя'
+    });
+    if (infraError) return infraError;
+
     console.error(error);
     return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Не удалось получить историю оплат' }, { status: 500 });
   }

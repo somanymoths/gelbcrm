@@ -14,7 +14,7 @@ HELP
 
 if [ "${1:-}" = "" ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
-  exit 1
+  exit 64
 fi
 
 TASK_TEXT="$1"
@@ -59,18 +59,18 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${SCRIPT_DIR}/lib/ops.sh"
+init_ops "$ROOT_DIR"
 
 if ! git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "Run this script from inside a git repository."
-  exit 1
+  fail "$EXIT_REPO_NOT_FOUND" "Run this script from inside a git repository."
 fi
 
 if [ -n "$(git -C "${ROOT_DIR}" status --porcelain)" ]; then
-  echo "Working tree is not clean. Commit or stash changes first."
-  exit 1
+  fail "$EXIT_REPO_DIRTY" "Working tree is not clean. Commit or stash changes first."
 fi
 
-echo "Syncing main from origin/main..."
+log_info "Syncing main from origin/main..."
 CURRENT_BRANCH="$(git -C "${ROOT_DIR}" branch --show-current)"
 if [ "${CURRENT_BRANCH}" != "main" ]; then
   git -C "${ROOT_DIR}" checkout main
@@ -83,12 +83,11 @@ printf '%s\n' "$BRANCH_OUTPUT"
 BRANCH_NAME="$(printf '%s\n' "$BRANCH_OUTPUT" | sed -n 's/^Created branch: //p' | tail -n1)"
 
 if [ -z "$BRANCH_NAME" ]; then
-  echo "Could not determine created branch name."
-  exit 1
+  fail "$EXIT_USAGE" "Could not determine created branch name."
 fi
 
 if [ -x "${SCRIPT_DIR}/task-init.sh" ]; then
-  echo "Initializing task docs..."
+  log_info "Initializing task docs..."
   "${SCRIPT_DIR}/task-init.sh" "$TASK_TEXT" --branch "$BRANCH_NAME" --base origin/main
 fi
 
@@ -106,11 +105,11 @@ if [ "$CREATE_NOTION" -eq 1 ]; then
   fi
 
   if [ -n "$NOTION_DB_ID" ] && [ -n "${NOTION_TOKEN:-}" ]; then
-    echo "Creating Notion page..."
+    log_info "Creating Notion page..."
     NOTION_URL="$(node "${SCRIPT_DIR}/notion-create-page.mjs" --title "$TASK_TEXT" --database-id "$NOTION_DB_ID" --branch "$BRANCH_NAME" --body "Repository: gelbcrm")"
-    printf 'Notion page: %s\n' "$NOTION_URL"
+    log_info "Notion page: ${NOTION_URL}"
   else
-    echo "Skipping Notion page creation: set NOTION_TOKEN and ${NOTION_DB_ENV}."
+    log_warn "Skipping Notion page creation: set NOTION_TOKEN and ${NOTION_DB_ENV}."
   fi
 fi
 
@@ -119,10 +118,12 @@ if [ "$START_DEV" -eq 1 ] && [ -f "${ROOT_DIR}/package.json" ]; then
   DEV_LOG="${ROOT_DIR}/.codex/logs/dev-${PORT}.log"
   DEV_PID_FILE="${ROOT_DIR}/.codex/dev-${PORT}.pid"
 
+  HEALTH_URL="http://localhost:${PORT}/api/health"
+
   if lsof -iTCP:"${PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
-    echo "Dev server is already listening on port ${PORT}."
+    log_info "Dev server is already listening on port ${PORT}."
   else
-    echo "Starting dev server on port ${PORT}..."
+    log_info "Starting dev server on port ${PORT}..."
     (
       cd "${ROOT_DIR}"
       PORT="${PORT}" nohup npm run dev >"${DEV_LOG}" 2>&1 &
@@ -130,17 +131,17 @@ if [ "$START_DEV" -eq 1 ] && [ -f "${ROOT_DIR}/package.json" ]; then
     )
 
     for _ in $(seq 1 30); do
-      if curl -fsS "http://localhost:${PORT}" >/dev/null 2>&1; then
+      if curl -fsS "${HEALTH_URL}" >/dev/null 2>&1; then
         break
       fi
       sleep 1
     done
 
-    if curl -fsS "http://localhost:${PORT}" >/dev/null 2>&1; then
-      printf 'Dev server: http://localhost:%s\n' "$PORT"
-      printf 'Dev log: %s\n' "$DEV_LOG"
+    if curl -fsS "${HEALTH_URL}" >/dev/null 2>&1; then
+      log_info "Dev server: http://localhost:${PORT}"
+      log_info "Dev log: ${DEV_LOG}"
     else
-      echo "Dev server did not become ready in time. Check ${DEV_LOG}."
+      fail "$EXIT_DEV_NOT_READY" "Dev server did not become ready in time. Check ${DEV_LOG}."
     fi
   fi
 
