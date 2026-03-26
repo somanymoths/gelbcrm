@@ -1,7 +1,7 @@
 import mysql from 'mysql2/promise';
 import { randomUUID } from 'crypto';
 import { getMysqlPool } from '@/lib/mysql-pool';
-import { invalidateFunnelCardCache } from '@/lib/funnel-cache';
+import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
 
 function getPool(): mysql.Pool {
   return getMysqlPool();
@@ -735,6 +735,26 @@ export async function assignTeacherToFunnelCard(input: {
 
       if (teacherRows.length === 0) {
         throw new Error('TEACHER_NOT_FOUND');
+      }
+    }
+
+    if (oldTeacherId && oldTeacherId !== nextTeacherId) {
+      const [activeSlotRows] = await connection.query<mysql.RowDataPacket[]>(
+        `
+          SELECT id
+          FROM lesson_slots
+          WHERE teacher_id = ?
+            AND student_id = ?
+            AND status <> 'completed'
+            AND date >= DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
+          LIMIT 1
+          FOR UPDATE
+        `,
+        [oldTeacherId, input.cardId]
+      );
+
+      if (activeSlotRows.length > 0) {
+        throw new Error('STUDENT_HAS_ACTIVE_SLOTS_FOR_OLD_TEACHER');
       }
     }
 
@@ -1636,6 +1656,9 @@ async function syncCardPaymentStatus(input: {
     await connection.commit();
     for (const cardId of affectedCardIds) {
       invalidateFunnelCardCache(cardId);
+    }
+    if (affectedCardIds.size > 0) {
+      invalidateFunnelBoardRelatedCache();
     }
   } catch (error) {
     await connection.rollback();

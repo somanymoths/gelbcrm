@@ -2008,6 +2008,103 @@ export async function listTeacherLessonSlots(input: {
   }
 }
 
+export async function getTeacherLessonSlotStudentId(input: {
+  id: string;
+  teacherId: string;
+}): Promise<string | null> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT student_id
+      FROM lesson_slots
+      WHERE id = ? AND teacher_id = ?
+      LIMIT 1
+    `,
+    [input.id, input.teacherId]
+  );
+
+  if (rows.length === 0) return null;
+  return rows[0].student_id ? String(rows[0].student_id) : null;
+}
+
+export async function listStudentIdsAffectedByWeeklySeriesDelete(input: {
+  id: string;
+  teacherId: string;
+}): Promise<string[]> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT DISTINCT affected.student_id
+      FROM (
+        SELECT ls.student_id
+        FROM lesson_slots ls
+        INNER JOIN lesson_slots current_slot
+          ON current_slot.id = ?
+         AND current_slot.teacher_id = ?
+         AND current_slot.source_weekly_slot_id IS NOT NULL
+        WHERE ls.teacher_id = current_slot.teacher_id
+          AND ls.source_weekly_slot_id = current_slot.source_weekly_slot_id
+          AND ls.date >= current_slot.date
+          AND ls.student_id IS NOT NULL
+
+        UNION
+
+        SELECT target.student_id
+        FROM lesson_slots source_slot
+        INNER JOIN lesson_slots current_slot
+          ON current_slot.id = ?
+         AND current_slot.teacher_id = ?
+         AND current_slot.source_weekly_slot_id IS NOT NULL
+        INNER JOIN lesson_slots target
+          ON target.id = source_slot.rescheduled_to_slot_id
+        WHERE source_slot.teacher_id = current_slot.teacher_id
+          AND source_slot.source_weekly_slot_id = current_slot.source_weekly_slot_id
+          AND source_slot.date >= current_slot.date
+          AND source_slot.rescheduled_to_slot_id IS NOT NULL
+          AND target.student_id IS NOT NULL
+      ) AS affected
+    `,
+    [input.id, input.teacherId, input.id, input.teacherId]
+  );
+
+  return rows.map((row) => String(row.student_id));
+}
+
+async function syncStudentLessonTimeline(connection: mysql.PoolConnection, studentId: string | null): Promise<void> {
+  if (!studentId) return;
+
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        DATE_FORMAT(MIN(CASE WHEN status IN ('planned', 'overdue') THEN TIMESTAMP(date, start_time) END), '%Y-%m-%d %H:%i:%s') AS next_lesson_at,
+        DATE_FORMAT(MAX(CASE WHEN status = 'completed' THEN TIMESTAMP(date, start_time) END), '%Y-%m-%d %H:%i:%s') AS last_lesson_at
+      FROM lesson_slots
+      WHERE student_id = ?
+    `,
+    [studentId]
+  );
+
+  const nextLessonAt = rows[0]?.next_lesson_at ? String(rows[0].next_lesson_at) : null;
+  const lastLessonAt = rows[0]?.last_lesson_at ? String(rows[0].last_lesson_at) : null;
+
+  await connection.query(
+    `
+      UPDATE students
+      SET next_lesson_at = ?, last_lesson_at = ?
+      WHERE id = ?
+    `,
+    [nextLessonAt, lastLessonAt, studentId]
+  );
+}
+
+async function syncStudentLessonTimelineBatch(
+  connection: mysql.PoolConnection,
+  studentIds: Array<string | null | undefined>
+): Promise<void> {
+  const uniqueStudentIds = Array.from(new Set(studentIds.filter((studentId): studentId is string => Boolean(studentId))));
+  for (const studentId of uniqueStudentIds) {
+    await syncStudentLessonTimeline(connection, studentId);
+  }
+}
+
 export async function createTeacherLessonSlot(input: {
   teacherId: string;
   actorUserId: string;
@@ -2106,6 +2203,8 @@ export async function createTeacherLessonSlot(input: {
       [slotId, input.teacherId, effectiveStudentId ?? null, sourceWeeklySlotId, input.date, `${input.startTime}:00`]
     );
 
+    await syncStudentLessonTimeline(connection, effectiveStudentId ?? null);
+
     await writeAuditLog(connection, {
       actorUserId: input.actorUserId,
       entityType: 'lesson_slot',
@@ -2200,6 +2299,8 @@ export async function updateTeacherLessonSlot(input: {
       await connection.query(`UPDATE lesson_slots SET status = 'planned' WHERE id = ? AND status = 'overdue'`, [input.id]);
     }
 
+    await syncStudentLessonTimelineBatch(connection, [current.student_id, nextStudentId]);
+
     await writeAuditLog(connection, {
       actorUserId: input.actorUserId,
       entityType: 'lesson_slot',
@@ -2255,7 +2356,7 @@ export async function deleteTeacherLessonSlot(input: {
     assertTeacherConflictLock(input.expectedLockVersion, current.lock_version, input.actorRole);
     const [rescheduleSourceRows] = await connection.query<mysql.RowDataPacket[]>(
       `
-        SELECT id
+        SELECT id, student_id
         FROM lesson_slots
         WHERE rescheduled_to_slot_id = ?
         LIMIT 1
@@ -2295,6 +2396,11 @@ export async function deleteTeacherLessonSlot(input: {
     }
 
     await connection.query(`DELETE FROM lesson_slots WHERE id = ?`, [input.id]);
+
+    await syncStudentLessonTimelineBatch(connection, [
+      current.student_id,
+      ...rescheduleSourceRows.map((row) => (row.student_id ? String(row.student_id) : null))
+    ]);
 
     await writeAuditLog(connection, {
       actorUserId: input.actorUserId,
@@ -2352,7 +2458,7 @@ export async function deleteTeacherWeeklySeriesFromSlot(input: {
 
     const [rescheduleSourceRows] = await connection.query<mysql.RowDataPacket[]>(
       `
-        SELECT id, rescheduled_to_slot_id
+        SELECT id, student_id, rescheduled_to_slot_id
         FROM lesson_slots
         WHERE teacher_id = ?
           AND source_weekly_slot_id = ?
@@ -2370,6 +2476,17 @@ export async function deleteTeacherWeeklySeriesFromSlot(input: {
           .filter((value): value is string => Boolean(value))
           .map((value) => String(value))
       )
+    );
+    const [seriesStudentRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT DISTINCT student_id
+        FROM lesson_slots
+        WHERE teacher_id = ?
+          AND source_weekly_slot_id = ?
+          AND date >= ?
+          AND student_id IS NOT NULL
+      `,
+      [input.teacherId, current.source_weekly_slot_id, current.date]
     );
 
     if (rescheduleSourceIds.length > 0) {
@@ -2407,6 +2524,11 @@ export async function deleteTeacherWeeklySeriesFromSlot(input: {
       `,
       [input.teacherId, current.source_weekly_slot_id, current.date]
     );
+
+    await syncStudentLessonTimelineBatch(connection, [
+      ...rescheduleSourceRows.map((row) => (row.student_id ? String(row.student_id) : null)),
+      ...seriesStudentRows.map((row) => (row.student_id ? String(row.student_id) : null))
+    ]);
 
     await writeAuditLog(connection, {
       actorUserId: input.actorUserId,
@@ -2550,6 +2672,13 @@ export async function updateTeacherLessonSlotStatus(input: {
         });
       }
 
+      await syncStudentLessonTimelineBatch(connection, [
+        current.student_id,
+        nextStudentId,
+        rescheduleSourceSlot.student_id,
+        sourceNextStudentId
+      ]);
+
       const slot = await getLessonSlotById(connection, rescheduleSourceSlot.id);
       if (!slot) throw new Error('SLOT_NOT_FOUND');
 
@@ -2640,6 +2769,8 @@ export async function updateTeacherLessonSlotStatus(input: {
         reason: normalizedReason ?? null
       }
     });
+
+    await syncStudentLessonTimelineBatch(connection, [current.student_id, nextStudentId]);
 
     const slot = await getLessonSlotById(connection, input.id);
     if (!slot) throw new Error('SLOT_NOT_FOUND');

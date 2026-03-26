@@ -40,6 +40,15 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (isKnownError(error, 'TEACHER_NOT_FOUND')) {
       return NextResponse.json({ code: 'TEACHER_NOT_FOUND', message: 'Преподаватель не найден' }, { status: 404 });
     }
+    if (isKnownError(error, 'STUDENT_HAS_ACTIVE_SLOTS_FOR_OLD_TEACHER')) {
+      return NextResponse.json(
+        {
+          code: 'STUDENT_HAS_ACTIVE_SLOTS_FOR_OLD_TEACHER',
+          message: 'Нельзя сменить преподавателя: у ученика есть будущие незавершенные занятия у текущего преподавателя'
+        },
+        { status: 409 }
+      );
+    }
 
     const infraError = mapInfraError(error, {
       misconfiguredMessage: 'Сервер не настроен: проверьте DB_* в .env.local',

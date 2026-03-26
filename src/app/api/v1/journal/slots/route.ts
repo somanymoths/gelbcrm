@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { mapInfraError } from '@/lib/api-error-mappers';
+import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
 import { createTeacherLessonSlot, listTeacherLessonSlots } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
@@ -79,6 +80,11 @@ export async function POST(request: Request) {
         repeatWeekly: parsed.data.repeatWeekly ?? false
       })
     );
+
+    invalidateFunnelBoardRelatedCache();
+    if (created.student_id) {
+      invalidateFunnelCardCache(created.student_id);
+    }
 
     return NextResponse.json(created, { status: 201 });
   } catch (error) {
