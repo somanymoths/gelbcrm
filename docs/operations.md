@@ -69,8 +69,20 @@ npm run release:gate
 1. Проверить лог `./.codex/logs/dev-<PORT>.log`.
 2. Проверить `GET http://localhost:<PORT>/api/health`.
 3. Проверить env (`node scripts/env-preflight.cjs`).
+4. Для холодного старта очистить артефакты и запустить снова:
+   `npm run dev:clean`.
 
-### 2.4 Runtime/кэш аномалии
+### 2.4 Turbopack runtime chunk missing
+Симптом: `Cannot find module '../chunks/ssr/[turbopack]_runtime.js'` или ошибки `middleware-manifest`.
+
+Действия:
+1. Остановить все `next dev` процессы.
+2. Выполнить `npm run dev:clean`.
+3. При повторении ошибки выполнить `npm ci` и повторить `npm run dev`.
+4. Оставаться на дефолтном `npm run dev` (webpack). Turbopack включать только точечно:
+   `NEXT_USE_TURBOPACK=1 npm run dev`.
+
+### 2.5 Runtime/кэш аномалии
 Симптом: подозрение на stale cache или повторные операции.
 
 Действия:
@@ -93,7 +105,7 @@ npm run release:gate
    - `infra.db_unreachable`
    - `infra.db_auth_failed`
 
-### 2.5 Ошибки localStorage в оплатах
+### 2.7 Ошибки localStorage в оплатах
 Симптом: пропажа/повреждение локальных данных в UI оплат.
 
 Действия:

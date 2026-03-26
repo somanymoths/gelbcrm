@@ -21,6 +21,8 @@
 Важно:
 - Перед `dev/build` выполняется preflight обязательных переменных окружения (`DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `SESSION_SECRET`).
 - Канонический файл журнала: `src/components/journal/journal-section.tsx` (без fallback-алиасов).
+- `npm run dev` запускает стабильный режим (webpack). Turbopack используется только как opt-in:
+  `NEXT_USE_TURBOPACK=1 npm run dev`.
 
 Для старта новой задачи используйте bootstrap-скрипт:
 
