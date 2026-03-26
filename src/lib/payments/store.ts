@@ -44,6 +44,10 @@ const memoryStore: { tariffs: Tariff[]; payments: PaymentRecord[] } = {
 
 type CollectionKey = keyof typeof memoryStore;
 type CollectionItem<K extends CollectionKey> = (typeof memoryStore)[K][number];
+const forceMemoryRead: Record<CollectionKey, boolean> = {
+  tariffs: false,
+  payments: false
+};
 
 function isBrowser() {
   return typeof window !== 'undefined';
@@ -79,8 +83,10 @@ function writeCollection<K extends CollectionKey>(
 
   try {
     window.localStorage.setItem(key, JSON.stringify(items));
+    forceMemoryRead[fallbackKey] = false;
   } catch {
     // Keep a valid in-memory snapshot for this tab if localStorage is unavailable.
+    forceMemoryRead[fallbackKey] = true;
   }
 }
 
@@ -90,6 +96,11 @@ function readCollection<K extends CollectionKey>(
   fallbackKey: K
 ): Array<CollectionItem<K>> {
   if (!isBrowser()) {
+    if (fallbackKey === 'tariffs') return [...memoryStore.tariffs] as Array<CollectionItem<K>>;
+    return [...memoryStore.payments] as Array<CollectionItem<K>>;
+  }
+
+  if (forceMemoryRead[fallbackKey]) {
     if (fallbackKey === 'tariffs') return [...memoryStore.tariffs] as Array<CollectionItem<K>>;
     return [...memoryStore.payments] as Array<CollectionItem<K>>;
   }
