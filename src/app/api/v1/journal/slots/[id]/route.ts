@@ -2,7 +2,14 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { mapInfraError } from '@/lib/api-error-mappers';
-import { deleteTeacherLessonSlot, deleteTeacherWeeklySeriesFromSlot, updateTeacherLessonSlot } from '@/lib/db';
+import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
+import {
+  deleteTeacherLessonSlot,
+  deleteTeacherWeeklySeriesFromSlot,
+  getTeacherLessonSlotStudentId,
+  listStudentIdsAffectedByWeeklySeriesDelete,
+  updateTeacherLessonSlot
+} from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
@@ -32,6 +39,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
 
     const scope = await resolveJournalScope(guard.session, parsed.data.teacherId);
     const idempotencyKey = getIdempotencyKeyFromRequest(request);
+    const previousStudentId = await getTeacherLessonSlotStudentId({ id, teacherId: scope.teacherId });
 
     const updated = await runIdempotent(`journal:slots:update:${scope.teacherId}:${id}`, idempotencyKey, () =>
       updateTeacherLessonSlot({
@@ -45,6 +53,15 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
         startTime: parsed.data.startTime ? normalizeHmTime(parsed.data.startTime) : undefined
       })
     );
+
+    invalidateFunnelBoardRelatedCache();
+    const affectedStudentIds = new Set<string>();
+    if (previousStudentId) affectedStudentIds.add(previousStudentId);
+    if (updated.student_id) affectedStudentIds.add(updated.student_id);
+    if (parsed.data.studentId) affectedStudentIds.add(parsed.data.studentId);
+    for (const studentId of affectedStudentIds) {
+      invalidateFunnelCardCache(studentId);
+    }
 
     return NextResponse.json(updated);
   } catch (error) {
@@ -70,6 +87,11 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
       expectedLockVersionRaw && /^\d+$/.test(expectedLockVersionRaw) ? Number(expectedLockVersionRaw) : undefined;
     const scope = await resolveJournalScope(guard.session, teacherId);
     const idempotencyKey = getIdempotencyKeyFromRequest(request);
+    const previousStudentId = deleteMode === 'series' ? null : await getTeacherLessonSlotStudentId({ id, teacherId: scope.teacherId });
+    const seriesAffectedStudentIds =
+      deleteMode === 'series'
+        ? await listStudentIdsAffectedByWeeklySeriesDelete({ id, teacherId: scope.teacherId })
+        : [];
 
     await runIdempotent(`journal:slots:delete:${scope.teacherId}:${id}:${deleteMode ?? 'single'}`, idempotencyKey, async () => {
       if (deleteMode === 'series') {
@@ -91,6 +113,14 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
       }
       return true;
     });
+
+    invalidateFunnelBoardRelatedCache();
+    if (previousStudentId) {
+      invalidateFunnelCardCache(previousStudentId);
+    }
+    for (const studentId of seriesAffectedStudentIds) {
+      invalidateFunnelCardCache(studentId);
+    }
 
     return new NextResponse(null, { status: 204 });
   } catch (error) {

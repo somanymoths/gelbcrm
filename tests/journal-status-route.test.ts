@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { POST as postSlotStatus } from '@/app/api/v1/journal/slots/[id]/status/route';
 import { requireUser } from '@/lib/api-auth';
-import { findTeacherByUserId, updateTeacherLessonSlotStatus } from '@/lib/db';
+import { findTeacherByUserId, getTeacherLessonSlotStudentId, updateTeacherLessonSlotStatus } from '@/lib/db';
 
 vi.mock('@/lib/api-auth', () => ({
   requireUser: vi.fn()
@@ -9,16 +9,19 @@ vi.mock('@/lib/api-auth', () => ({
 
 vi.mock('@/lib/db', () => ({
   findTeacherByUserId: vi.fn(),
+  getTeacherLessonSlotStudentId: vi.fn(),
   updateTeacherLessonSlotStatus: vi.fn()
 }));
 
 const mockedRequireUser = vi.mocked(requireUser);
 const mockedFindTeacherByUserId = vi.mocked(findTeacherByUserId);
+const mockedGetTeacherLessonSlotStudentId = vi.mocked(getTeacherLessonSlotStudentId);
 const mockedUpdateTeacherLessonSlotStatus = vi.mocked(updateTeacherLessonSlotStatus);
 
 describe('Journal status route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedGetTeacherLessonSlotStudentId.mockResolvedValue(null);
   });
 
   it('returns teacher/admin conflict message and 409', async () => {

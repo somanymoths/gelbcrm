@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET as getSlots } from '@/app/api/v1/journal/slots/route';
 import { PATCH as patchSlot } from '@/app/api/v1/journal/slots/[id]/route';
 import { requireUser } from '@/lib/api-auth';
-import { findTeacherByUserId, listTeacherLessonSlots, updateTeacherLessonSlot } from '@/lib/db';
+import { findTeacherByUserId, getTeacherLessonSlotStudentId, listTeacherLessonSlots, updateTeacherLessonSlot } from '@/lib/db';
 
 vi.mock('@/lib/api-auth', () => ({
   requireUser: vi.fn()
@@ -10,6 +10,7 @@ vi.mock('@/lib/api-auth', () => ({
 
 vi.mock('@/lib/db', () => ({
   findTeacherByUserId: vi.fn(),
+  getTeacherLessonSlotStudentId: vi.fn(),
   listTeacherLessonSlots: vi.fn(),
   createTeacherLessonSlot: vi.fn(),
   updateTeacherLessonSlot: vi.fn(),
@@ -18,12 +19,14 @@ vi.mock('@/lib/db', () => ({
 
 const mockedRequireUser = vi.mocked(requireUser);
 const mockedFindTeacherByUserId = vi.mocked(findTeacherByUserId);
+const mockedGetTeacherLessonSlotStudentId = vi.mocked(getTeacherLessonSlotStudentId);
 const mockedListTeacherLessonSlots = vi.mocked(listTeacherLessonSlots);
 const mockedUpdateTeacherLessonSlot = vi.mocked(updateTeacherLessonSlot);
 
 describe('Journal RBAC integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedGetTeacherLessonSlotStudentId.mockResolvedValue(null);
   });
 
   it('teacher always receives own journal even with foreign teacherId in query', async () => {

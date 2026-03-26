@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { mapInfraError } from '@/lib/api-error-mappers';
 import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
-import { updateTeacherLessonSlotStatus, type JournalLessonStatus } from '@/lib/db';
+import { getTeacherLessonSlotStudentId, updateTeacherLessonSlotStatus, type JournalLessonStatus } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
@@ -35,6 +35,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
     const scope = await resolveJournalScope(guard.session, parsed.data.teacherId);
     const idempotencyKey = getIdempotencyKeyFromRequest(request);
+    const previousStudentId = await getTeacherLessonSlotStudentId({ id, teacherId: scope.teacherId });
 
     const updated = await runIdempotent(`journal:slots:status:${scope.teacherId}:${id}`, idempotencyKey, () =>
       updateTeacherLessonSlotStatus({
@@ -52,8 +53,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     );
 
     invalidateFunnelBoardRelatedCache();
-    if (updated.student_id) {
-      invalidateFunnelCardCache(updated.student_id);
+    const affectedStudentIds = new Set<string>();
+    if (previousStudentId) affectedStudentIds.add(previousStudentId);
+    if (updated.student_id) affectedStudentIds.add(updated.student_id);
+    if (parsed.data.studentId) affectedStudentIds.add(parsed.data.studentId);
+    for (const studentId of affectedStudentIds) {
+      invalidateFunnelCardCache(studentId);
     }
 
     return NextResponse.json(updated);

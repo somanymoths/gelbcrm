@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Progress } from '@/components/ui/progress';
 import { getStableAvatarColor, getStableAvatarInitial, getStableAvatarSeed } from '@/lib/avatar-color';
 import {
@@ -102,6 +103,7 @@ const HOURLY_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
   const value = `${String(hour).padStart(2, '0')}:00`;
   return { value, label: value };
 });
+const RESCHEDULE_REASONS = ['По причине ученика', 'По причине учителя'] as const;
 
 export function JournalSection() {
   const [loading, setLoading] = useState(false);
@@ -643,6 +645,19 @@ export function JournalSection() {
     return occupied;
   }, [createSlotState, weeklyTemplate, slotMapByDate, slots]);
 
+  const rescheduleOccupiedTimes = useMemo(() => {
+    if (!rescheduleState) return new Set<string>();
+    const weekday = getWeekdayFromIsoDate(rescheduleState.date);
+    if (!weekday) return new Set<string>();
+
+    const occupied = getOccupiedTimesForDay(weekday, rescheduleState.date, weeklyTemplate, slotMapByDate);
+    const current = slots.find((slot) => slot.id === rescheduleState.slotId);
+    if (current && current.date === rescheduleState.date) {
+      occupied.delete(current.start_time);
+    }
+    return occupied;
+  }, [rescheduleState, weeklyTemplate, slotMapByDate, slots]);
+
   const occupiedStudentIdsBySlot = useMemo(() => {
     const map = new Map<string, Set<string>>();
     for (const slot of slots) {
@@ -681,6 +696,7 @@ export function JournalSection() {
       setCreatingSlot(true);
       try {
         const currentSlot = slots.find((slot) => slot.id === createSlotState.slotId);
+        const isEditingRescheduledTargetSlot = currentSlot ? rescheduledSourceByTargetSlotId.has(currentSlot.id) : false;
         const updated = await fetchJson<LessonSlot>(`/api/v1/journal/slots/${createSlotState.slotId}`, {
           ...withIdempotencyHeaders(),
           method: 'PATCH',
@@ -688,7 +704,7 @@ export function JournalSection() {
             teacherId: selectedTeacherId,
             date: createSlotState.date,
             startTime: draft.time,
-            studentId: draft.studentId,
+            studentId: isEditingRescheduledTargetSlot ? (currentSlot?.student_id ?? null) : draft.studentId,
             expectedLockVersion: currentSlot?.lock_version
           })
         });
@@ -973,6 +989,7 @@ export function JournalSection() {
                         const lessonTypeLabel = isRegularLesson ? 'Регулярное' : 'Разовое';
                         const isRescheduledSourceSlot = slot.status === 'rescheduled' && Boolean(slot.reschedule_target_date);
                         const isRescheduledTargetSlot = Boolean(rescheduledSource);
+                        const shouldShowSlotActions = !slot.rescheduled_to_slot_id;
                         const canDeleteSlot =
                           !slot.source_weekly_slot_id &&
                           !slot.rescheduled_to_slot_id &&
@@ -1091,7 +1108,8 @@ export function JournalSection() {
                         </div>
                       )}
 
-                      {slot.student_id ? (
+                      {shouldShowSlotActions ? (
+                        slot.student_id ? (
                         <ButtonGroup className="shrink-0">
                         <TooltipProvider>
                           <Tooltip>
@@ -1154,7 +1172,9 @@ export function JournalSection() {
                                       slotId: slot.id,
                                       date: slot.date,
                                       time: slot.start_time,
-                                      reason: slot.status_reason ?? ''
+                                      reason: RESCHEDULE_REASONS.includes((slot.status_reason ?? '') as (typeof RESCHEDULE_REASONS)[number])
+                                        ? (slot.status_reason as (typeof RESCHEDULE_REASONS)[number])
+                                        : RESCHEDULE_REASONS[0]
                                     })
                                   }
                                 >
@@ -1163,7 +1183,7 @@ export function JournalSection() {
                               </span>
                             </TooltipTrigger>
                             <TooltipContent sideOffset={6}>
-                              <span>Перенести</span>
+                              <span>Перенести занятие</span>
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
@@ -1221,11 +1241,12 @@ export function JournalSection() {
                               Редактировать
                             </DropdownMenuItem>
                             <DropdownMenuItem
+                              className="whitespace-nowrap"
                               variant="destructive"
                               disabled={!canDeleteSlot}
                               onSelect={() => openDeleteConfirm(slot)}
                             >
-                              Удалить слот
+                              Удалить занятие
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -1286,16 +1307,18 @@ export function JournalSection() {
                                 Редактировать
                               </DropdownMenuItem>
                               <DropdownMenuItem
+                                className="whitespace-nowrap"
                                 variant="destructive"
                                 disabled={!canDeleteSlot}
                                 onSelect={() => openDeleteConfirm(slot)}
                               >
-                                Удалить слот
+                                Удалить занятие
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </div>
-                      )}
+                      )
+                      ) : null}
                           </>
                         );
                       })()}
@@ -1310,7 +1333,7 @@ export function JournalSection() {
                 onClick={() => openCreateSlotModal(day.weekday, day.dateIso)}
                 disabled={!selectedTeacherId || loading}
               >
-                Добавить слот
+                Добавить разовое занятие
               </Button>
             </CardContent>
             </Card>
@@ -1332,6 +1355,13 @@ export function JournalSection() {
 
           {createSlotState ? (
             <div className="flex flex-col gap-3">
+              {(() => {
+                const isEditingRescheduledTargetSlot =
+                  createSlotState.mode === 'edit' &&
+                  Boolean(createSlotState.slotId && rescheduledSourceByTargetSlotId.has(createSlotState.slotId));
+
+                return (
+                  <>
               <div className="flex flex-col gap-2">
                 <span className="text-sm text-muted-foreground">Время</span>
                 <div className="grid grid-cols-6 gap-2">
@@ -1375,30 +1405,40 @@ export function JournalSection() {
                 ) : null}
               </div>
 
-              <Select
-                value={dayDrafts[createSlotState.weekday]?.studentId ?? FREE_SLOT_VALUE}
-                onValueChange={(value) =>
-                  setDayDrafts((prev) => ({
-                    ...prev,
-                    [createSlotState.weekday]: {
-                      ...(prev[createSlotState.weekday] ?? createDayDraft()),
-                      studentId: value === FREE_SLOT_VALUE ? null : value
+              {!isEditingRescheduledTargetSlot ? (
+                <div className="flex flex-col gap-2">
+                  <span className="text-sm text-muted-foreground">Ученик</span>
+                  <Select
+                    value={dayDrafts[createSlotState.weekday]?.studentId ?? undefined}
+                    onValueChange={(value) =>
+                      setDayDrafts((prev) => ({
+                        ...prev,
+                        [createSlotState.weekday]: {
+                          ...(prev[createSlotState.weekday] ?? createDayDraft()),
+                          studentId: value
+                        }
+                      }))
                     }
-                  }))
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Ученик (опционально)" />
-                </SelectTrigger>
-                <SelectContent>
-                  {studentOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Выберите ученика" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {studentOptions
+                        .filter((option) => option.value !== FREE_SLOT_VALUE)
+                        .map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
 
+                  </>
+                );
+              })()}
             </div>
           ) : null}
 
@@ -1473,33 +1513,36 @@ export function JournalSection() {
                 </div>
               </div>
 
-              <Select
-                value={dayDrafts[templateSlotState.weekday]?.studentId ?? FREE_SLOT_VALUE}
-                onValueChange={(value) =>
-                  setDayDrafts((prev) => ({
-                    ...prev,
-                    [templateSlotState.weekday]: {
-                      ...(prev[templateSlotState.weekday] ?? createDayDraft()),
-                      studentId: value === FREE_SLOT_VALUE ? null : value,
-                      repeatWeekly: true
-                    }
-                  }))
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Ученик (опционально)" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={FREE_SLOT_VALUE}>Без ученика</SelectItem>
-                  {studentOptions
-                    .filter((option) => option.value !== FREE_SLOT_VALUE)
-                    .map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
+              <div className="flex flex-col gap-2">
+                <span className="text-sm text-muted-foreground">Ученик</span>
+                <Select
+                  value={dayDrafts[templateSlotState.weekday]?.studentId ?? FREE_SLOT_VALUE}
+                  onValueChange={(value) =>
+                    setDayDrafts((prev) => ({
+                      ...prev,
+                      [templateSlotState.weekday]: {
+                        ...(prev[templateSlotState.weekday] ?? createDayDraft()),
+                        studentId: value === FREE_SLOT_VALUE ? null : value,
+                        repeatWeekly: true
+                      }
+                    }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Ученик (опционально)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={FREE_SLOT_VALUE}>Без ученика</SelectItem>
+                    {studentOptions
+                      .filter((option) => option.value !== FREE_SLOT_VALUE)
+                      .map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
               <div className="flex flex-col gap-2">
                 <span className="text-sm text-muted-foreground">Дата начала занятий</span>
@@ -1658,33 +1701,82 @@ export function JournalSection() {
           </DialogHeader>
 
           <div className="flex flex-col gap-3">
-            <Input
-              type="date"
-              value={rescheduleState?.date ?? ''}
-              onChange={(event) => setRescheduleState((prev) => (prev ? { ...prev, date: event.target.value } : prev))}
-            />
+            <div className="flex flex-col gap-2">
+              <span className="text-sm text-muted-foreground">Дата</span>
+              <Input
+                type="date"
+                value={rescheduleState?.date ?? ''}
+                onChange={(event) =>
+                  setRescheduleState((prev) => {
+                    if (!prev) return prev;
+                    const nextDate = event.target.value;
+                    const nextWeekday = getWeekdayFromIsoDate(nextDate);
+                    if (!nextWeekday) return { ...prev, date: nextDate };
 
-            <Select
-              value={rescheduleState?.time ?? '10:00'}
-              onValueChange={(value) => setRescheduleState((prev) => (prev ? { ...prev, time: value } : prev))}
-            >
-              <SelectTrigger className="w-[120px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {HOURLY_TIME_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
+                    const occupied = getOccupiedTimesForDay(nextWeekday, nextDate, weeklyTemplate, slotMapByDate);
+                    const current = slots.find((slot) => slot.id === prev.slotId);
+                    if (current && current.date === nextDate) {
+                      occupied.delete(current.start_time);
+                    }
+
+                    const nextTime = occupied.has(prev.time)
+                      ? (HOURLY_TIME_OPTIONS.find((option) => !occupied.has(option.value))?.value ?? prev.time)
+                      : prev.time;
+
+                    return { ...prev, date: nextDate, time: nextTime };
+                  })
+                }
+              />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <span className="text-sm text-muted-foreground">Время</span>
+              <div className="grid grid-cols-6 gap-2">
+                {HOURLY_TIME_OPTIONS.map((option) => {
+                  const isOccupied = rescheduleOccupiedTimes.has(option.value);
+                  const isActive = rescheduleState?.time === option.value;
+
+                  return (
+                    <Button
+                      key={option.value}
+                      type="button"
+                      size="sm"
+                      variant={isActive ? 'default' : 'outline'}
+                      className={isOccupied ? 'h-12 cursor-not-allowed opacity-60' : 'h-12 cursor-pointer'}
+                      disabled={isOccupied}
+                      onClick={() => setRescheduleState((prev) => (prev ? { ...prev, time: option.value } : prev))}
+                    >
+                      {isOccupied ? (
+                        <span className="flex flex-col leading-tight">
+                          <span>{option.label}</span>
+                          <span className="text-[10px]">Занято</span>
+                        </span>
+                      ) : (
+                        option.label
+                      )}
+                    </Button>
+                  );
+                })}
+              </div>
+              {HOURLY_TIME_OPTIONS.every((option) => rescheduleOccupiedTimes.has(option.value)) ? (
+                <p className="text-xs text-muted-foreground">На эту дату все часы уже заняты.</p>
+              ) : null}
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <span className="text-sm text-muted-foreground">Причина переноса</span>
+              <RadioGroup
+                value={rescheduleState?.reason ?? RESCHEDULE_REASONS[0]}
+                onValueChange={(value) => setRescheduleState((prev) => (prev ? { ...prev, reason: value } : prev))}
+              >
+                {RESCHEDULE_REASONS.map((reason) => (
+                  <label key={reason} className="flex cursor-pointer items-center gap-2 text-sm">
+                    <RadioGroupItem value={reason} />
+                    <span>{reason}</span>
+                  </label>
                 ))}
-              </SelectContent>
-            </Select>
-
-            <Input
-              value={rescheduleState?.reason ?? ''}
-              onChange={(event) => setRescheduleState((prev) => (prev ? { ...prev, reason: event.target.value } : prev))}
-              placeholder="Причина переноса"
-            />
+              </RadioGroup>
+            </div>
           </div>
 
           <DialogFooter>
@@ -1693,7 +1785,11 @@ export function JournalSection() {
             </Button>
             <Button
               onClick={() => void submitReschedule()}
-              disabled={!rescheduleState?.reason?.trim() || statusUpdatingSlotId === rescheduleState?.slotId}
+              disabled={
+                !rescheduleState?.reason?.trim() ||
+                statusUpdatingSlotId === rescheduleState?.slotId ||
+                rescheduleOccupiedTimes.has(rescheduleState?.time ?? '')
+              }
             >
               Сохранить перенос
             </Button>
@@ -1785,6 +1881,13 @@ function parseIsoDateToDate(value: string | null): Date | null {
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return null;
   return date;
+}
+
+function getWeekdayFromIsoDate(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return null;
+  return ((date.getDay() + 6) % 7) + 1;
 }
 
 function getCurrentMskIsoDate(now: Date = new Date()): string {
