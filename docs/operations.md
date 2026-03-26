@@ -57,6 +57,10 @@ npm run ops:smoke -- --require-health
 1. Запросить `GET /api/v1/system/runtime-cache` под admin.
 2. Проверить метрики `requestCache`/`idempotency`.
 3. Сопоставить с логом `.codex/logs/task-tools.log`.
+4. При необходимости сбросить:
+   - `POST /api/v1/system/runtime-cache?scope=all`
+   - `POST /api/v1/system/runtime-cache?scope=request`
+   - `POST /api/v1/system/runtime-cache?scope=idempotency`
 
 ### 2.5 Ошибки localStorage в оплатах
 Симптом: пропажа/повреждение локальных данных в UI оплат.
