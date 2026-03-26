@@ -44,6 +44,18 @@ npm ci --no-audit --no-fund
 npm run build
 npm run db:migrate
 
+# build-safe writes production artifacts into .next-build.
+# next start (without NEXT_DIST_DIR) expects artifacts in .next.
+if [ -d ".next-build" ]; then
+  rm -rf .next
+  cp -a .next-build .next
+fi
+
+if [ ! -f ".next/BUILD_ID" ]; then
+  echo "[deploy] ERROR: production build is missing (.next/BUILD_ID not found)"
+  exit 1
+fi
+
 if systemctl cat gelbcrm.service >/dev/null 2>&1; then
   pm2 delete gelbcrm >/dev/null 2>&1 || true
   systemctl restart gelbcrm.service
