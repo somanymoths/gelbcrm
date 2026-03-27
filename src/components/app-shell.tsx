@@ -9,15 +9,13 @@ import {
   SidebarContent,
   SidebarHeader,
   SidebarInset,
-  SidebarProvider,
-  SidebarSeparator
+  SidebarProvider
 } from '@/components/ui/sidebar';
 import type { SessionUser } from '@/lib/session';
 
 export function AppShell({ children, session }: { children: React.ReactNode; session: SessionUser | null }) {
   const pathname = usePathname() ?? '';
   const isPublicPaymentPage = pathname.startsWith('/payment-links/');
-  const isFunnelPage = pathname === '/funnel';
 
   if (isPublicPaymentPage) {
     return (
@@ -41,8 +39,8 @@ export function AppShell({ children, session }: { children: React.ReactNode; ses
   }
 
   return (
-    <SidebarProvider>
-      <Sidebar variant="floating">
+    <SidebarProvider className="overflow-x-hidden">
+      <Sidebar variant="sidebar">
         <SidebarHeader>
           <div className="flex flex-col gap-1.5">
             <h1 className="m-0 text-xl font-semibold">GelbCRM</h1>
@@ -51,13 +49,12 @@ export function AppShell({ children, session }: { children: React.ReactNode; ses
             </Badge>
           </div>
         </SidebarHeader>
-        <SidebarSeparator />
         <SidebarContent>
           <AppNav role={session.role} pathname={pathname} />
         </SidebarContent>
       </Sidebar>
-      <SidebarInset className="bg-background/70">
-        <main className={isFunnelPage ? 'w-full px-6 py-6' : 'mx-auto w-full max-w-7xl p-6'}>{children}</main>
+      <SidebarInset className="min-w-0 overflow-x-hidden bg-background/70">
+        <main className="min-w-0 w-full overflow-x-hidden px-4 py-6">{children}</main>
       </SidebarInset>
     </SidebarProvider>
   );

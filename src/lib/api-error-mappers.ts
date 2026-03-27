@@ -28,7 +28,7 @@ export function mapInfraError(error: unknown, options: InfraErrorMapOptions): Ne
     return NextResponse.json({ code: 'SERVER_MISCONFIGURED', message: options.misconfiguredMessage }, { status: 500 });
   }
 
-  if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ENOTFOUND') {
+  if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ENOTFOUND' || code === 'ECONNRESET' || code === 'PROTOCOL_CONNECTION_LOST' || code === 'EPIPE') {
     logServerEvent({
       level: 'error',
       event: 'infra.db_unreachable',

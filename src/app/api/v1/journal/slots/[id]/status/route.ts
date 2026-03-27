@@ -121,6 +121,9 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   if (message === 'STUDENT_BALANCE_EMPTY') {
     return NextResponse.json({ code: 'STUDENT_BALANCE_EMPTY', message: 'Недостаточно оплаченных занятий у ученика' }, { status: 422 });
   }
+  if (message === 'STUDENT_HAS_OVERDUE_SLOTS') {
+    return NextResponse.json({ code: 'STUDENT_HAS_OVERDUE_SLOTS', message: 'Есть неподтвержденные занятия' }, { status: 422 });
+  }
   if (message === 'STUDENT_TIME_CONFLICT') {
     return NextResponse.json({ code: 'STUDENT_TIME_CONFLICT', message: 'У ученика уже есть занятие в это время' }, { status: 409 });
   }

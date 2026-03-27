@@ -34,13 +34,13 @@ export function calculateForecastBySlotId(input: {
 
     const slotBalanceSnapshot = sorted.find((slot) => slot.student_paid_lessons_left !== null)?.student_paid_lessons_left;
     const paidLessons = Math.max(0, input.studentPaidLessonsById.get(studentId) ?? Number(slotBalanceSnapshot ?? 0));
-    const plannedBeforeCurrentRange = Math.max(0, Number(input.plannedBaselineByStudentId[studentId] ?? 0));
-    let forecast = Math.max(0, paidLessons - plannedBeforeCurrentRange);
+    const unconfirmedBeforeCurrentRange = Math.max(0, Number(input.plannedBaselineByStudentId[studentId] ?? 0));
+    let forecast = Math.max(0, paidLessons - unconfirmedBeforeCurrentRange);
 
     for (const slot of sorted) {
-      // Intentionally count ALL planned lessons, including one-time slots
-      // where source_weekly_slot_id is null.
-      if (slot.status !== 'planned') continue;
+      // Intentionally count ALL unconfirmed lessons (planned + overdue),
+      // including one-time slots where source_weekly_slot_id is null.
+      if (slot.status !== 'planned' && slot.status !== 'overdue') continue;
       result.set(slot.id, forecast);
       forecast = Math.max(0, forecast - 1);
     }
@@ -48,4 +48,3 @@ export function calculateForecastBySlotId(input: {
 
   return result;
 }
-
