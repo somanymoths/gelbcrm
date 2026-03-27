@@ -91,6 +91,12 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   if (message === 'RESCHEDULE_TARGET_REQUIRED') {
     return NextResponse.json({ code: 'RESCHEDULE_TARGET_REQUIRED', message: 'Укажите новую дату и время для переноса' }, { status: 422 });
   }
+  if (message === 'RESCHEDULE_TO_SOURCE_DATETIME_FORBIDDEN') {
+    return NextResponse.json(
+      { code: 'RESCHEDULE_TO_SOURCE_DATETIME_FORBIDDEN', message: 'Нельзя переносить занятие на исходные дату и время' },
+      { status: 422 }
+    );
+  }
   if (message === 'STATUS_REASON_REQUIRED') {
     return NextResponse.json({ code: 'STATUS_REASON_REQUIRED', message: 'Укажите причину изменения статуса' }, { status: 422 });
   }

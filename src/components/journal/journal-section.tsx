@@ -87,6 +87,15 @@ type CreateSlotState = {
   date: string;
 };
 
+type RescheduleState = {
+  slotId: string;
+  date: string;
+  time: string;
+  reason: string;
+  forbiddenSourceDate?: string;
+  forbiddenSourceTime?: string;
+};
+
 const DAYS: Array<{ weekday: number; short: string; full: string }> = [
   { weekday: 1, short: 'Пн', full: 'Понедельник' },
   { weekday: 2, short: 'Вт', full: 'Вторник' },
@@ -125,7 +134,7 @@ export function JournalSection() {
   const [templateSlotState, setTemplateSlotState] = useState<{ weekday: number; slotId?: string } | null>(null);
   const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
   const [creatingSlot, setCreatingSlot] = useState(false);
-  const [rescheduleState, setRescheduleState] = useState<{ slotId: string; date: string; time: string; reason: string } | null>(null);
+  const [rescheduleState, setRescheduleState] = useState<RescheduleState | null>(null);
   const [cancelState, setCancelState] = useState<{ slotId: string; reason: string } | null>(null);
   const [deletingSlotId, setDeletingSlotId] = useState<string | null>(null);
   const [editingStudentSlotId, setEditingStudentSlotId] = useState<string | null>(null);
@@ -834,8 +843,15 @@ export function JournalSection() {
 
         const occupied = getOccupiedTimesForDay(nextWeekday, nextDate, weeklyTemplate, slotMapByDate);
         const current = slots.find((slot) => slot.id === prev.slotId);
-        if (current && current.date === nextDate) {
+        const isForbiddenCurrentSlot =
+          Boolean(prev.forbiddenSourceDate && prev.forbiddenSourceTime) &&
+          current?.date === prev.forbiddenSourceDate &&
+          current?.start_time === prev.forbiddenSourceTime;
+        if (current && current.date === nextDate && !isForbiddenCurrentSlot) {
           occupied.delete(current.start_time);
+        }
+        if (prev.forbiddenSourceDate === nextDate && prev.forbiddenSourceTime) {
+          occupied.add(prev.forbiddenSourceTime);
         }
 
         const nextTime = occupied.has(prev.time)
@@ -852,22 +868,48 @@ export function JournalSection() {
     const map = new Map<
       string,
       {
+        sourceSlotId: string;
         sourceDate: string;
         sourceStartTime: string;
         sourceWeeklySlotId: string | null;
+        sourceReason: string | null;
       }
     >();
     for (const slot of slots) {
       if (slot.status !== 'rescheduled' || !slot.rescheduled_to_slot_id) continue;
       if (map.has(slot.rescheduled_to_slot_id)) continue;
       map.set(slot.rescheduled_to_slot_id, {
+        sourceSlotId: slot.id,
         sourceDate: slot.date,
         sourceStartTime: slot.start_time,
-        sourceWeeklySlotId: slot.source_weekly_slot_id ?? null
+        sourceWeeklySlotId: slot.source_weekly_slot_id ?? null,
+        sourceReason: slot.status_reason ?? null
       });
     }
     return map;
   }, [slots]);
+
+  const openRescheduleEditorForTargetSlot = (
+    targetSlot: LessonSlot,
+    source: {
+      sourceSlotId: string;
+      sourceDate: string;
+      sourceStartTime: string;
+      sourceReason: string | null;
+    } | null
+  ) => {
+    if (!source) return;
+    setRescheduleState({
+      slotId: source.sourceSlotId,
+      date: targetSlot.date,
+      time: targetSlot.start_time,
+      reason: RESCHEDULE_REASONS.includes((source.sourceReason ?? '') as (typeof RESCHEDULE_REASONS)[number])
+        ? (source.sourceReason as (typeof RESCHEDULE_REASONS)[number])
+        : RESCHEDULE_REASONS[0],
+      forbiddenSourceDate: source.sourceDate,
+      forbiddenSourceTime: source.sourceStartTime
+    });
+  };
 
   const createSlotOccupiedTimes = useMemo(() => {
     if (!createSlotState) return new Set<string>();
@@ -886,8 +928,15 @@ export function JournalSection() {
 
     const occupied = getOccupiedTimesForDay(weekday, rescheduleState.date, weeklyTemplate, slotMapByDate);
     const current = slots.find((slot) => slot.id === rescheduleState.slotId);
-    if (current && current.date === rescheduleState.date) {
+    const isForbiddenCurrentSlot =
+      Boolean(rescheduleState.forbiddenSourceDate && rescheduleState.forbiddenSourceTime) &&
+      current?.date === rescheduleState.forbiddenSourceDate &&
+      current?.start_time === rescheduleState.forbiddenSourceTime;
+    if (current && current.date === rescheduleState.date && !isForbiddenCurrentSlot) {
       occupied.delete(current.start_time);
+    }
+    if (rescheduleState.forbiddenSourceDate === rescheduleState.date && rescheduleState.forbiddenSourceTime) {
+      occupied.add(rescheduleState.forbiddenSourceTime);
     }
     return occupied;
   }, [rescheduleState, weeklyTemplate, slotMapByDate, slots]);
@@ -1306,10 +1355,13 @@ export function JournalSection() {
                         const rescheduledToDateLabel = formatDayMonthRu(slot.reschedule_target_date);
                         const rescheduledFromDateLabel = formatDayMonthRu(rescheduledSource?.sourceDate ?? null);
                         const shouldShowSlotActions = !slot.rescheduled_to_slot_id;
+                        const isRescheduledTargetWithSource = isRescheduledTargetSlot && Boolean(rescheduledSource?.sourceSlotId);
+                        const shouldShowActionsMenu = !isRegularLesson || isRescheduledTargetSlot;
                         const canDeleteSlot =
                           !slot.source_weekly_slot_id &&
                           !slot.rescheduled_to_slot_id &&
                           (slot.status === 'planned' || isRescheduledTargetSlot);
+                        const canDeleteReschedule = isRescheduledTargetWithSource;
                         const cancelTooltip =
                           slot.status === 'canceled'
                             ? slot.date < getCurrentMskIsoDate()
@@ -1628,7 +1680,7 @@ export function JournalSection() {
                           </Tooltip>
                         </TooltipProvider>
 
-                        {!isRegularLesson ? (
+                        {shouldShowActionsMenu ? (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
@@ -1649,18 +1701,27 @@ export function JournalSection() {
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start">
                             <DropdownMenuItem
-                              disabled={slot.status === 'completed' || Boolean(slot.source_weekly_slot_id)}
-                              onSelect={() => openStudentEditor(slot)}
+                              disabled={
+                                slot.status === 'completed' ||
+                                (!isRescheduledTargetWithSource && Boolean(slot.source_weekly_slot_id))
+                              }
+                              onSelect={() => {
+                                if (isRescheduledTargetWithSource) {
+                                  openRescheduleEditorForTargetSlot(slot, rescheduledSource ?? null);
+                                  return;
+                                }
+                                openStudentEditor(slot);
+                              }}
                             >
-                              Редактировать
+                              {isRescheduledTargetWithSource ? 'Редактировать перенос' : 'Редактировать'}
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               className="whitespace-nowrap"
                               variant="destructive"
-                              disabled={!canDeleteSlot}
+                              disabled={isRescheduledTargetWithSource ? !canDeleteReschedule : !canDeleteSlot}
                               onSelect={() => openDeleteConfirm(slot)}
                             >
-                              Удалить занятие
+                              {isRescheduledTargetWithSource ? 'Удалить перенос' : 'Удалить занятие'}
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -1699,7 +1760,7 @@ export function JournalSection() {
                             </SelectContent>
                           </Select>
 
-                          {!isRegularLesson ? (
+                          {shouldShowActionsMenu ? (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
@@ -1718,18 +1779,27 @@ export function JournalSection() {
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start">
                               <DropdownMenuItem
-                                disabled={slot.status === 'completed' || Boolean(slot.source_weekly_slot_id)}
-                                onSelect={() => openStudentEditor(slot)}
+                                disabled={
+                                  slot.status === 'completed' ||
+                                  (!isRescheduledTargetWithSource && Boolean(slot.source_weekly_slot_id))
+                                }
+                                onSelect={() => {
+                                  if (isRescheduledTargetWithSource) {
+                                    openRescheduleEditorForTargetSlot(slot, rescheduledSource ?? null);
+                                    return;
+                                  }
+                                  openStudentEditor(slot);
+                                }}
                               >
-                                Редактировать
+                                {isRescheduledTargetWithSource ? 'Редактировать перенос' : 'Редактировать'}
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 className="whitespace-nowrap"
                                 variant="destructive"
-                                disabled={!canDeleteSlot}
+                                disabled={isRescheduledTargetWithSource ? !canDeleteReschedule : !canDeleteSlot}
                                 onSelect={() => openDeleteConfirm(slot)}
                               >
-                                Удалить занятие
+                                {isRescheduledTargetWithSource ? 'Удалить перенос' : 'Удалить занятие'}
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>

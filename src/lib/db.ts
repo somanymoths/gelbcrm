@@ -2637,6 +2637,12 @@ export async function updateTeacherLessonSlotStatus(input: {
       input.rescheduleToTime === current.start_time;
     const normalizedStatus: JournalLessonStatus = isRescheduleToSourceDate ? 'planned' : input.status;
 
+    // A rescheduled target should not be moved back to the source slot date/time.
+    // It produces ambiguous state transitions and breaks reschedule linkage semantics.
+    if (input.status === 'rescheduled' && current.status === 'rescheduled' && isRescheduleToSourceDate) {
+      throw new Error('RESCHEDULE_TO_SOURCE_DATETIME_FORBIDDEN');
+    }
+
     if (current.status === 'completed' && (input.status === 'canceled' || input.status === 'rescheduled')) {
       throw new Error('SLOT_COMPLETED_STATUS_CHANGE_FORBIDDEN');
     }
@@ -2773,7 +2779,7 @@ export async function updateTeacherLessonSlotStatus(input: {
     }
 
     if (current.status !== 'completed' && normalizedStatus === 'completed') {
-      await assertStudentHasNoEarlierOverdueSlots(connection, {
+      await assertStudentHasNoEarlierUnconfirmedSlots(connection, {
         teacherId: current.teacher_id,
         studentId: nextStudentId,
         beforeDate: current.date,
@@ -3298,7 +3304,7 @@ async function assertStudentTimeAvailability(
   }
 }
 
-async function assertStudentHasNoEarlierOverdueSlots(
+async function assertStudentHasNoEarlierUnconfirmedSlots(
   connection: mysql.PoolConnection,
   input: { teacherId: string; studentId: string | null; beforeDate: string; beforeStartTime: string; excludeSlotId: string }
 ): Promise<void> {
@@ -3310,7 +3316,7 @@ async function assertStudentHasNoEarlierOverdueSlots(
       FROM lesson_slots
       WHERE teacher_id = ?
         AND student_id = ?
-        AND status = 'overdue'
+        AND status NOT IN ('completed', 'canceled')
         AND (
           date < ?
           OR (date = ? AND start_time < ?)
