@@ -34,6 +34,8 @@ export type FunnelCardListItem = {
   stage_code: string;
   stage_name: string;
   next_lesson_at: string | null;
+  overdue_lessons_count: number;
+  effective_paid_lessons_left: number;
   start_lessons_at: string | null;
   last_lesson_at: string | null;
   paid_lessons_left: number;
@@ -190,7 +192,13 @@ export async function listFunnelBoardCards(): Promise<FunnelCardListItem[]> {
         fs.id AS stage_id,
         fs.code AS stage_code,
         fs.name AS stage_name,
-        s.next_lesson_at,
+        CASE
+          WHEN GREATEST(0, s.paid_lessons_left - COALESCE(lesson_stats.overdue_lessons_count, 0)) > 0
+            THEN lesson_stats.next_future_lesson_at
+          ELSE NULL
+        END AS next_lesson_at,
+        COALESCE(lesson_stats.overdue_lessons_count, 0) AS overdue_lessons_count,
+        GREATEST(0, s.paid_lessons_left - COALESCE(lesson_stats.overdue_lessons_count, 0)) AS effective_paid_lessons_left,
         s.start_lessons_at,
         s.last_lesson_at,
         s.paid_lessons_left,
@@ -199,6 +207,25 @@ export async function listFunnelBoardCards(): Promise<FunnelCardListItem[]> {
       FROM students s
       INNER JOIN funnel_stages fs ON fs.id = s.current_funnel_stage_id
       LEFT JOIN teachers t ON t.id = s.assigned_teacher_id
+      LEFT JOIN (
+        SELECT
+          ls.student_id,
+          COUNT(CASE WHEN ls.status = 'overdue' THEN 1 END) AS overdue_lessons_count,
+          DATE_FORMAT(
+            MIN(
+              CASE
+                WHEN ls.status = 'planned'
+                  AND TIMESTAMP(ls.date, ls.start_time) >= (UTC_TIMESTAMP() + INTERVAL 3 HOUR)
+                  THEN TIMESTAMP(ls.date, ls.start_time)
+                ELSE NULL
+              END
+            ),
+            '%Y-%m-%d %H:%i:%s'
+          ) AS next_future_lesson_at
+        FROM lesson_slots ls
+        WHERE ls.student_id IS NOT NULL
+        GROUP BY ls.student_id
+      ) lesson_stats ON lesson_stats.student_id = s.id
       WHERE s.deleted_at IS NULL
       ORDER BY fs.sort_order ASC, s.created_at DESC
     `
@@ -359,7 +386,13 @@ export async function getFunnelCardById(input: {
         fs.id AS stage_id,
         fs.code AS stage_code,
         fs.name AS stage_name,
-        s.next_lesson_at,
+        CASE
+          WHEN GREATEST(0, s.paid_lessons_left - COALESCE(lesson_stats.overdue_lessons_count, 0)) > 0
+            THEN lesson_stats.next_future_lesson_at
+          ELSE NULL
+        END AS next_lesson_at,
+        COALESCE(lesson_stats.overdue_lessons_count, 0) AS overdue_lessons_count,
+        GREATEST(0, s.paid_lessons_left - COALESCE(lesson_stats.overdue_lessons_count, 0)) AS effective_paid_lessons_left,
         s.start_lessons_at,
         s.last_lesson_at,
         s.paid_lessons_left,
@@ -369,6 +402,25 @@ export async function getFunnelCardById(input: {
       FROM students s
       INNER JOIN funnel_stages fs ON fs.id = s.current_funnel_stage_id
       LEFT JOIN teachers t ON t.id = s.assigned_teacher_id
+      LEFT JOIN (
+        SELECT
+          ls.student_id,
+          COUNT(CASE WHEN ls.status = 'overdue' THEN 1 END) AS overdue_lessons_count,
+          DATE_FORMAT(
+            MIN(
+              CASE
+                WHEN ls.status = 'planned'
+                  AND TIMESTAMP(ls.date, ls.start_time) >= (UTC_TIMESTAMP() + INTERVAL 3 HOUR)
+                  THEN TIMESTAMP(ls.date, ls.start_time)
+                ELSE NULL
+              END
+            ),
+            '%Y-%m-%d %H:%i:%s'
+          ) AS next_future_lesson_at
+        FROM lesson_slots ls
+        WHERE ls.student_id IS NOT NULL
+        GROUP BY ls.student_id
+      ) lesson_stats ON lesson_stats.student_id = s.id
       WHERE s.id = ?
         AND (? = 1 OR s.deleted_at IS NULL)
       LIMIT 1

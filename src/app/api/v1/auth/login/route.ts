@@ -20,7 +20,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ code: 'INVALID_PAYLOAD', message: 'Некорректные данные входа' }, { status: 400 });
     }
 
-    const login = parsed.data.login.trim();
+    const login = parsed.data.login.trim().normalize('NFKC');
     const password = parsed.data.password;
     const user = await findActiveUserByLogin(login);
 
@@ -28,7 +28,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ code: 'INVALID_CREDENTIALS', message: 'Неверный логин или пароль' }, { status: 401 });
     }
 
-    const valid = await compare(password, user.password_hash);
+    const passwordCandidates = buildPasswordCandidates(password);
+    let valid = false;
+    for (const candidate of passwordCandidates) {
+      valid = await compare(candidate, user.password_hash);
+      if (valid) break;
+    }
     if (!valid) {
       return NextResponse.json({ code: 'INVALID_CREDENTIALS', message: 'Неверный логин или пароль' }, { status: 401 });
     }
@@ -69,4 +74,16 @@ export async function POST(request: Request) {
     console.error(error);
     return NextResponse.json({ code: 'INTERNAL_ERROR', message: 'Внутренняя ошибка входа' }, { status: 500 });
   }
+}
+
+function buildPasswordCandidates(password: string): string[] {
+  const candidates = new Set<string>();
+  candidates.add(password);
+
+  const normalized = password.normalize('NFKC');
+  candidates.add(normalized);
+  candidates.add(password.trim());
+  candidates.add(normalized.trim());
+
+  return Array.from(candidates).filter((item) => item.length > 0);
 }

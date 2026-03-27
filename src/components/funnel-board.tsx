@@ -49,6 +49,8 @@ type FunnelCard = {
   stage_code: string;
   stage_name: string;
   next_lesson_at: string | null;
+  overdue_lessons_count?: number;
+  effective_paid_lessons_left?: number;
   start_lessons_at: string | null;
   last_lesson_at: string | null;
   paid_lessons_left: number;
@@ -139,6 +141,20 @@ function formatPersonName(input: {
 function formatDate(value: string | null | undefined): string {
   if (!value) return '—';
   return new Date(value).toLocaleString();
+}
+
+function formatNextLessonDate(value: string | null | undefined): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+
+  const weekday = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][date.getDay()] ?? '';
+  const dayMonth = date.toLocaleDateString('ru-RU', {
+    day: 'numeric',
+    month: 'long'
+  });
+
+  return `${weekday}, ${dayMonth}`;
 }
 
 function auditActionLabel(action: string): string {
@@ -1104,7 +1120,7 @@ export function FunnelBoard() {
                               ? teacherNameById.get(card.assigned_teacher_id) ?? card.teacher_full_name ?? 'Не назначен'
                               : 'Не назначен'}
                           </span>
-                          <span className="text-xs text-muted-foreground">Следующее занятие: {formatDate(card.next_lesson_at)}</span>
+                          <span className="text-xs text-muted-foreground">Следующее занятие: {formatNextLessonDate(card.next_lesson_at)}</span>
                           <span className="text-xs text-muted-foreground">Осталось занятий: {card.paid_lessons_left}</span>
                           <Badge
                             variant="secondary"

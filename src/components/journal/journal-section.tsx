@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
-import { ArrowLeft, ArrowRight, CalendarDays, CircleArrowRight, CircleX, Clock3, Ellipsis, Plus } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CalendarDays, CircleArrowRight, CircleX, Ellipsis, Loader, Plus } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Avatar as UIAvatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -26,6 +26,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from '@/components/ui/input';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Progress } from '@/components/ui/progress';
+import { Skeleton } from '@/components/ui/skeleton';
 import { getStableAvatarColor, getStableAvatarInitial, getStableAvatarSeed } from '@/lib/avatar-color';
 import {
   Select,
@@ -36,7 +37,7 @@ import {
 } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { calculateForecastBySlotId } from '@/lib/journal-forecast';
 import { toast } from 'sonner';
 
@@ -70,6 +71,7 @@ type LessonSlot = {
   source_weekly_slot_id?: string | null;
 };
 type PlannedForecastBaseline = { student_id: string; planned_count: number };
+type WeekSlotsResponse = { slots: LessonSlot[]; baseline: PlannedForecastBaseline[] };
 
 type DayDraft = {
   time: string;
@@ -98,6 +100,7 @@ const DAYS: Array<{ weekday: number; short: string; full: string }> = [
 const FREE_SLOT_VALUE = '__free_slot__';
 const ADMIN_JOURNAL_TEACHER_STORAGE_KEY = 'gelbcrm:journal:selectedTeacherId';
 const JOURNAL_WEEK_START_STORAGE_KEY = 'gelbcrm:journal:weekStart';
+const JOURNAL_MIN_WEEK_START_ISO = '2025-12-29';
 const REFERENCE_CACHE_TTL_MS = 60_000;
 const HOURLY_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
   const value = `${String(hour).padStart(2, '0')}:00`;
@@ -115,28 +118,82 @@ export function JournalSection() {
   const [weeklyTemplate, setWeeklyTemplate] = useState<WeeklySlot[]>([]);
   const [slots, setSlots] = useState<LessonSlot[]>([]);
   const [plannedBaselineByStudentId, setPlannedBaselineByStudentId] = useState<Record<string, number>>({});
-  const [weekStart, setWeekStart] = useState(() => {
-    if (typeof window === 'undefined') return getWeekStart(new Date());
-    const persisted = localStorage.getItem(JOURNAL_WEEK_START_STORAGE_KEY);
-    const parsed = parseIsoDateToDate(persisted);
-    return parsed ? getWeekStart(parsed) : getWeekStart(new Date());
-  });
+  const [weekStart, setWeekStart] = useState(() => clampWeekStart(getWeekStart(new Date())));
+  const [weekStartHydrated, setWeekStartHydrated] = useState(false);
   const [dayDrafts, setDayDrafts] = useState<Record<number, DayDraft>>(() => createInitialDayDrafts());
   const [createSlotState, setCreateSlotState] = useState<CreateSlotState | null>(null);
   const [templateSlotState, setTemplateSlotState] = useState<{ weekday: number; slotId?: string } | null>(null);
   const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
   const [creatingSlot, setCreatingSlot] = useState(false);
   const [rescheduleState, setRescheduleState] = useState<{ slotId: string; date: string; time: string; reason: string } | null>(null);
+  const [cancelState, setCancelState] = useState<{ slotId: string; reason: string } | null>(null);
   const [deletingSlotId, setDeletingSlotId] = useState<string | null>(null);
   const [editingStudentSlotId, setEditingStudentSlotId] = useState<string | null>(null);
   const [slotStudentDrafts, setSlotStudentDrafts] = useState<Record<string, string>>({});
   const [assigningStudentSlotId, setAssigningStudentSlotId] = useState<string | null>(null);
   const [statusUpdatingSlotId, setStatusUpdatingSlotId] = useState<string | null>(null);
+  const [confirmUpdatingSlotId, setConfirmUpdatingSlotId] = useState<string | null>(null);
   const studentsCacheRef = useRef<Map<string, { ts: number; data: StudentItem[] }>>(new Map());
   const weeklyTemplateCacheRef = useRef<Map<string, { ts: number; data: WeeklySlot[] }>>(new Map());
+  const roleUserCacheRef = useRef<{ ts: number; data: RoleUser } | null>(null);
+  const teachersCacheRef = useRef<{ ts: number; data: TeacherItem[] } | null>(null);
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const softRefreshTimerRef = useRef<number | null>(null);
+  const weekColumnsScrollRef = useRef<HTMLDivElement | null>(null);
+  const dragScrollStateRef = useRef<{
+    startX: number;
+    startY: number;
+    scrollLeft: number;
+    scrollTop: number;
+    dragging: boolean;
+  } | null>(null);
+  const [isDraggingColumns, setIsDraggingColumns] = useState(false);
 
   const showError = useCallback((text: string) => {
     toast.error('Ошибка', { description: text });
+  }, []);
+
+  const stopColumnsDrag = useCallback(() => {
+    if (!dragScrollStateRef.current?.dragging) return;
+    dragScrollStateRef.current = null;
+    setIsDraggingColumns(false);
+    document.body.style.userSelect = '';
+  }, []);
+
+  const handleColumnsMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (
+      target?.closest(
+        'button, a, input, select, textarea, label, [role="button"], [data-slot="toggle"], [data-radix-select-trigger], [data-journal-day-column], [data-journal-slot-card]'
+      )
+    ) {
+      return;
+    }
+
+    const container = weekColumnsScrollRef.current;
+    if (!container) return;
+
+    dragScrollStateRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: container.scrollLeft,
+      scrollTop: container.scrollTop,
+      dragging: true
+    };
+    setIsDraggingColumns(true);
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  const handleColumnsMouseMove = useCallback((event: MouseEvent) => {
+    const state = dragScrollStateRef.current;
+    const container = weekColumnsScrollRef.current;
+    if (!state?.dragging || !container) return;
+    event.preventDefault();
+    const deltaX = event.clientX - state.startX;
+    const deltaY = event.clientY - state.startY;
+    container.scrollLeft = state.scrollLeft - deltaX;
+    container.scrollTop = state.scrollTop - deltaY;
   }, []);
   const showSuccess = useCallback((text: string) => {
     toast.success('Готово', { description: text });
@@ -225,14 +282,78 @@ export function JournalSection() {
     });
   }, [weekStart]);
 
+  const canGoToPreviousWeek = useMemo(() => {
+    return toIsoDate(weekStart) > JOURNAL_MIN_WEEK_START_ISO;
+  }, [weekStart]);
+
+  const isCurrentWeekSelected = useMemo(() => {
+    return toIsoDate(weekStart) === toIsoDate(clampWeekStart(getWeekStart(new Date())));
+  }, [weekStart]);
+
+  const weekRangeLabel = useMemo(() => {
+    const weekEnd = addDays(weekStart, 6);
+    const formatter = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' });
+    return `${formatter.format(weekStart)} — ${formatter.format(weekEnd)}`;
+  }, [weekStart]);
+
+  const refreshWeekData = useCallback(async (teacherId: string, options?: { syncRange?: boolean; signal?: AbortSignal }) => {
+    const dateFrom = toIsoDate(weekStart);
+    const dateTo = toIsoDate(addDays(weekStart, 6));
+
+    if (options?.syncRange) {
+      await fetchJson(
+        '/api/v1/journal/slots/sync-range',
+        withIdempotencyHeaders({
+          method: 'POST',
+          signal: options.signal,
+          body: JSON.stringify({ teacherId, dateFrom, dateTo })
+        })
+      );
+    }
+
+    const payload = await fetchJson<WeekSlotsResponse>(
+      `/api/v1/journal/slots?teacherId=${encodeURIComponent(teacherId)}&dateFrom=${dateFrom}&dateTo=${dateTo}&includeBaseline=1`,
+      { signal: options?.signal }
+    );
+
+    setSlots(payload.slots);
+    setPlannedBaselineByStudentId(
+      Object.fromEntries(payload.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
+    );
+  }, [weekStart]);
+
+  const scheduleSoftRefresh = useCallback((teacherId?: string | null) => {
+    const targetTeacherId = teacherId ?? selectedTeacherId;
+    if (!targetTeacherId) return;
+    if (softRefreshTimerRef.current) {
+      window.clearTimeout(softRefreshTimerRef.current);
+    }
+    softRefreshTimerRef.current = window.setTimeout(() => {
+      void refreshWeekData(targetTeacherId, { syncRange: false });
+    }, 250);
+  }, [refreshWeekData, selectedTeacherId]);
+
   const loadAll = useCallback(async () => {
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+
     setLoading(true);
     try {
-      const me = await fetchJson<RoleUser>('/api/v1/auth/me');
+      const now = Date.now();
+      const me =
+        roleUserCacheRef.current && now - roleUserCacheRef.current.ts <= REFERENCE_CACHE_TTL_MS
+          ? roleUserCacheRef.current.data
+          : await fetchJson<RoleUser>('/api/v1/auth/me');
+      roleUserCacheRef.current = { ts: now, data: me };
       setRoleUser(me);
       setTeacherProfileMissing(false);
 
-      const teacherItems = await fetchJson<TeacherItem[]>('/api/v1/journal/teachers');
+      const teacherItems =
+        teachersCacheRef.current && now - teachersCacheRef.current.ts <= REFERENCE_CACHE_TTL_MS
+          ? teachersCacheRef.current.data
+          : await fetchJson<TeacherItem[]>('/api/v1/journal/teachers');
+      teachersCacheRef.current = { ts: now, data: teacherItems };
       setTeachers(teacherItems);
       const teacherIds = new Set(teacherItems.map((item) => item.id));
 
@@ -258,7 +379,6 @@ export function JournalSection() {
       }
 
       const qs = new URLSearchParams({ teacherId: nextTeacherId });
-      const now = Date.now();
       const studentsCached = studentsCacheRef.current.get(nextTeacherId);
       const templateCached = weeklyTemplateCacheRef.current.get(nextTeacherId);
       const shouldFetchStudents = !studentsCached || now - studentsCached.ts > REFERENCE_CACHE_TTL_MS;
@@ -281,22 +401,31 @@ export function JournalSection() {
       }
       const dateFrom = toIsoDate(weekStart);
       const dateTo = toIsoDate(addDays(weekStart, 6));
-      const [slotsData, baselineData] = await Promise.all([
-        fetchJson<LessonSlot[]>(
-          `/api/v1/journal/slots?teacherId=${encodeURIComponent(nextTeacherId)}&dateFrom=${dateFrom}&dateTo=${dateTo}`
-        ),
-        fetchJson<PlannedForecastBaseline[]>(
-          `/api/v1/journal/slots/forecast-baseline?teacherId=${encodeURIComponent(nextTeacherId)}&dateFrom=${dateFrom}`
-        )
+      const [slotsPayload] = await Promise.all([
+        (async () => {
+          await fetchJson(
+            '/api/v1/journal/slots/sync-range',
+            withIdempotencyHeaders({
+              method: 'POST',
+              signal: controller.signal,
+              body: JSON.stringify({ teacherId: nextTeacherId, dateFrom, dateTo })
+            })
+          );
+          return fetchJson<WeekSlotsResponse>(
+            `/api/v1/journal/slots?teacherId=${encodeURIComponent(nextTeacherId)}&dateFrom=${dateFrom}&dateTo=${dateTo}&includeBaseline=1`,
+            { signal: controller.signal }
+          );
+        })()
       ]);
 
       setStudents(studentsData);
       setWeeklyTemplate(templateData);
-      setSlots(slotsData);
+      setSlots(slotsPayload.slots);
       setPlannedBaselineByStudentId(
-        Object.fromEntries(baselineData.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
+        Object.fromEntries(slotsPayload.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
       );
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
       const messageText = error instanceof Error ? error.message : '';
       if (messageText === 'Профиль преподавателя не найден') {
         setTeacherProfileMissing(true);
@@ -322,14 +451,43 @@ export function JournalSection() {
   }, [loadAll]);
 
   useEffect(() => {
+    return () => {
+      loadAbortRef.current?.abort();
+      if (softRefreshTimerRef.current) {
+        window.clearTimeout(softRefreshTimerRef.current);
+      }
+      document.body.style.userSelect = '';
+    };
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('mousemove', handleColumnsMouseMove);
+    window.addEventListener('mouseup', stopColumnsDrag);
+    return () => {
+      window.removeEventListener('mousemove', handleColumnsMouseMove);
+      window.removeEventListener('mouseup', stopColumnsDrag);
+    };
+  }, [handleColumnsMouseMove, stopColumnsDrag]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const persisted = localStorage.getItem(JOURNAL_WEEK_START_STORAGE_KEY);
+    const parsed = parseIsoDateToDate(persisted);
+    if (parsed) {
+      setWeekStart(clampWeekStart(getWeekStart(parsed)));
+    }
+    setWeekStartHydrated(true);
+  }, []);
+
+  useEffect(() => {
     if (roleUser?.role !== 'admin' || !selectedTeacherId) return;
     localStorage.setItem(ADMIN_JOURNAL_TEACHER_STORAGE_KEY, selectedTeacherId);
   }, [roleUser?.role, selectedTeacherId]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined' || !weekStartHydrated) return;
     localStorage.setItem(JOURNAL_WEEK_START_STORAGE_KEY, toIsoDate(weekStart));
-  }, [weekStart]);
+  }, [weekStart, weekStartHydrated]);
 
   const saveTemplate = async (nextTemplate: WeeklySlot[]) => {
     if (!selectedTeacherId) return;
@@ -374,7 +532,7 @@ export function JournalSection() {
         })
       });
       upsertSlotInState(created);
-      await loadAll();
+      scheduleSoftRefresh(selectedTeacherId);
       showSuccess('Разовое занятие создано');
       return true;
     } catch (error) {
@@ -399,7 +557,7 @@ export function JournalSection() {
         })
       });
       upsertSlotInState(updated);
-      await loadAll();
+      scheduleSoftRefresh(selectedTeacherId);
       setEditingStudentSlotId(null);
     } catch (error) {
       showError(error instanceof Error ? error.message : 'Не удалось назначить ученика');
@@ -448,19 +606,35 @@ export function JournalSection() {
   const setStatus = async (
     slot: LessonSlot,
     status: Exclude<LessonStatus, 'rescheduled'>,
-    options?: { studentId?: string | null; reason?: string }
+    options?: { studentId?: string | null; reason?: string; action?: 'confirm' | 'default' }
   ) => {
     if (slot.status === status) return;
     if (!selectedTeacherId) return;
-    if (statusUpdatingSlotId === slot.id) return;
+    if (statusUpdatingSlotId === slot.id || confirmUpdatingSlotId === slot.id) return;
     if (status === 'completed' && isFutureMskDate(slot.date)) {
       showError('Нельзя завершить занятие будущего дня');
       return;
     }
-    setStatusUpdatingSlotId(slot.id);
+    const previousSnapshot: LessonSlot = { ...slot };
+    const isConfirmAction = options?.action === 'confirm';
+    if (isConfirmAction) {
+      setConfirmUpdatingSlotId(slot.id);
+    } else {
+      setStatusUpdatingSlotId(slot.id);
+    }
     try {
       const previousStatus = slot.status;
       const nextStudentId = options?.studentId ?? slot.student_id;
+      const optimisticSlot: LessonSlot = {
+        ...slot,
+        student_id: nextStudentId,
+        status,
+        status_reason: options?.reason ?? slot.status_reason,
+        lock_version: slot.lock_version + 1
+      };
+
+      upsertSlotInState(optimisticSlot);
+
       if (previousStatus !== 'completed' && status === 'completed') {
         applyStudentBalanceDelta(nextStudentId, -1);
       } else if (previousStatus === 'completed' && status !== 'completed') {
@@ -480,9 +654,10 @@ export function JournalSection() {
       });
       upsertSlotInState(updated);
       syncStudentBalanceFromSlot(updated);
-      await loadAll();
+      scheduleSoftRefresh(selectedTeacherId);
       setEditingStudentSlotId(null);
     } catch (error) {
+      upsertSlotInState(previousSnapshot);
       if (slot.status !== 'completed' && status === 'completed') {
         applyStudentBalanceDelta(options?.studentId ?? slot.student_id, +1);
       } else if (slot.status === 'completed' && status !== 'completed') {
@@ -493,7 +668,11 @@ export function JournalSection() {
         await loadAll();
       }
     } finally {
-      setStatusUpdatingSlotId((prev) => (prev === slot.id ? null : prev));
+      if (isConfirmAction) {
+        setConfirmUpdatingSlotId((prev) => (prev === slot.id ? null : prev));
+      } else {
+        setStatusUpdatingSlotId((prev) => (prev === slot.id ? null : prev));
+      }
     }
   };
 
@@ -515,7 +694,7 @@ export function JournalSection() {
       });
       upsertSlotInState(updated);
       syncStudentBalanceFromSlot(updated);
-      await loadAll();
+      scheduleSoftRefresh(selectedTeacherId);
       setRescheduleState(null);
       showSuccess('Занятие перенесено');
     } catch (error) {
@@ -525,6 +704,35 @@ export function JournalSection() {
       }
     } finally {
       setStatusUpdatingSlotId((prev) => (prev === rescheduleState.slotId ? null : prev));
+    }
+  };
+
+  const submitCancel = async () => {
+    if (!cancelState || !selectedTeacherId) return;
+    setStatusUpdatingSlotId(cancelState.slotId);
+    try {
+      const updated = await fetchJson<LessonSlot>(`/api/v1/journal/slots/${cancelState.slotId}/status`, {
+        ...withIdempotencyHeaders(),
+        method: 'POST',
+        body: JSON.stringify({
+          teacherId: selectedTeacherId,
+          status: 'canceled',
+          reason: cancelState.reason,
+          expectedLockVersion: slots.find((slot) => slot.id === cancelState.slotId)?.lock_version
+        })
+      });
+      upsertSlotInState(updated);
+      syncStudentBalanceFromSlot(updated);
+      scheduleSoftRefresh(selectedTeacherId);
+      setCancelState(null);
+      showSuccess('Занятие отменено');
+    } catch (error) {
+      showError(error instanceof Error ? error.message : 'Не удалось отменить занятие');
+      if (isAdminConflictError(error)) {
+        await loadAll();
+      }
+    } finally {
+      setStatusUpdatingSlotId((prev) => (prev === cancelState.slotId ? null : prev));
     }
   };
 
@@ -540,7 +748,7 @@ export function JournalSection() {
         }
       );
       removeSlotFromState(slot.id);
-      await loadAll();
+      scheduleSoftRefresh(selectedTeacherId);
       showSuccess('Слот удалён');
     } catch (error) {
       showError(error instanceof Error ? error.message : 'Не удалось удалить слот');
@@ -580,6 +788,7 @@ export function JournalSection() {
             item.date < slot.date
         )
       );
+      scheduleSoftRefresh(selectedTeacherId);
       showSuccess('Слоты удалены');
     } catch (error) {
       showError(error instanceof Error ? error.message : 'Не удалось удалить еженедельный слот');
@@ -616,11 +825,35 @@ export function JournalSection() {
     return map;
   }, [slots]);
 
+  const applyRescheduleDate = useCallback(
+    (nextDate: string) => {
+      setRescheduleState((prev) => {
+        if (!prev) return prev;
+        const nextWeekday = getWeekdayFromIsoDate(nextDate);
+        if (!nextWeekday) return { ...prev, date: nextDate };
+
+        const occupied = getOccupiedTimesForDay(nextWeekday, nextDate, weeklyTemplate, slotMapByDate);
+        const current = slots.find((slot) => slot.id === prev.slotId);
+        if (current && current.date === nextDate) {
+          occupied.delete(current.start_time);
+        }
+
+        const nextTime = occupied.has(prev.time)
+          ? (HOURLY_TIME_OPTIONS.find((option) => !occupied.has(option.value))?.value ?? prev.time)
+          : prev.time;
+
+        return { ...prev, date: nextDate, time: nextTime };
+      });
+    },
+    [slotMapByDate, slots, weeklyTemplate]
+  );
+
   const rescheduledSourceByTargetSlotId = useMemo(() => {
     const map = new Map<
       string,
       {
         sourceDate: string;
+        sourceStartTime: string;
         sourceWeeklySlotId: string | null;
       }
     >();
@@ -629,6 +862,7 @@ export function JournalSection() {
       if (map.has(slot.rescheduled_to_slot_id)) continue;
       map.set(slot.rescheduled_to_slot_id, {
         sourceDate: slot.date,
+        sourceStartTime: slot.start_time,
         sourceWeeklySlotId: slot.source_weekly_slot_id ?? null
       });
     }
@@ -785,6 +1019,19 @@ export function JournalSection() {
     });
   }, [slots, studentPaidLessonsById, plannedBaselineByStudentId]);
 
+  const earliestOverdueSortKeyByStudentId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const slot of slots) {
+      if (slot.status !== 'overdue' || !slot.student_id) continue;
+      const sortKey = getSlotSortKey(slot.date, slot.start_time);
+      const currentMinSortKey = map.get(slot.student_id);
+      if (!currentMinSortKey || sortKey < currentMinSortKey) {
+        map.set(slot.student_id, sortKey);
+      }
+    }
+    return map;
+  }, [slots]);
+
   const selectedTeacherName = useMemo(() => {
     if (!selectedTeacherId) return 'Преподаватель';
     return teachers.find((item) => item.id === selectedTeacherId)?.full_name ?? 'Преподаватель';
@@ -897,12 +1144,8 @@ export function JournalSection() {
 
   return (
     <div className="flex w-full flex-col gap-4">
-      <div>
-        <h3 className="text-xl font-semibold">Журнал занятий</h3>
-        <p className="text-sm text-muted-foreground">Еженедельные и разовые слоты, переносы и статусы.</p>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex min-h-9 items-center gap-2">
+        {loading && teachers.length === 0 ? <Skeleton className="h-9 w-[320px]" /> : null}
         {teachers.length > 0 ? (
           <Select
             value={selectedTeacherId ?? ''}
@@ -923,39 +1166,77 @@ export function JournalSection() {
         ) : null}
         <Button
           variant="outline"
-          size="icon-sm"
+          className="h-9 gap-2"
           aria-label="Открыть шаблон недели"
           disabled={!selectedTeacherId}
           onClick={() => setTemplateSheetOpen(true)}
         >
           <CalendarDays absoluteStrokeWidth className="size-4" />
+          <span>Шаблон недели</span>
         </Button>
-        <Button variant="secondary" onClick={() => setWeekStart(addDays(weekStart, -7))}>
-          Предыдущая неделя
-        </Button>
-        <Button variant="secondary" onClick={() => setWeekStart(getWeekStart(new Date()))}>
-          Текущая неделя
-        </Button>
-        <Button variant="secondary" onClick={() => setWeekStart(addDays(weekStart, 7))}>
-          Следующая неделя
-        </Button>
-        <Badge variant="outline">{`${toIsoDate(weekStart)} — ${toIsoDate(addDays(weekStart, 6))}`}</Badge>
+      </div>
+      <div className="h-px w-full bg-border" />
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-xl font-semibold">Журнал занятий</h3>
+          <Badge variant="outline">{weekRangeLabel}</Badge>
+        </div>
+        <ButtonGroup className="shrink-0">
+          <Button
+            variant="secondary"
+            size="icon-sm"
+            disabled={!canGoToPreviousWeek}
+            aria-label="Предыдущая неделя"
+            onClick={() => setWeekStart(clampWeekStart(addDays(weekStart, -7)))}
+          >
+            <ArrowLeft absoluteStrokeWidth className="size-4" />
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={isCurrentWeekSelected}
+            onClick={() => setWeekStart(clampWeekStart(getWeekStart(new Date())))}
+          >
+            Текущая неделя
+          </Button>
+          <Button variant="secondary" size="icon-sm" aria-label="Следующая неделя" onClick={() => setWeekStart(addDays(weekStart, 7))}>
+            <ArrowRight absoluteStrokeWidth className="size-4" />
+          </Button>
+        </ButtonGroup>
       </div>
 
-      <div className="w-full overflow-x-auto rounded-xl bg-muted/30 p-2">
-        <div className="grid grid-cols-1 gap-3 lg:flex lg:min-w-max">
+      <div
+        ref={weekColumnsScrollRef}
+        onMouseDown={handleColumnsMouseDown}
+        onMouseLeave={stopColumnsDrag}
+        className={`h-[calc(100dvh-16px)] w-full overflow-auto rounded-xl bg-muted/30 p-[8px] ${isDraggingColumns ? 'cursor-grabbing' : 'cursor-default'}`}
+      >
+        <div className="grid grid-cols-1 gap-3 lg:flex lg:min-w-max lg:items-start">
           {weekDays.map((day) => (
-            <Card key={day.dateIso} className="lg:w-[360px] lg:min-w-[360px]">
+            <Card key={day.dateIso} data-journal-day-column className="cursor-default lg:w-[360px] lg:min-w-[360px]">
             <CardHeader>
               <CardTitle>{day.dateLabel}</CardTitle>
               <CardDescription>{day.full}</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
-              {(slotMapByDate.get(day.dateIso) ?? []).length === 0 ? (
+              {loading ? (
+                <>
+                  <div className="space-y-2 rounded-lg border border-border/50 p-3">
+                    <Skeleton className="h-5 w-28" />
+                    <Skeleton className="h-5 w-40" />
+                    <Skeleton className="h-8 w-52" />
+                  </div>
+                  <div className="space-y-2 rounded-lg border border-border/50 p-3">
+                    <Skeleton className="h-5 w-24" />
+                    <Skeleton className="h-5 w-36" />
+                    <Skeleton className="h-8 w-48" />
+                  </div>
+                </>
+              ) : (slotMapByDate.get(day.dateIso) ?? []).length === 0 ? (
                 <p className="text-sm text-muted-foreground">{loading ? 'Загрузка...' : 'Нет слотов'}</p>
               ) : (
                 (slotMapByDate.get(day.dateIso) ?? []).map((slot) => (
-                  <Card key={slot.id}>
+                  <Card key={slot.id} data-journal-slot-card className="cursor-default">
                     <CardContent className="flex flex-col gap-3">
                       {(() => {
                         const draftValue = slotStudentDrafts[slot.id];
@@ -971,14 +1252,34 @@ export function JournalSection() {
                           occupiedStudentIdsBySlot.get(`${slot.date}|${slot.start_time}`)?.has(effectiveStudentId) &&
                           effectiveStudentId !== slot.student_id
                         );
+                        const effectiveStudentPaidLessonsLeft = effectiveStudentId
+                          ? Math.max(0, Number(studentPaidLessonsById.get(effectiveStudentId) ?? slot.student_paid_lessons_left ?? 0))
+                          : 0;
+                        const isStudentBalanceEmpty = !isStudentMissing && slot.status !== 'completed' && effectiveStudentPaidLessonsLeft <= 0;
+                        const slotSortKey = getSlotSortKey(slot.date, slot.start_time);
+                        const earliestOverdueSortKey = effectiveStudentId
+                          ? earliestOverdueSortKeyByStudentId.get(effectiveStudentId)
+                          : undefined;
+                        const hasUnconfirmedLessons =
+                          !isStudentMissing &&
+                          slot.status !== 'completed' &&
+                          Boolean(earliestOverdueSortKey && earliestOverdueSortKey < slotSortKey);
                         const confirmTooltip = isStudentMissing
                           ? 'Нельзя подтвердить занятие без ученика'
                           : isStudentConflict
                             ? 'У выбранного ученика уже есть занятие в это время'
+                            : slot.status === 'canceled'
+                              ? 'Сначала снимите отмену занятия'
+                            : hasUnconfirmedLessons
+                              ? 'Есть неподтвержденные занятия'
+                            : isStudentBalanceEmpty
+                              ? 'Недостаточно оплаченных занятий у ученика'
                             : slot.status !== 'completed' && isFutureMskDate(slot.date)
                               ? 'Нельзя завершить занятие будущего дня'
                             : slot.status === 'completed'
-                              ? 'Нажмите, чтобы вернуть в Запланировано'
+                              ? slot.date < getCurrentMskIsoDate()
+                                ? 'Нажмите, чтобы вернуть в «Просрочено»'
+                                : 'Нажмите, чтобы вернуть в Запланировано'
                               : undefined;
                         const isFutureDayCompletionForbidden = slot.status !== 'completed' && isFutureMskDate(slot.date);
                         const forecastPaidLessonsLeft = forecastBySlotId.get(slot.id);
@@ -989,27 +1290,110 @@ export function JournalSection() {
                         const lessonTypeLabel = isRegularLesson ? 'Регулярное' : 'Разовое';
                         const isRescheduledSourceSlot = slot.status === 'rescheduled' && Boolean(slot.reschedule_target_date);
                         const isRescheduledTargetSlot = Boolean(rescheduledSource);
+                        const slotCurrentSortKey = getSlotSortKey(slot.date, slot.start_time);
+                        const rescheduleTargetSortKey =
+                          isRescheduledSourceSlot && slot.reschedule_target_date
+                            ? getSlotSortKey(slot.reschedule_target_date, slot.reschedule_target_time ?? slot.start_time)
+                            : null;
+                        const isRescheduledToFuture =
+                          Boolean(rescheduleTargetSortKey && rescheduleTargetSortKey > slotCurrentSortKey);
+                        const rescheduleSourceSortKey =
+                          isRescheduledTargetSlot && rescheduledSource
+                            ? getSlotSortKey(rescheduledSource.sourceDate, rescheduledSource.sourceStartTime)
+                            : null;
+                        const isRescheduledFromFuture =
+                          Boolean(rescheduleSourceSortKey && rescheduleSourceSortKey > slotCurrentSortKey);
+                        const rescheduledToDateLabel = formatDayMonthRu(slot.reschedule_target_date);
+                        const rescheduledFromDateLabel = formatDayMonthRu(rescheduledSource?.sourceDate ?? null);
                         const shouldShowSlotActions = !slot.rescheduled_to_slot_id;
                         const canDeleteSlot =
                           !slot.source_weekly_slot_id &&
                           !slot.rescheduled_to_slot_id &&
                           (slot.status === 'planned' || isRescheduledTargetSlot);
+                        const cancelTooltip =
+                          slot.status === 'canceled'
+                            ? slot.date < getCurrentMskIsoDate()
+                              ? 'Нажмите, чтобы вернуть в «Просрочено»'
+                              : 'Нажмите, чтобы вернуть в Запланировано'
+                            : 'Отменить занятие';
+                        const isConfirmSaving = confirmUpdatingSlotId === slot.id;
 
                         return (
                           <>
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-1">
                         <Badge variant="outline">{slot.start_time}</Badge>
                         <Badge variant="secondary">{lessonTypeLabel}</Badge>
                         {isRescheduledSourceSlot ? (
-                          <Badge className="bg-amber-100 text-amber-800 border border-amber-200">
-                            <ArrowRight className="mr-1 size-3.5" />
-                            {formatDayMonthRu(slot.reschedule_target_date)}
-                          </Badge>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Badge className="bg-amber-100 text-amber-800 border border-amber-200">
+                                  {isRescheduledToFuture ? (
+                                    <>
+                                      {rescheduledToDateLabel}
+                                      <ArrowRight className="ml-1 size-3.5" />
+                                    </>
+                                  ) : (
+                                    <>
+                                      <ArrowLeft className="mr-1 size-3.5" />
+                                      {rescheduledToDateLabel}
+                                    </>
+                                  )}
+                                </Badge>
+                              </TooltipTrigger>
+                              <TooltipContent sideOffset={6}>
+                                <span>{`перенесено на ${rescheduledToDateLabel}`}</span>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
                         ) : isRescheduledTargetSlot ? (
-                          <Badge className="bg-amber-100 text-amber-800 border border-amber-200">
-                            <ArrowLeft className="mr-1 size-3.5" />
-                            {formatDayMonthRu(rescheduledSource?.sourceDate ?? null)}
-                          </Badge>
+                          slot.status === 'completed' ? (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Badge className={statusBadgeClass('completed')}>
+                                    {isRescheduledFromFuture ? (
+                                      <>
+                                        {statusLabel('completed')}
+                                        <ArrowRight className="ml-1 size-3.5" />
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ArrowLeft className="mr-1 size-3.5" />
+                                        {statusLabel('completed')}
+                                      </>
+                                    )}
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent sideOffset={6}>
+                                  <span>{`перенесено с ${rescheduledFromDateLabel}`}</span>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          ) : (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Badge className="bg-amber-100 text-amber-800 border border-amber-200">
+                                    {isRescheduledFromFuture ? (
+                                      <>
+                                        {rescheduledFromDateLabel}
+                                        <ArrowRight className="ml-1 size-3.5" />
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ArrowLeft className="mr-1 size-3.5" />
+                                        {rescheduledFromDateLabel}
+                                      </>
+                                    )}
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent sideOffset={6}>
+                                  <span>{`перенесено с ${rescheduledFromDateLabel}`}</span>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )
                         ) : (
                           <Badge className={statusBadgeClass(slot.status)}>{statusLabel(slot.status)}</Badge>
                         )}
@@ -1110,49 +1494,49 @@ export function JournalSection() {
 
                       {shouldShowSlotActions ? (
                         slot.student_id ? (
+                        <div className="flex w-full justify-start">
                         <ButtonGroup className="shrink-0">
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <Toggle
-                                variant="outline"
-                                size="sm"
-                                data-segment="first"
-                                pressed={slot.status === 'completed'}
-                                aria-label="Подтвердить занятие"
-                                disabled={
-                                  deletingSlotId === slot.id ||
-                                  statusUpdatingSlotId === slot.id ||
-                                  (slot.status !== 'completed' && (isStudentMissing || isStudentConflict || isFutureDayCompletionForbidden))
-                                }
-                                onPressedChange={(pressed) =>
-                                  void setStatus(slot, pressed ? 'completed' : 'planned', {
-                                    studentId: effectiveStudentId ?? undefined
-                                  })
-                                }
-                                className="shrink-0 justify-start gap-1.5 rounded-l-lg rounded-r-none border-r-0 pr-[10px] pl-1.5"
-                              >
-                                <Image
-                                  src={slot.status === 'completed' ? '/icons/journal-confirmed.svg' : '/icons/journal-confirm.svg'}
-                                  alt=""
-                                  aria-hidden="true"
-                                  width={16}
-                                  height={16}
-                                  className="size-4"
-                                />
-                                <span className="inline-grid justify-items-start text-left">
-                                  <span className="col-start-1 row-start-1 invisible">Подтверждено</span>
-                                  <span className="col-start-1 row-start-1">
-                                    {slot.status === 'completed' ? 'Подтверждено' : 'Подтвердить'}
-                                  </span>
-                                </span>
-                              </Toggle>
+                              <span>
+                                <Toggle
+                                  variant="outline"
+                                  size="sm"
+                                  data-segment="first"
+                                  pressed={slot.status === 'canceled'}
+                                  className="shrink-0 rounded-r-none border-r-0 px-1.5 in-data-[slot=button-group]:rounded-r-none"
+                                  aria-label="Отменить занятие"
+                                  disabled={deletingSlotId === slot.id || statusUpdatingSlotId === slot.id || slot.status === 'completed'}
+                                  onPressedChange={(pressed) => {
+                                    if (pressed) {
+                                      setCancelState({
+                                        slotId: slot.id,
+                                        reason: RESCHEDULE_REASONS.includes((slot.status_reason ?? '') as (typeof RESCHEDULE_REASONS)[number])
+                                          ? (slot.status_reason as (typeof RESCHEDULE_REASONS)[number])
+                                          : RESCHEDULE_REASONS[0]
+                                      });
+                                      return;
+                                    }
+                                    void setStatus(slot, 'planned', {
+                                      studentId: effectiveStudentId ?? undefined
+                                    });
+                                  }}
+                                >
+                                  <Image
+                                    src={slot.status === 'canceled' ? '/icons/journal-canceled.svg' : '/icons/journal-cancel.svg'}
+                                    alt=""
+                                    aria-hidden="true"
+                                    width={16}
+                                    height={16}
+                                    className="size-4"
+                                  />
+                                </Toggle>
+                              </span>
                             </TooltipTrigger>
-                            {confirmTooltip ? (
-                              <TooltipContent sideOffset={6}>
-                                <span>{confirmTooltip}</span>
-                              </TooltipContent>
-                            ) : null}
+                            <TooltipContent sideOffset={6}>
+                              <span>{cancelTooltip}</span>
+                            </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
 
@@ -1164,9 +1548,9 @@ export function JournalSection() {
                                   variant="outline"
                                   size="icon-sm"
                                   data-segment="middle"
-                                  className="!rounded-none border-r-0 in-data-[slot=button-group]:!rounded-none"
+                                  className="!rounded-none border-r border-r-border in-data-[slot=button-group]:!rounded-none"
                                   aria-label="Перенести"
-                                  disabled={deletingSlotId === slot.id || statusUpdatingSlotId === slot.id || slot.status === 'completed'}
+                                  disabled={deletingSlotId === slot.id || statusUpdatingSlotId === slot.id || slot.status === 'completed' || slot.status === 'canceled'}
                                   onClick={() =>
                                     setRescheduleState({
                                       slotId: slot.id,
@@ -1191,30 +1575,60 @@ export function JournalSection() {
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <span>
-                                <Button
-                                  variant="outline"
-                                  size="icon-sm"
-                                  data-segment="middle"
-                                  className="!rounded-none border-r-0 in-data-[slot=button-group]:!rounded-none"
-                                  aria-label="Отменить занятие"
-                                  disabled={deletingSlotId === slot.id || statusUpdatingSlotId === slot.id || slot.status === 'completed'}
-                                  onClick={() => {
-                                    const reason = window.prompt('Укажите причину отмены занятия', slot.status_reason ?? '')?.trim() ?? '';
-                                    if (!reason) return;
-                                    void setStatus(slot, 'canceled', { reason });
-                                  }}
-                                >
-                                  <CircleX absoluteStrokeWidth className="size-4" />
-                                </Button>
-                              </span>
+                              <Toggle
+                                variant="outline"
+                                size="sm"
+                                data-segment={isRegularLesson ? 'last' : 'middle'}
+                                pressed={slot.status === 'completed'}
+                                aria-label="Подтвердить занятие"
+                                disabled={
+                                  deletingSlotId === slot.id ||
+                                  statusUpdatingSlotId === slot.id ||
+                                  isConfirmSaving ||
+                                  slot.status === 'canceled' ||
+                                  (slot.status !== 'completed' && (isStudentMissing || isStudentConflict || hasUnconfirmedLessons || isStudentBalanceEmpty || isFutureDayCompletionForbidden))
+                                }
+                                onPressedChange={(pressed) =>
+                                  void setStatus(slot, pressed ? 'completed' : 'planned', {
+                                    studentId: effectiveStudentId ?? undefined,
+                                    action: 'confirm'
+                                  })
+                                }
+                                className={
+                                  isRegularLesson
+                                    ? 'shrink-0 justify-start gap-1.5 rounded-l-none rounded-r-lg border-l border-l-border pr-[10px] pl-1.5'
+                                    : 'shrink-0 justify-start gap-1.5 rounded-l-none rounded-r-none border-l border-l-border border-r-0 pr-[10px] pl-1.5'
+                                }
+                              >
+                                {isConfirmSaving ? (
+                                  <Loader className="size-4 animate-spin" />
+                                ) : (
+                                  <Image
+                                    src={slot.status === 'completed' ? '/icons/journal-confirmed.svg' : '/icons/journal-confirm.svg'}
+                                    alt=""
+                                    aria-hidden="true"
+                                    width={16}
+                                    height={16}
+                                    className="size-4"
+                                  />
+                                )}
+                                <span className="inline-grid justify-items-start text-left">
+                                  <span className="col-start-1 row-start-1 invisible">Подтверждено</span>
+                                  <span className="col-start-1 row-start-1">
+                                    {slot.status === 'completed' ? 'Подтверждено' : 'Подтвердить'}
+                                  </span>
+                                </span>
+                              </Toggle>
                             </TooltipTrigger>
-                            <TooltipContent sideOffset={6}>
-                              <span>Отменить занятие</span>
-                            </TooltipContent>
+                            {confirmTooltip ? (
+                              <TooltipContent sideOffset={6}>
+                                <span>{confirmTooltip}</span>
+                              </TooltipContent>
+                            ) : null}
                           </Tooltip>
                         </TooltipProvider>
 
+                        {!isRegularLesson ? (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
@@ -1250,9 +1664,11 @@ export function JournalSection() {
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
+                        ) : null}
                         </ButtonGroup>
+                        </div>
                       ) : (
-                        <div className="flex items-center gap-2">
+                        <div className="flex w-full items-center justify-start gap-2">
                           <Select
                             value={FREE_SLOT_VALUE}
                             onValueChange={(value) => {
@@ -1283,6 +1699,7 @@ export function JournalSection() {
                             </SelectContent>
                           </Select>
 
+                          {!isRegularLesson ? (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
@@ -1316,6 +1733,7 @@ export function JournalSection() {
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
+                          ) : null}
                         </div>
                       )
                       ) : null}
@@ -1583,10 +2001,9 @@ export function JournalSection() {
       </Dialog>
 
       <Sheet open={templateSheetOpen} onOpenChange={setTemplateSheetOpen}>
-        <SheetContent side="right" className="w-full max-w-[760px] p-0 sm:max-w-[760px]">
+        <SheetContent side="right" className="w-full max-w-[912px] p-0 sm:max-w-[912px]">
           <SheetHeader className="space-y-3 border-b">
             <SheetTitle>{selectedTeacherName}</SheetTitle>
-            <SheetDescription>Шаблон недели</SheetDescription>
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Загруженность</span>
@@ -1632,9 +2049,8 @@ export function JournalSection() {
                             }}
                           >
                             <div className="flex min-w-0 items-center gap-2">
-                              <Clock3 absoluteStrokeWidth className="size-4 text-muted-foreground" />
                               <div className="flex min-w-0 flex-col">
-                                <span className="font-medium">{formatOneHourRange(slot.start_time)}</span>
+                                <span className="font-medium whitespace-nowrap">{formatOneHourRange(slot.start_time)}</span>
                                 {sanitizeIsoDate(slot.start_from) ? (
                                   <span className="text-xs text-muted-foreground">{`с ${new Date(`${sanitizeIsoDate(slot.start_from)}T00:00:00`).toLocaleDateString('ru-RU')}`}</span>
                                 ) : null}
@@ -1703,30 +2119,46 @@ export function JournalSection() {
           <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-2">
               <span className="text-sm text-muted-foreground">Дата</span>
-              <Input
-                type="date"
-                value={rescheduleState?.date ?? ''}
-                onChange={(event) =>
-                  setRescheduleState((prev) => {
-                    if (!prev) return prev;
-                    const nextDate = event.target.value;
-                    const nextWeekday = getWeekdayFromIsoDate(nextDate);
-                    if (!nextWeekday) return { ...prev, date: nextDate };
-
-                    const occupied = getOccupiedTimesForDay(nextWeekday, nextDate, weeklyTemplate, slotMapByDate);
-                    const current = slots.find((slot) => slot.id === prev.slotId);
-                    if (current && current.date === nextDate) {
-                      occupied.delete(current.start_time);
-                    }
-
-                    const nextTime = occupied.has(prev.time)
-                      ? (HOURLY_TIME_OPTIONS.find((option) => !occupied.has(option.value))?.value ?? prev.time)
-                      : prev.time;
-
-                    return { ...prev, date: nextDate, time: nextTime };
-                  })
-                }
-              />
+              <div className="flex items-center gap-2">
+                <Input
+                  type="date"
+                  className="w-[200px]"
+                  value={rescheduleState?.date ?? ''}
+                  onChange={(event) => applyRescheduleDate(event.target.value)}
+                />
+                <div className="flex items-center gap-0">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon-sm"
+                    className="rounded-r-none border-r-0"
+                    aria-label="Предыдущий день"
+                    disabled={!rescheduleState?.date}
+                    onClick={() => {
+                      const currentDate = parseIsoDateToDate(rescheduleState?.date ?? null);
+                      if (!currentDate) return;
+                      applyRescheduleDate(toIsoDate(addDays(currentDate, -1)));
+                    }}
+                  >
+                    <ArrowLeft absoluteStrokeWidth className="size-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon-sm"
+                    className="rounded-l-none"
+                    aria-label="Следующий день"
+                    disabled={!rescheduleState?.date}
+                    onClick={() => {
+                      const currentDate = parseIsoDateToDate(rescheduleState?.date ?? null);
+                      if (!currentDate) return;
+                      applyRescheduleDate(toIsoDate(addDays(currentDate, 1)));
+                    }}
+                  >
+                    <ArrowRight absoluteStrokeWidth className="size-4" />
+                  </Button>
+                </div>
+              </div>
             </div>
 
             <div className="flex flex-col gap-2">
@@ -1796,6 +2228,41 @@ export function JournalSection() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={Boolean(cancelState)} onOpenChange={(open) => !open && setCancelState(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Отменить занятие</DialogTitle>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-2">
+            <span className="text-sm text-muted-foreground">Причина отмены</span>
+            <RadioGroup
+              value={cancelState?.reason ?? RESCHEDULE_REASONS[0]}
+              onValueChange={(value) => setCancelState((prev) => (prev ? { ...prev, reason: value } : prev))}
+            >
+              {RESCHEDULE_REASONS.map((reason) => (
+                <label key={reason} className="flex cursor-pointer items-center gap-2 text-sm">
+                  <RadioGroupItem value={reason} />
+                  <span>{reason}</span>
+                </label>
+              ))}
+            </RadioGroup>
+          </div>
+
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setCancelState(null)}>
+              Отмена
+            </Button>
+            <Button
+              onClick={() => void submitCancel()}
+              disabled={!cancelState?.reason?.trim() || statusUpdatingSlotId === cancelState?.slotId}
+            >
+              Сохранить отмену
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1831,6 +2298,10 @@ function statusBadgeClass(status: LessonStatus): string {
   if (status === 'rescheduled') return 'bg-amber-100 text-amber-800 border border-amber-200';
   if (status === 'canceled') return 'bg-rose-100 text-rose-800 border border-rose-200';
   return 'bg-slate-100 text-slate-800 border border-slate-200';
+}
+
+function getSlotSortKey(date: string, startTime: string): string {
+  return `${date} ${startTime}`;
 }
 
 function formatOneHourRange(startTime: string): string {
@@ -1881,6 +2352,12 @@ function parseIsoDateToDate(value: string | null): Date | null {
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return null;
   return date;
+}
+
+function clampWeekStart(date: Date): Date {
+  const minDate = parseIsoDateToDate(JOURNAL_MIN_WEEK_START_ISO);
+  if (!minDate) return date;
+  return date < minDate ? minDate : date;
 }
 
 function getWeekdayFromIsoDate(value: string): number | null {

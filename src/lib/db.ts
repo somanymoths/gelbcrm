@@ -7,6 +7,31 @@ function getPool(): mysql.Pool {
   return getMysqlPool();
 }
 
+const TRANSIENT_DB_ERROR_CODES = new Set([
+  'ECONNRESET',
+  'PROTOCOL_CONNECTION_LOST',
+  'ETIMEDOUT',
+  'EPIPE'
+]);
+
+function isTransientDbError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return false;
+  const code = String((error as { code?: unknown }).code ?? '');
+  return TRANSIENT_DB_ERROR_CODES.has(code);
+}
+
+async function queryWithTransientRetry<T extends mysql.QueryResult>(
+  sql: string,
+  params?: unknown[]
+): Promise<[T, mysql.FieldPacket[]]> {
+  try {
+    return await getPool().query<T>(sql, params);
+  } catch (error) {
+    if (!isTransientDbError(error)) throw error;
+    return getPool().query<T>(sql, params);
+  }
+}
+
 let hasWeeklySlotStudentIdColumnCache: boolean | null = null;
 let hasWeeklySlotStartFromColumnCache: boolean | null = null;
 
@@ -41,7 +66,7 @@ export type StudentRow = {
 };
 
 export async function findActiveUserByLogin(login: string): Promise<DbUser | null> {
-  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+  const [rows] = await queryWithTransientRetry<mysql.RowDataPacket[]>(
     `
       SELECT id, role, login, password_hash, is_active
       FROM users
@@ -59,7 +84,7 @@ export async function findActiveUserByLogin(login: string): Promise<DbUser | nul
 }
 
 export async function findUserById(id: string): Promise<Pick<DbUser, 'id' | 'role' | 'login'> | null> {
-  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+  const [rows] = await queryWithTransientRetry<mysql.RowDataPacket[]>(
     `
       SELECT id, role, login
       FROM users
@@ -1578,7 +1603,7 @@ export async function listTeacherPlannedSlotCountsBeforeDate(input: {
       FROM lesson_slots
       WHERE teacher_id = ?
         AND student_id IS NOT NULL
-        AND status = 'planned'
+        AND status IN ('planned', 'overdue')
         AND date < ?
       GROUP BY student_id
     `,
@@ -1924,82 +1949,91 @@ export async function listTeacherLessonSlots(input: {
   dateFrom: string;
   dateTo: string;
 }): Promise<JournalLessonSlot[]> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        ls.id,
+        ls.teacher_id,
+        ls.student_id,
+        CONCAT_WS(' ', s.first_name, s.last_name) AS student_full_name,
+        s.paid_lessons_left AS student_paid_lessons_left,
+        DATE_FORMAT(ls.date, '%Y-%m-%d') AS date,
+        TIME_FORMAT(ls.start_time, '%H:%i') AS start_time,
+        CASE
+          WHEN ls.status NOT IN ('completed', 'canceled', 'rescheduled')
+            AND ls.date < DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
+            THEN 'overdue'
+          WHEN ls.status = 'overdue'
+            AND ls.date >= DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
+            THEN 'planned'
+          ELSE ls.status
+        END AS status,
+        ls.rescheduled_to_slot_id,
+        DATE_FORMAT(rsl.date, '%Y-%m-%d') AS reschedule_target_date,
+        TIME_FORMAT(rsl.start_time, '%H:%i') AS reschedule_target_time,
+        COALESCE(ls.source_weekly_slot_id, reschedule_source.inherited_source_weekly_slot_id) AS source_weekly_slot_id,
+        UNIX_TIMESTAMP(ls.updated_at) AS lock_version,
+        status_audit.created_at AS status_changed_at,
+        actor.login AS status_changed_by_login,
+        JSON_UNQUOTE(JSON_EXTRACT(status_audit.diff_after, '$.reason')) AS status_reason
+      FROM lesson_slots ls
+      LEFT JOIN students s ON s.id = ls.student_id
+      LEFT JOIN lesson_slots rsl ON rsl.id = ls.rescheduled_to_slot_id
+      LEFT JOIN (
+        SELECT
+          rescheduled_to_slot_id AS target_slot_id,
+          MAX(source_weekly_slot_id) AS inherited_source_weekly_slot_id
+        FROM lesson_slots
+        WHERE rescheduled_to_slot_id IS NOT NULL
+        GROUP BY rescheduled_to_slot_id
+      ) reschedule_source ON reschedule_source.target_slot_id = ls.id
+      LEFT JOIN (
+        SELECT entity_id, MAX(id) AS latest_audit_id
+        FROM audit_logs
+        WHERE entity_type = 'lesson_slot' AND action = 'status_update'
+        GROUP BY entity_id
+      ) latest_status_audit ON latest_status_audit.entity_id = ls.id
+      LEFT JOIN audit_logs status_audit ON status_audit.id = latest_status_audit.latest_audit_id
+      LEFT JOIN users actor ON actor.id = status_audit.actor_user_id
+      WHERE ls.teacher_id = ? AND ls.date BETWEEN ? AND ?
+      ORDER BY ls.date ASC, ls.start_time ASC
+    `,
+    [input.teacherId, input.dateFrom, input.dateTo]
+  );
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    teacher_id: String(row.teacher_id),
+    student_id: row.student_id ? String(row.student_id) : null,
+    student_full_name: row.student_full_name ? String(row.student_full_name) : null,
+    student_paid_lessons_left: row.student_paid_lessons_left !== null ? Number(row.student_paid_lessons_left) : null,
+    date: String(row.date),
+    start_time: String(row.start_time),
+    status: String(row.status) as JournalLessonStatus,
+    rescheduled_to_slot_id: row.rescheduled_to_slot_id ? String(row.rescheduled_to_slot_id) : null,
+    reschedule_target_date: row.reschedule_target_date ? String(row.reschedule_target_date) : null,
+    reschedule_target_time: row.reschedule_target_time ? String(row.reschedule_target_time) : null,
+    source_weekly_slot_id: row.source_weekly_slot_id ? String(row.source_weekly_slot_id) : null,
+    lock_version: Number(row.lock_version ?? 0),
+    status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
+    status_changed_at: row.status_changed_at ? new Date(row.status_changed_at).toISOString() : null,
+    status_reason: row.status_reason ? String(row.status_reason) : null
+  }));
+}
+
+export async function syncTeacherLessonSlotsForRange(input: {
+  teacherId: string;
+  dateFrom: string;
+  dateTo: string;
+}): Promise<void> {
   const pool = getPool();
   const connection = await pool.getConnection();
-
   try {
     await connection.beginTransaction();
-
     await markOverduePlannedSlots(connection, { teacherId: input.teacherId });
     await ensureTemplateSlotsForRange(connection, input.teacherId, input.dateFrom, input.dateTo);
-
-    const [rows] = await connection.query<mysql.RowDataPacket[]>(
-      `
-        SELECT
-          ls.id,
-          ls.teacher_id,
-          ls.student_id,
-          CONCAT_WS(' ', s.first_name, s.last_name) AS student_full_name,
-          s.paid_lessons_left AS student_paid_lessons_left,
-          DATE_FORMAT(ls.date, '%Y-%m-%d') AS date,
-          TIME_FORMAT(ls.start_time, '%H:%i') AS start_time,
-          CASE
-            WHEN ls.status = 'overdue' AND ls.student_id IS NULL
-              THEN 'planned'
-            WHEN ls.status = 'planned'
-              AND ls.student_id IS NOT NULL
-              AND ls.date < DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
-              THEN 'overdue'
-            ELSE ls.status
-          END AS status,
-          ls.rescheduled_to_slot_id,
-          DATE_FORMAT(rsl.date, '%Y-%m-%d') AS reschedule_target_date,
-          TIME_FORMAT(rsl.start_time, '%H:%i') AS reschedule_target_time,
-          ls.source_weekly_slot_id,
-          UNIX_TIMESTAMP(ls.updated_at) AS lock_version,
-          status_audit.created_at AS status_changed_at,
-          actor.login AS status_changed_by_login,
-          JSON_UNQUOTE(JSON_EXTRACT(status_audit.diff_after, '$.reason')) AS status_reason
-        FROM lesson_slots ls
-        LEFT JOIN students s ON s.id = ls.student_id
-        LEFT JOIN lesson_slots rsl ON rsl.id = ls.rescheduled_to_slot_id
-        LEFT JOIN audit_logs status_audit
-          ON status_audit.id = (
-            SELECT al.id
-            FROM audit_logs al
-            WHERE al.entity_type = 'lesson_slot'
-              AND al.entity_id = ls.id
-              AND al.action = 'status_update'
-            ORDER BY al.created_at DESC, al.id DESC
-            LIMIT 1
-          )
-        LEFT JOIN users actor ON actor.id = status_audit.actor_user_id
-        WHERE ls.teacher_id = ? AND ls.date BETWEEN ? AND ?
-        ORDER BY ls.date ASC, ls.start_time ASC
-      `,
-      [input.teacherId, input.dateFrom, input.dateTo]
-    );
-
+    await markOverduePlannedSlots(connection, { teacherId: input.teacherId });
     await connection.commit();
-
-    return rows.map((row) => ({
-      id: String(row.id),
-      teacher_id: String(row.teacher_id),
-      student_id: row.student_id ? String(row.student_id) : null,
-      student_full_name: row.student_full_name ? String(row.student_full_name) : null,
-      student_paid_lessons_left: row.student_paid_lessons_left !== null ? Number(row.student_paid_lessons_left) : null,
-      date: String(row.date),
-      start_time: String(row.start_time),
-      status: String(row.status) as JournalLessonStatus,
-      rescheduled_to_slot_id: row.rescheduled_to_slot_id ? String(row.rescheduled_to_slot_id) : null,
-      reschedule_target_date: row.reschedule_target_date ? String(row.reschedule_target_date) : null,
-      reschedule_target_time: row.reschedule_target_time ? String(row.reschedule_target_time) : null,
-      source_weekly_slot_id: row.source_weekly_slot_id ? String(row.source_weekly_slot_id) : null,
-      lock_version: Number(row.lock_version ?? 0),
-      status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
-      status_changed_at: row.status_changed_at ? new Date(row.status_changed_at).toISOString() : null,
-      status_reason: row.status_reason ? String(row.status_reason) : null
-    }));
   } catch (error) {
     await connection.rollback();
     throw error;
@@ -2103,6 +2137,29 @@ async function syncStudentLessonTimelineBatch(
   for (const studentId of uniqueStudentIds) {
     await syncStudentLessonTimeline(connection, studentId);
   }
+}
+
+function enqueueStudentLessonTimelineSync(studentIds: Array<string | null | undefined>): void {
+  const uniqueStudentIds = Array.from(new Set(studentIds.filter((studentId): studentId is string => Boolean(studentId))));
+  if (uniqueStudentIds.length === 0) return;
+
+  void (async () => {
+    const connection = await getPool().getConnection();
+    try {
+      await connection.beginTransaction();
+      await syncStudentLessonTimelineBatch(connection, uniqueStudentIds);
+      await connection.commit();
+    } catch (error) {
+      try {
+        await connection.rollback();
+      } catch {
+        // ignore rollback errors in background sync
+      }
+      console.error('Failed to sync student lesson timeline in background', error);
+    } finally {
+      connection.release();
+    }
+  })();
 }
 
 export async function createTeacherLessonSlot(input: {
@@ -2672,17 +2729,18 @@ export async function updateTeacherLessonSlotStatus(input: {
         });
       }
 
-      await syncStudentLessonTimelineBatch(connection, [
+      const timelineSyncStudentIds = [
         current.student_id,
         nextStudentId,
         rescheduleSourceSlot.student_id,
         sourceNextStudentId
-      ]);
+      ];
 
       const slot = await getLessonSlotById(connection, rescheduleSourceSlot.id);
       if (!slot) throw new Error('SLOT_NOT_FOUND');
 
       await connection.commit();
+      enqueueStudentLessonTimelineSync(timelineSyncStudentIds);
       return slot;
     }
 
@@ -2710,6 +2768,16 @@ export async function updateTeacherLessonSlotStatus(input: {
         studentId: nextStudentId,
         date: current.date,
         startTime: current.start_time,
+        excludeSlotId: current.id
+      });
+    }
+
+    if (current.status !== 'completed' && normalizedStatus === 'completed') {
+      await assertStudentHasNoEarlierOverdueSlots(connection, {
+        teacherId: current.teacher_id,
+        studentId: nextStudentId,
+        beforeDate: current.date,
+        beforeStartTime: current.start_time,
         excludeSlotId: current.id
       });
     }
@@ -2770,12 +2838,13 @@ export async function updateTeacherLessonSlotStatus(input: {
       }
     });
 
-    await syncStudentLessonTimelineBatch(connection, [current.student_id, nextStudentId]);
+    const timelineSyncStudentIds = [current.student_id, nextStudentId];
 
     const slot = await getLessonSlotById(connection, input.id);
     if (!slot) throw new Error('SLOT_NOT_FOUND');
 
     await connection.commit();
+    enqueueStudentLessonTimelineSync(timelineSyncStudentIds);
     return slot;
   } catch (error) {
     await connection.rollback();
@@ -3057,18 +3126,18 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
         DATE_FORMAT(ls.date, '%Y-%m-%d') AS date,
         TIME_FORMAT(ls.start_time, '%H:%i') AS start_time,
         CASE
-          WHEN ls.status = 'overdue' AND ls.student_id IS NULL
-            THEN 'planned'
-          WHEN ls.status = 'planned'
-            AND ls.student_id IS NOT NULL
+          WHEN ls.status NOT IN ('completed', 'canceled', 'rescheduled')
             AND ls.date < DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
             THEN 'overdue'
+          WHEN ls.status = 'overdue'
+            AND ls.date >= DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
+            THEN 'planned'
           ELSE ls.status
         END AS status,
         ls.rescheduled_to_slot_id,
         DATE_FORMAT(rsl.date, '%Y-%m-%d') AS reschedule_target_date,
         TIME_FORMAT(rsl.start_time, '%H:%i') AS reschedule_target_time,
-        ls.source_weekly_slot_id,
+        COALESCE(ls.source_weekly_slot_id, reschedule_source.inherited_source_weekly_slot_id) AS source_weekly_slot_id,
         UNIX_TIMESTAMP(ls.updated_at) AS lock_version,
         status_audit.created_at AS status_changed_at,
         actor.login AS status_changed_by_login,
@@ -3076,6 +3145,14 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
       FROM lesson_slots ls
       LEFT JOIN students s ON s.id = ls.student_id
       LEFT JOIN lesson_slots rsl ON rsl.id = ls.rescheduled_to_slot_id
+      LEFT JOIN (
+        SELECT
+          rescheduled_to_slot_id AS target_slot_id,
+          MAX(source_weekly_slot_id) AS inherited_source_weekly_slot_id
+        FROM lesson_slots
+        WHERE rescheduled_to_slot_id IS NOT NULL
+        GROUP BY rescheduled_to_slot_id
+      ) reschedule_source ON reschedule_source.target_slot_id = ls.id
       LEFT JOIN audit_logs status_audit
         ON status_audit.id = (
           SELECT al.id
@@ -3221,6 +3298,35 @@ async function assertStudentTimeAvailability(
   }
 }
 
+async function assertStudentHasNoEarlierOverdueSlots(
+  connection: mysql.PoolConnection,
+  input: { teacherId: string; studentId: string | null; beforeDate: string; beforeStartTime: string; excludeSlotId: string }
+): Promise<void> {
+  if (!input.studentId) return;
+
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT id
+      FROM lesson_slots
+      WHERE teacher_id = ?
+        AND student_id = ?
+        AND status = 'overdue'
+        AND (
+          date < ?
+          OR (date = ? AND start_time < ?)
+        )
+        AND id <> ?
+      LIMIT 1
+      FOR UPDATE
+    `,
+    [input.teacherId, input.studentId, input.beforeDate, input.beforeDate, `${input.beforeStartTime}:00`, input.excludeSlotId]
+  );
+
+  if (rows.length > 0) {
+    throw new Error('STUDENT_HAS_OVERDUE_SLOTS');
+  }
+}
+
 async function adjustStudentPaidLessons(connection: mysql.PoolConnection, studentId: string | null, diff: number): Promise<void> {
   if (!studentId || diff === 0) return;
 
@@ -3266,7 +3372,6 @@ async function markOverduePlannedSlots(
       UPDATE lesson_slots
       SET status = 'planned'
       WHERE status = 'overdue'
-        AND student_id IS NOT NULL
         AND date >= DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
         ${whereParts.length > 0 ? `AND ${whereParts.join(' AND ')}` : ''}
     `,
@@ -3277,8 +3382,7 @@ async function markOverduePlannedSlots(
     `
       UPDATE lesson_slots
       SET status = 'overdue'
-      WHERE status = 'planned'
-        AND student_id IS NOT NULL
+      WHERE status NOT IN ('completed', 'canceled', 'rescheduled')
         AND date < DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
         ${whereParts.length > 0 ? `AND ${whereParts.join(' AND ')}` : ''}
     `,

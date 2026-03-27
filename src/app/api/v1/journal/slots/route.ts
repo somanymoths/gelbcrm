@@ -3,14 +3,19 @@ import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { mapInfraError } from '@/lib/api-error-mappers';
 import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
-import { createTeacherLessonSlot, listTeacherLessonSlots } from '@/lib/db';
+import { createTeacherLessonSlot, listTeacherLessonSlots, listTeacherPlannedSlotCountsBeforeDate } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const listSchema = z.object({
   teacherId: z.string().trim().optional(),
   dateFrom: z.string().trim(),
-  dateTo: z.string().trim()
+  dateTo: z.string().trim(),
+  includeBaseline: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value === '1' || value === 'true')
 });
 
 const createSchema = z.object({
@@ -30,7 +35,8 @@ export async function GET(request: Request) {
     const parsed = listSchema.safeParse({
       teacherId: url.searchParams.get('teacherId') ?? undefined,
       dateFrom: url.searchParams.get('dateFrom') ?? '',
-      dateTo: url.searchParams.get('dateTo') ?? ''
+      dateTo: url.searchParams.get('dateTo') ?? '',
+      includeBaseline: url.searchParams.get('includeBaseline') ?? undefined
     });
     if (!parsed.success) {
       return NextResponse.json({ code: 'INVALID_QUERY', message: 'Некорректные параметры запроса' }, { status: 400 });
@@ -46,7 +52,20 @@ export async function GET(request: Request) {
       dateTo
     });
 
-    return NextResponse.json(slots, {
+    if (!parsed.data.includeBaseline) {
+      return NextResponse.json(slots, {
+        headers: {
+          'Cache-Control': 'no-store, max-age=0'
+        }
+      });
+    }
+
+    const baseline = await listTeacherPlannedSlotCountsBeforeDate({
+      teacherId: scope.teacherId,
+      date: dateFrom
+    });
+
+    return NextResponse.json({ slots, baseline }, {
       headers: {
         'Cache-Control': 'no-store, max-age=0'
       }
