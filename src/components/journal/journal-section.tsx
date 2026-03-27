@@ -1068,10 +1068,11 @@ export function JournalSection() {
     });
   }, [slots, studentPaidLessonsById, plannedBaselineByStudentId]);
 
-  const earliestOverdueSortKeyByStudentId = useMemo(() => {
+  const earliestUnconfirmedSortKeyByStudentId = useMemo(() => {
     const map = new Map<string, string>();
     for (const slot of slots) {
-      if (slot.status !== 'overdue' || !slot.student_id) continue;
+      if (!slot.student_id) continue;
+      if (slot.status === 'completed' || slot.status === 'canceled') continue;
       const sortKey = getSlotSortKey(slot.date, slot.start_time);
       const currentMinSortKey = map.get(slot.student_id);
       if (!currentMinSortKey || sortKey < currentMinSortKey) {
@@ -1306,13 +1307,13 @@ export function JournalSection() {
                           : 0;
                         const isStudentBalanceEmpty = !isStudentMissing && slot.status !== 'completed' && effectiveStudentPaidLessonsLeft <= 0;
                         const slotSortKey = getSlotSortKey(slot.date, slot.start_time);
-                        const earliestOverdueSortKey = effectiveStudentId
-                          ? earliestOverdueSortKeyByStudentId.get(effectiveStudentId)
+                        const earliestUnconfirmedSortKey = effectiveStudentId
+                          ? earliestUnconfirmedSortKeyByStudentId.get(effectiveStudentId)
                           : undefined;
                         const hasUnconfirmedLessons =
                           !isStudentMissing &&
                           slot.status !== 'completed' &&
-                          Boolean(earliestOverdueSortKey && earliestOverdueSortKey < slotSortKey);
+                          Boolean(earliestUnconfirmedSortKey && earliestUnconfirmedSortKey < slotSortKey);
                         const confirmTooltip = isStudentMissing
                           ? 'Нельзя подтвердить занятие без ученика'
                           : isStudentConflict
