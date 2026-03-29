@@ -68,6 +68,7 @@ type LessonSlot = {
   status_changed_by_login: string | null;
   status_changed_at: string | null;
   status_reason?: string | null;
+  has_earlier_unconfirmed?: boolean;
   source_weekly_slot_id?: string | null;
 };
 type PlannedForecastBaseline = { student_id: string; planned_count: number };
@@ -111,6 +112,7 @@ const ADMIN_JOURNAL_TEACHER_STORAGE_KEY = 'gelbcrm:journal:selectedTeacherId';
 const JOURNAL_WEEK_START_STORAGE_KEY = 'gelbcrm:journal:weekStart';
 const JOURNAL_MIN_WEEK_START_ISO = '2025-12-29';
 const REFERENCE_CACHE_TTL_MS = 60_000;
+const WEEK_SLOTS_CACHE_TTL_MS = 5 * 60_000;
 const HOURLY_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
   const value = `${String(hour).padStart(2, '0')}:00`;
   return { value, label: value };
@@ -144,6 +146,7 @@ export function JournalSection() {
   const [confirmUpdatingSlotId, setConfirmUpdatingSlotId] = useState<string | null>(null);
   const studentsCacheRef = useRef<Map<string, { ts: number; data: StudentItem[] }>>(new Map());
   const weeklyTemplateCacheRef = useRef<Map<string, { ts: number; data: WeeklySlot[] }>>(new Map());
+  const weekSlotsCacheRef = useRef<Map<string, { ts: number; data: WeekSlotsResponse }>>(new Map());
   const roleUserCacheRef = useRef<{ ts: number; data: RoleUser } | null>(null);
   const teachersCacheRef = useRef<{ ts: number; data: TeacherItem[] } | null>(null);
   const loadAbortRef = useRef<AbortController | null>(null);
@@ -325,11 +328,37 @@ export function JournalSection() {
       { signal: options?.signal }
     );
 
+    weekSlotsCacheRef.current.set(getWeekSlotsCacheKey(teacherId, dateFrom, dateTo), {
+      ts: Date.now(),
+      data: payload
+    });
+
     setSlots(payload.slots);
     setPlannedBaselineByStudentId(
       Object.fromEntries(payload.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
     );
   }, [weekStart]);
+
+  const prefetchWeekData = useCallback(
+    async (teacherId: string, weekStartDate: Date, signal?: AbortSignal) => {
+      const dateFrom = toIsoDate(weekStartDate);
+      const dateTo = toIsoDate(addDays(weekStartDate, 6));
+      const cacheKey = getWeekSlotsCacheKey(teacherId, dateFrom, dateTo);
+      const cached = weekSlotsCacheRef.current.get(cacheKey);
+      if (cached && Date.now() - cached.ts <= WEEK_SLOTS_CACHE_TTL_MS) return;
+
+      try {
+        const payload = await fetchJson<WeekSlotsResponse>(
+          `/api/v1/journal/slots?teacherId=${encodeURIComponent(teacherId)}&dateFrom=${dateFrom}&dateTo=${dateTo}&includeBaseline=1`,
+          { signal }
+        );
+        weekSlotsCacheRef.current.set(cacheKey, { ts: Date.now(), data: payload });
+      } catch {
+        // Ignore prefetch failures: they should never block navigation.
+      }
+    },
+    []
+  );
 
   const scheduleSoftRefresh = useCallback((teacherId?: string | null) => {
     const targetTeacherId = teacherId ?? selectedTeacherId;
@@ -410,8 +439,18 @@ export function JournalSection() {
       }
       const dateFrom = toIsoDate(weekStart);
       const dateTo = toIsoDate(addDays(weekStart, 6));
-      const [slotsPayload] = await Promise.all([
-        (async () => {
+      const weekCacheKey = getWeekSlotsCacheKey(nextTeacherId, dateFrom, dateTo);
+      const cachedWeek = weekSlotsCacheRef.current.get(weekCacheKey);
+      const hasFreshCachedWeek = Boolean(cachedWeek && Date.now() - cachedWeek.ts <= WEEK_SLOTS_CACHE_TTL_MS);
+      if (hasFreshCachedWeek && cachedWeek) {
+        setSlots(cachedWeek.data.slots);
+        setPlannedBaselineByStudentId(
+          Object.fromEntries(cachedWeek.data.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
+        );
+      }
+
+      const fetchCurrentWeek = async (syncRange: boolean): Promise<WeekSlotsResponse> => {
+        if (syncRange) {
           await fetchJson(
             '/api/v1/journal/slots/sync-range',
             withIdempotencyHeaders({
@@ -420,19 +459,41 @@ export function JournalSection() {
               body: JSON.stringify({ teacherId: nextTeacherId, dateFrom, dateTo })
             })
           );
-          return fetchJson<WeekSlotsResponse>(
-            `/api/v1/journal/slots?teacherId=${encodeURIComponent(nextTeacherId)}&dateFrom=${dateFrom}&dateTo=${dateTo}&includeBaseline=1`,
-            { signal: controller.signal }
-          );
-        })()
-      ]);
+        }
+
+        return fetchJson<WeekSlotsResponse>(
+          `/api/v1/journal/slots?teacherId=${encodeURIComponent(nextTeacherId)}&dateFrom=${dateFrom}&dateTo=${dateTo}&includeBaseline=1`,
+          { signal: controller.signal }
+        );
+      };
+
+      const applyWeekPayload = (payload: WeekSlotsResponse) => {
+        weekSlotsCacheRef.current.set(weekCacheKey, { ts: Date.now(), data: payload });
+        setSlots(payload.slots);
+        setPlannedBaselineByStudentId(
+          Object.fromEntries(payload.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
+        );
+      };
+
+      if (hasFreshCachedWeek) {
+        void (async () => {
+          try {
+            const freshWeek = await fetchCurrentWeek(false);
+            applyWeekPayload(freshWeek);
+          } catch (error) {
+            if (error instanceof DOMException && error.name === 'AbortError') return;
+          }
+        })();
+      } else {
+        const slotsPayload = await fetchCurrentWeek(true);
+        applyWeekPayload(slotsPayload);
+      }
 
       setStudents(studentsData);
       setWeeklyTemplate(templateData);
-      setSlots(slotsPayload.slots);
-      setPlannedBaselineByStudentId(
-        Object.fromEntries(slotsPayload.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
-      );
+
+      void prefetchWeekData(nextTeacherId, addDays(weekStart, -7), controller.signal);
+      void prefetchWeekData(nextTeacherId, addDays(weekStart, 7), controller.signal);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
       const messageText = error instanceof Error ? error.message : '';
@@ -450,7 +511,7 @@ export function JournalSection() {
     } finally {
       setLoading(false);
     }
-  }, [selectedTeacherId, showError, weekStart]);
+  }, [prefetchWeekData, selectedTeacherId, showError, weekStart]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -811,10 +872,17 @@ export function JournalSection() {
 
   const openDeleteConfirm = (slot: LessonSlot) => {
     const isRescheduledTarget = rescheduledSourceByTargetSlotId.has(slot.id);
-    if (slot.status !== 'planned' && !isRescheduledTarget) return;
+    const isOneTimeSlot = !slot.source_weekly_slot_id;
+    if (!isOneTimeSlot && slot.status !== 'planned' && !isRescheduledTarget) return;
     if (slot.rescheduled_to_slot_id) return;
     const ok = window.confirm('Удалить слот? Действие нельзя отменить.');
     if (!ok) return;
+    // Reschedule targets can have inherited source_weekly_slot_id in API payload,
+    // but physically they are standalone slots and must be removed in single mode.
+    if (isRescheduledTarget) {
+      void deleteSlot(slot);
+      return;
+    }
     if (slot.source_weekly_slot_id) {
       void deleteWeeklySlot(slot);
       return;
@@ -1068,20 +1136,6 @@ export function JournalSection() {
     });
   }, [slots, studentPaidLessonsById, plannedBaselineByStudentId]);
 
-  const earliestUnconfirmedSortKeyByStudentId = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const slot of slots) {
-      if (!slot.student_id) continue;
-      if (slot.status === 'completed' || slot.status === 'canceled') continue;
-      const sortKey = getSlotSortKey(slot.date, slot.start_time);
-      const currentMinSortKey = map.get(slot.student_id);
-      if (!currentMinSortKey || sortKey < currentMinSortKey) {
-        map.set(slot.student_id, sortKey);
-      }
-    }
-    return map;
-  }, [slots]);
-
   const selectedTeacherName = useMemo(() => {
     if (!selectedTeacherId) return 'Преподаватель';
     return teachers.find((item) => item.id === selectedTeacherId)?.full_name ?? 'Преподаватель';
@@ -1283,7 +1337,15 @@ export function JournalSection() {
                   </div>
                 </>
               ) : (slotMapByDate.get(day.dateIso) ?? []).length === 0 ? (
-                <p className="text-sm text-muted-foreground">{loading ? 'Загрузка...' : 'Нет слотов'}</p>
+                weekStartHydrated && roleUser ? (
+                  <p className="text-sm text-muted-foreground">Нет слотов</p>
+                ) : (
+                  <div className="space-y-2 rounded-lg border border-border/50 p-3">
+                    <Skeleton className="h-5 w-24" />
+                    <Skeleton className="h-5 w-36" />
+                    <Skeleton className="h-8 w-48" />
+                  </div>
+                )
               ) : (
                 (slotMapByDate.get(day.dateIso) ?? []).map((slot) => (
                   <Card key={slot.id} data-journal-slot-card className="cursor-default">
@@ -1306,24 +1368,20 @@ export function JournalSection() {
                           ? Math.max(0, Number(studentPaidLessonsById.get(effectiveStudentId) ?? slot.student_paid_lessons_left ?? 0))
                           : 0;
                         const isStudentBalanceEmpty = !isStudentMissing && slot.status !== 'completed' && effectiveStudentPaidLessonsLeft <= 0;
-                        const slotSortKey = getSlotSortKey(slot.date, slot.start_time);
-                        const earliestUnconfirmedSortKey = effectiveStudentId
-                          ? earliestUnconfirmedSortKeyByStudentId.get(effectiveStudentId)
-                          : undefined;
                         const hasUnconfirmedLessons =
                           !isStudentMissing &&
                           slot.status !== 'completed' &&
-                          Boolean(earliestUnconfirmedSortKey && earliestUnconfirmedSortKey < slotSortKey);
+                          Boolean(slot.has_earlier_unconfirmed);
                         const confirmTooltip = isStudentMissing
                           ? 'Нельзя подтвердить занятие без ученика'
                           : isStudentConflict
                             ? 'У выбранного ученика уже есть занятие в это время'
                             : slot.status === 'canceled'
                               ? 'Сначала снимите отмену занятия'
-                            : hasUnconfirmedLessons
-                              ? 'Есть неподтвержденные занятия'
                             : isStudentBalanceEmpty
-                              ? 'Недостаточно оплаченных занятий у ученика'
+                              ? 'У ученика нет оплаченных занятий'
+                            : hasUnconfirmedLessons
+                              ? 'Есть неподтвержденные предыдущие занятия'
                             : slot.status !== 'completed' && isFutureMskDate(slot.date)
                               ? 'Нельзя завершить занятие будущего дня'
                             : slot.status === 'completed'
@@ -1357,11 +1415,12 @@ export function JournalSection() {
                         const rescheduledFromDateLabel = formatDayMonthRu(rescheduledSource?.sourceDate ?? null);
                         const shouldShowSlotActions = !slot.rescheduled_to_slot_id;
                         const isRescheduledTargetWithSource = isRescheduledTargetSlot && Boolean(rescheduledSource?.sourceSlotId);
-                        const shouldShowActionsMenu = !isRegularLesson || isRescheduledTargetSlot;
+                        const isClosedRescheduledTargetSlot =
+                          isRescheduledTargetSlot && (slot.status === 'completed' || slot.status === 'canceled');
+                        const shouldShowActionsMenu = (!isRegularLesson || isRescheduledTargetSlot) && !isClosedRescheduledTargetSlot;
                         const canDeleteSlot =
                           !slot.source_weekly_slot_id &&
-                          !slot.rescheduled_to_slot_id &&
-                          (slot.status === 'planned' || isRescheduledTargetSlot);
+                          !slot.rescheduled_to_slot_id;
                         const canDeleteReschedule = isRescheduledTargetWithSource;
                         const cancelTooltip =
                           slot.status === 'canceled'
@@ -1370,6 +1429,21 @@ export function JournalSection() {
                               : 'Нажмите, чтобы вернуть в Запланировано'
                             : 'Отменить занятие';
                         const isConfirmSaving = confirmUpdatingSlotId === slot.id;
+                        const isConfirmBlockedByRules =
+                          slot.status !== 'completed' &&
+                          (isStudentMissing || isStudentConflict || hasUnconfirmedLessons || isStudentBalanceEmpty || isFutureDayCompletionForbidden);
+                        const isConfirmDisabled =
+                          deletingSlotId === slot.id ||
+                          statusUpdatingSlotId === slot.id ||
+                          isConfirmSaving ||
+                          slot.status === 'canceled' ||
+                          isConfirmBlockedByRules;
+                        const confirmToggleClass =
+                          `${isRegularLesson
+                            ? 'shrink-0 justify-start gap-1.5 rounded-l-none rounded-r-lg border-l border-l-border pr-[10px] pl-1.5'
+                            : 'shrink-0 justify-start gap-1.5 rounded-l-none rounded-r-none border-l border-l-border border-r-0 pr-[10px] pl-1.5'} ` +
+                          `${isConfirmDisabled ? 'cursor-not-allowed !opacity-40' : ''} ` +
+                          `${isConfirmBlockedByRules ? '!bg-slate-100 !text-slate-400 !border-slate-300 border-dashed hover:!bg-slate-100 hover:!text-slate-400 data-[state=on]:!bg-slate-100' : ''}`;
 
                         return (
                           <>
@@ -1628,50 +1702,42 @@ export function JournalSection() {
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <Toggle
-                                variant="outline"
-                                size="sm"
-                                data-segment={isRegularLesson ? 'last' : 'middle'}
-                                pressed={slot.status === 'completed'}
-                                aria-label="Подтвердить занятие"
-                                disabled={
-                                  deletingSlotId === slot.id ||
-                                  statusUpdatingSlotId === slot.id ||
-                                  isConfirmSaving ||
-                                  slot.status === 'canceled' ||
-                                  (slot.status !== 'completed' && (isStudentMissing || isStudentConflict || hasUnconfirmedLessons || isStudentBalanceEmpty || isFutureDayCompletionForbidden))
-                                }
-                                onPressedChange={(pressed) =>
-                                  void setStatus(slot, pressed ? 'completed' : 'planned', {
-                                    studentId: effectiveStudentId ?? undefined,
-                                    action: 'confirm'
-                                  })
-                                }
-                                className={
-                                  isRegularLesson
-                                    ? 'shrink-0 justify-start gap-1.5 rounded-l-none rounded-r-lg border-l border-l-border pr-[10px] pl-1.5'
-                                    : 'shrink-0 justify-start gap-1.5 rounded-l-none rounded-r-none border-l border-l-border border-r-0 pr-[10px] pl-1.5'
-                                }
-                              >
-                                {isConfirmSaving ? (
-                                  <Loader className="size-4 animate-spin" />
-                                ) : (
-                                  <Image
-                                    src={slot.status === 'completed' ? '/icons/journal-confirmed.svg' : '/icons/journal-confirm.svg'}
-                                    alt=""
-                                    aria-hidden="true"
-                                    width={16}
-                                    height={16}
-                                    className="size-4"
-                                  />
-                                )}
-                                <span className="inline-grid justify-items-start text-left">
-                                  <span className="col-start-1 row-start-1 invisible">Подтверждено</span>
-                                  <span className="col-start-1 row-start-1">
-                                    {slot.status === 'completed' ? 'Подтверждено' : 'Подтвердить'}
+                              <span className={isConfirmDisabled ? 'inline-flex cursor-not-allowed' : 'inline-flex'}>
+                                <Toggle
+                                  variant="outline"
+                                  size="sm"
+                                  data-segment={isRegularLesson ? 'last' : 'middle'}
+                                  pressed={slot.status === 'completed'}
+                                  aria-label="Подтвердить занятие"
+                                  disabled={isConfirmDisabled}
+                                  onPressedChange={(pressed) =>
+                                    void setStatus(slot, pressed ? 'completed' : 'planned', {
+                                      studentId: effectiveStudentId ?? undefined,
+                                      action: 'confirm'
+                                    })
+                                  }
+                                  className={confirmToggleClass}
+                                >
+                                  {isConfirmSaving ? (
+                                    <Loader className="size-4 animate-spin" />
+                                  ) : (
+                                    <Image
+                                      src={slot.status === 'completed' ? '/icons/journal-confirmed.svg' : '/icons/journal-confirm.svg'}
+                                      alt=""
+                                      aria-hidden="true"
+                                      width={16}
+                                      height={16}
+                                      className="size-4"
+                                    />
+                                  )}
+                                  <span className="inline-grid justify-items-start text-left">
+                                    <span className="col-start-1 row-start-1 invisible">Подтверждено</span>
+                                    <span className="col-start-1 row-start-1">
+                                      {slot.status === 'completed' ? 'Подтверждено' : 'Подтвердить'}
+                                    </span>
                                   </span>
-                                </span>
-                              </Toggle>
+                                </Toggle>
+                              </span>
                             </TooltipTrigger>
                             {confirmTooltip ? (
                               <TooltipContent sideOffset={6}>
@@ -2471,6 +2537,10 @@ function getOccupiedTimesForDay(
   }
 
   return occupied;
+}
+
+function getWeekSlotsCacheKey(teacherId: string, dateFrom: string, dateTo: string): string {
+  return `${teacherId}|${dateFrom}|${dateTo}`;
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {

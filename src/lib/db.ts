@@ -11,25 +11,59 @@ const TRANSIENT_DB_ERROR_CODES = new Set([
   'ECONNRESET',
   'PROTOCOL_CONNECTION_LOST',
   'ETIMEDOUT',
-  'EPIPE'
+  'EPIPE',
+  'ER_CLIENT_INTERACTION_TIMEOUT',
+  'PROTOCOL_PACKETS_OUT_OF_ORDER',
+  'PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR'
 ]);
+const TRANSIENT_DB_ERROR_ERRNOS = new Set([4031]);
+const TRANSIENT_QUERY_RETRY_ATTEMPTS = 3;
+const DEADLOCK_MYSQL_ERROR_CODES = new Set(['ER_LOCK_DEADLOCK']);
+const DEADLOCK_SQL_STATES = new Set(['40001']);
+const DEADLOCK_ERRNOS = new Set([1213]);
+const DEADLOCK_RETRY_ATTEMPTS = 3;
 
 function isTransientDbError(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null || !('code' in error)) return false;
+  if (typeof error !== 'object' || error === null) return false;
   const code = String((error as { code?: unknown }).code ?? '');
-  return TRANSIENT_DB_ERROR_CODES.has(code);
+  if (TRANSIENT_DB_ERROR_CODES.has(code)) return true;
+  const errno = Number((error as { errno?: unknown }).errno ?? 0);
+  if (TRANSIENT_DB_ERROR_ERRNOS.has(errno)) return true;
+  const message = String((error as { message?: unknown }).message ?? '').toLowerCase();
+  if (message.includes('disconnected by the server because of inactivity')) return true;
+  if (message.includes('packets out of order')) return true;
+  return false;
+}
+
+function isMysqlDeadlockError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const code = String((error as { code?: unknown }).code ?? '');
+  if (DEADLOCK_MYSQL_ERROR_CODES.has(code)) return true;
+  const sqlState = String((error as { sqlState?: unknown }).sqlState ?? '');
+  if (DEADLOCK_SQL_STATES.has(sqlState)) return true;
+  const errno = Number((error as { errno?: unknown }).errno ?? 0);
+  return DEADLOCK_ERRNOS.has(errno);
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function queryWithTransientRetry<T extends mysql.QueryResult>(
   sql: string,
   params?: unknown[]
 ): Promise<[T, mysql.FieldPacket[]]> {
-  try {
-    return await getPool().query<T>(sql, params);
-  } catch (error) {
-    if (!isTransientDbError(error)) throw error;
-    return getPool().query<T>(sql, params);
+  for (let attempt = 1; attempt <= TRANSIENT_QUERY_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await getPool().query<T>(sql, params);
+    } catch (error) {
+      if (!isTransientDbError(error) || attempt >= TRANSIENT_QUERY_RETRY_ATTEMPTS) {
+        throw error;
+      }
+      await wait(attempt * 25);
+    }
   }
+  throw new Error('UNREACHABLE_QUERY_RETRY');
 }
 
 let hasWeeklySlotStudentIdColumnCache: boolean | null = null;
@@ -1513,6 +1547,7 @@ export type JournalLessonSlot = {
   status_changed_by_login?: string | null;
   status_changed_at?: string | null;
   status_reason?: string | null;
+  has_earlier_unconfirmed?: boolean;
 };
 
 export async function findTeacherByUserId(userId: string): Promise<JournalTeacherBasic | null> {
@@ -1975,7 +2010,25 @@ export async function listTeacherLessonSlots(input: {
         UNIX_TIMESTAMP(ls.updated_at) AS lock_version,
         status_audit.created_at AS status_changed_at,
         actor.login AS status_changed_by_login,
-        JSON_UNQUOTE(JSON_EXTRACT(status_audit.diff_after, '$.reason')) AS status_reason
+        JSON_UNQUOTE(JSON_EXTRACT(status_audit.diff_after, '$.reason')) AS status_reason,
+        CASE
+          WHEN ls.student_id IS NULL THEN 0
+          WHEN EXISTS (
+            SELECT 1
+            FROM lesson_slots ls_prev
+            WHERE ls_prev.teacher_id = ls.teacher_id
+              AND ls_prev.student_id = ls.student_id
+              AND ls_prev.status NOT IN ('completed', 'canceled', 'rescheduled')
+              AND (
+                ls_prev.date < ls.date
+                OR (ls_prev.date = ls.date AND ls_prev.start_time < ls.start_time)
+              )
+              AND ls_prev.id <> ls.id
+              AND (ls_prev.rescheduled_to_slot_id IS NULL OR ls_prev.rescheduled_to_slot_id <> ls.id)
+            LIMIT 1
+          ) THEN 1
+          ELSE 0
+        END AS has_earlier_unconfirmed
       FROM lesson_slots ls
       LEFT JOIN students s ON s.id = ls.student_id
       LEFT JOIN lesson_slots rsl ON rsl.id = ls.rescheduled_to_slot_id
@@ -2017,7 +2070,8 @@ export async function listTeacherLessonSlots(input: {
     lock_version: Number(row.lock_version ?? 0),
     status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
     status_changed_at: row.status_changed_at ? new Date(row.status_changed_at).toISOString() : null,
-    status_reason: row.status_reason ? String(row.status_reason) : null
+    status_reason: row.status_reason ? String(row.status_reason) : null,
+    has_earlier_unconfirmed: Boolean(Number(row.has_earlier_unconfirmed ?? 0))
   }));
 }
 
@@ -2027,18 +2081,24 @@ export async function syncTeacherLessonSlotsForRange(input: {
   dateTo: string;
 }): Promise<void> {
   const pool = getPool();
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-    await markOverduePlannedSlots(connection, { teacherId: input.teacherId });
-    await ensureTemplateSlotsForRange(connection, input.teacherId, input.dateFrom, input.dateTo);
-    await markOverduePlannedSlots(connection, { teacherId: input.teacherId });
-    await connection.commit();
-  } catch (error) {
-    await connection.rollback();
-    throw error;
-  } finally {
-    connection.release();
+  for (let attempt = 1; attempt <= DEADLOCK_RETRY_ATTEMPTS; attempt += 1) {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await markOverduePlannedSlots(connection, { teacherId: input.teacherId });
+      await ensureTemplateSlotsForRange(connection, input.teacherId, input.dateFrom, input.dateTo);
+      await markOverduePlannedSlots(connection, { teacherId: input.teacherId });
+      await connection.commit();
+      return;
+    } catch (error) {
+      await connection.rollback();
+      if (!isMysqlDeadlockError(error) || attempt >= DEADLOCK_RETRY_ATTEMPTS) {
+        throw error;
+      }
+      await wait(attempt * 50);
+    } finally {
+      connection.release();
+    }
   }
 }
 
@@ -2422,10 +2482,11 @@ export async function deleteTeacherLessonSlot(input: {
       [input.id]
     );
     const isRescheduleTarget = rescheduleSourceRows.length > 0;
+    const isOneTimeSlot = !current.source_weekly_slot_id;
     if (current.rescheduled_to_slot_id) {
       throw new Error('SLOT_RESCHEDULE_SOURCE_DELETE_FORBIDDEN');
     }
-    if (current.status !== 'planned' && !isRescheduleTarget) {
+    if (!isOneTimeSlot && current.status !== 'planned' && !isRescheduleTarget) {
       throw new Error('SLOT_DELETE_ONLY_PLANNED');
     }
 
@@ -2784,7 +2845,8 @@ export async function updateTeacherLessonSlotStatus(input: {
         studentId: nextStudentId,
         beforeDate: current.date,
         beforeStartTime: current.start_time,
-        excludeSlotId: current.id
+        excludeSlotId: current.id,
+        excludeRescheduleSourceForTargetId: rescheduleSourceSlot ? current.id : undefined
       });
     }
 
@@ -3147,7 +3209,25 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
         UNIX_TIMESTAMP(ls.updated_at) AS lock_version,
         status_audit.created_at AS status_changed_at,
         actor.login AS status_changed_by_login,
-        JSON_UNQUOTE(JSON_EXTRACT(status_audit.diff_after, '$.reason')) AS status_reason
+        JSON_UNQUOTE(JSON_EXTRACT(status_audit.diff_after, '$.reason')) AS status_reason,
+        CASE
+          WHEN ls.student_id IS NULL THEN 0
+          WHEN EXISTS (
+            SELECT 1
+            FROM lesson_slots ls_prev
+            WHERE ls_prev.teacher_id = ls.teacher_id
+              AND ls_prev.student_id = ls.student_id
+              AND ls_prev.status NOT IN ('completed', 'canceled', 'rescheduled')
+              AND (
+                ls_prev.date < ls.date
+                OR (ls_prev.date = ls.date AND ls_prev.start_time < ls.start_time)
+              )
+              AND ls_prev.id <> ls.id
+              AND (ls_prev.rescheduled_to_slot_id IS NULL OR ls_prev.rescheduled_to_slot_id <> ls.id)
+            LIMIT 1
+          ) THEN 1
+          ELSE 0
+        END AS has_earlier_unconfirmed
       FROM lesson_slots ls
       LEFT JOIN students s ON s.id = ls.student_id
       LEFT JOIN lesson_slots rsl ON rsl.id = ls.rescheduled_to_slot_id
@@ -3195,7 +3275,8 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
     lock_version: Number(row.lock_version ?? 0),
     status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
     status_changed_at: row.status_changed_at ? new Date(row.status_changed_at).toISOString() : null,
-    status_reason: row.status_reason ? String(row.status_reason) : null
+    status_reason: row.status_reason ? String(row.status_reason) : null,
+    has_earlier_unconfirmed: Boolean(Number(row.has_earlier_unconfirmed ?? 0))
   };
 }
 
@@ -3306,27 +3387,51 @@ async function assertStudentTimeAvailability(
 
 async function assertStudentHasNoEarlierUnconfirmedSlots(
   connection: mysql.PoolConnection,
-  input: { teacherId: string; studentId: string | null; beforeDate: string; beforeStartTime: string; excludeSlotId: string }
+  input: {
+    teacherId: string;
+    studentId: string | null;
+    beforeDate: string;
+    beforeStartTime: string;
+    excludeSlotId: string;
+    excludeRescheduleSourceForTargetId?: string;
+  }
 ): Promise<void> {
   if (!input.studentId) return;
 
-  const [rows] = await connection.query<mysql.RowDataPacket[]>(
-    `
-      SELECT id
-      FROM lesson_slots
-      WHERE teacher_id = ?
-        AND student_id = ?
-        AND status NOT IN ('completed', 'canceled')
-        AND (
-          date < ?
-          OR (date = ? AND start_time < ?)
-        )
-        AND id <> ?
-      LIMIT 1
-      FOR UPDATE
-    `,
-    [input.teacherId, input.studentId, input.beforeDate, input.beforeDate, `${input.beforeStartTime}:00`, input.excludeSlotId]
-  );
+  const params: Array<string> = [
+    input.teacherId,
+    input.studentId,
+    input.beforeDate,
+    input.beforeDate,
+    `${input.beforeStartTime}:00`,
+    input.excludeSlotId
+  ];
+  let sql = `
+    SELECT id
+    FROM lesson_slots
+    WHERE teacher_id = ?
+      AND student_id = ?
+      AND status NOT IN ('completed', 'canceled', 'rescheduled')
+      AND (
+        date < ?
+        OR (date = ? AND start_time < ?)
+      )
+      AND id <> ?
+  `;
+
+  if (input.excludeRescheduleSourceForTargetId) {
+    sql += `
+      AND (rescheduled_to_slot_id IS NULL OR rescheduled_to_slot_id <> ?)
+    `;
+    params.push(input.excludeRescheduleSourceForTargetId);
+  }
+
+  sql += `
+    LIMIT 1
+    FOR UPDATE
+  `;
+
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(sql, params);
 
   if (rows.length > 0) {
     throw new Error('STUDENT_HAS_OVERDUE_SLOTS');
