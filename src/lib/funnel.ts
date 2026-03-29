@@ -246,14 +246,20 @@ export async function listFunnelBoardCards(): Promise<FunnelCardListItem[]> {
 
   const result: FunnelCardListItem[] = [];
 
-  for (const stageItems of grouped.values()) {
+  for (const [stageCode, stageItems] of grouped.entries()) {
     stageItems.sort((a, b) => {
-      if (a.next_lesson_at && b.next_lesson_at) {
-        return new Date(a.next_lesson_at).getTime() - new Date(b.next_lesson_at).getTime();
-      }
+      if (stageCode === 'studying' || stageCode === 'on_lessons') {
+        if (a.paid_lessons_left !== b.paid_lessons_left) {
+          return a.paid_lessons_left - b.paid_lessons_left;
+        }
+      } else {
+        if (a.next_lesson_at && b.next_lesson_at) {
+          return new Date(a.next_lesson_at).getTime() - new Date(b.next_lesson_at).getTime();
+        }
 
-      if (a.next_lesson_at && !b.next_lesson_at) return -1;
-      if (!a.next_lesson_at && b.next_lesson_at) return 1;
+        if (a.next_lesson_at && !b.next_lesson_at) return -1;
+        if (!a.next_lesson_at && b.next_lesson_at) return 1;
+      }
 
       return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
     });
