@@ -2,7 +2,7 @@ import { compare } from 'bcryptjs';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { mapInfraError } from '@/lib/api-error-mappers';
-import { findActiveUserByLogin } from '@/lib/db';
+import { findActiveUserByLogin, markUserLastLoginAt } from '@/lib/db';
 import { SESSION_COOKIE_NAME, SESSION_MAX_AGE_SECONDS } from '@/lib/env';
 import { createSessionToken } from '@/lib/session';
 
@@ -41,8 +41,11 @@ export async function POST(request: Request) {
     const token = await createSessionToken({
       id: user.id,
       role: user.role,
-      login: user.login
+      login: user.login,
+      sessionVersion: Number(user.session_version ?? 1)
     });
+
+    await markUserLastLoginAt(user.id);
 
     const response = NextResponse.json({
       id: user.id,

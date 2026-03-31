@@ -33,7 +33,7 @@ const mockedResetIdempotencyStore = vi.mocked(resetIdempotencyStore);
 describe('runtime-cache route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockedRequireAdmin.mockResolvedValue({ session: { id: 'admin-1', role: 'admin', login: 'admin' } });
+    mockedRequireAdmin.mockResolvedValue({ session: { id: 'admin-1', role: 'admin', login: 'admin', sessionVersion: 1 } });
     mockedGetRequestCacheStats.mockReturnValue({
       hits: 0,
       misses: 0,

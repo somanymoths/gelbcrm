@@ -264,7 +264,7 @@ paths:
                 items: { $ref: '#/components/schemas/Teacher' }
     post:
       tags: [Teachers]
-      summary: Создать преподавателя и аккаунт
+      summary: Создать преподавателя
       requestBody:
         required: true
         content:
@@ -276,6 +276,88 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Teacher' }
+
+  /teachers/{id}/access:
+    get:
+      tags: [Teachers]
+      summary: Статус доступа преподавателя
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TeacherAccessStatus' }
+        '404': { description: Teacher not found }
+    post:
+      tags: [Teachers]
+      summary: Создать доступ преподавателя с временным паролем
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TeacherAccessCreated' }
+        '409': { description: Access already exists or duplicate login }
+        '422': { description: Teacher email required }
+
+  /teachers/{id}/access/login:
+    patch:
+      tags: [Teachers]
+      summary: Изменить логин доступа преподавателя
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login]
+              properties:
+                login: { type: string, format: email }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teacherId: { type: string, format: uuid }
+                  login: { type: string, format: email }
+        '404': { description: Teacher or access not found }
+        '409': { description: Duplicate login }
+
+  /teachers/{id}/access/password:
+    patch:
+      tags: [Teachers]
+      summary: Изменить пароль доступа преподавателя и завершить активные сессии
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teacherId: { type: string, format: uuid }
+                  forceLogoutAllSessions: { type: boolean }
+        '404': { description: Teacher or access not found }
 
   /teachers/{id}:
     get:
@@ -305,24 +387,6 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Teacher' }
-
-  /teachers/{id}/reset-password:
-    post:
-      tags: [Teachers]
-      summary: Сброс пароля преподавателя администратором
-      parameters:
-        - $ref: '#/components/parameters/IdPath'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [newPassword]
-              properties:
-                newPassword: { type: string, format: password, minLength: 8 }
-      responses:
-        '204': { description: Password reset }
 
   /tariff-grids:
     get:
@@ -648,6 +712,42 @@ paths:
       responses:
         '204': { description: Updated }
 
+  /journal/audit:
+    get:
+      tags: [Journal]
+      summary: Лента аудита журнала преподавателя (только admin)
+      parameters:
+        - in: query
+          name: teacherId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - in: query
+          name: cursorCreatedAt
+          schema: { type: string, format: date-time }
+        - in: query
+          name: cursorId
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/JournalAuditItem' }
+                  nextCursor:
+                    type: object
+                    nullable: true
+                    properties:
+                      createdAt: { type: string, format: date-time }
+                      id: { type: integer, minimum: 1 }
+
   /notifications:
     get:
       tags: [Notifications]
@@ -783,35 +883,62 @@ components:
       type: object
       properties:
         id: { type: string, format: uuid }
-        fullName: { type: string }
+        first_name: { type: string }
+        last_name: { type: string }
+        full_name: { type: string }
+        language_id: { type: integer, nullable: true }
+        language_name: { type: string, nullable: true }
+        language_flag_emoji: { type: string, nullable: true }
+        rate_rub: { type: integer, nullable: true }
+        telegram_raw: { type: string, nullable: true }
+        telegram_display: { type: string, nullable: true }
         phone: { type: string, nullable: true }
-        contactLink: { type: string, nullable: true }
-        language: { type: string, nullable: true }
-        lessonRateRub: { type: number, nullable: true }
-        timezone: { type: string }
+        email: { type: string, format: email, nullable: true }
+        comment: { type: string, nullable: true }
+        active_students_count: { type: integer }
+        created_at: { type: string }
+        updated_at: { type: string }
+        deleted_at: { type: string, nullable: true }
 
     TeacherCreate:
       type: object
-      required: [fullName, login, password]
+      required: [firstName, lastName]
       properties:
-        fullName: { type: string }
+        firstName: { type: string }
+        lastName: { type: string }
+        languageId: { type: integer, nullable: true }
+        rateRub: { type: integer, nullable: true }
+        telegramRaw: { type: string, nullable: true }
         phone: { type: string, nullable: true }
-        contactLink: { type: string, nullable: true }
-        language: { type: string, nullable: true }
-        lessonRateRub: { type: number, nullable: true }
-        timezone: { type: string, default: Europe/Moscow }
-        login: { type: string }
-        password: { type: string, format: password }
+        email: { type: string, format: email, nullable: true }
+        comment: { type: string, nullable: true }
 
     TeacherUpdate:
       type: object
       properties:
-        fullName: { type: string }
+        firstName: { type: string }
+        lastName: { type: string }
+        languageId: { type: integer, nullable: true }
+        rateRub: { type: integer, nullable: true }
+        telegramRaw: { type: string, nullable: true }
         phone: { type: string, nullable: true }
-        contactLink: { type: string, nullable: true }
-        language: { type: string, nullable: true }
-        lessonRateRub: { type: number, nullable: true }
-        timezone: { type: string }
+        email: { type: string, format: email, nullable: true }
+        comment: { type: string, nullable: true }
+
+    TeacherAccessStatus:
+      type: object
+      properties:
+        teacherId: { type: string, format: uuid }
+        hasAccess: { type: boolean }
+        login: { type: string, format: email, nullable: true }
+        lastLoginAt: { type: string, format: date-time, nullable: true }
+
+    TeacherAccessCreated:
+      type: object
+      properties:
+        teacherId: { type: string, format: uuid }
+        login: { type: string, format: email }
+        temporaryPassword: { type: string }
 
     TariffGrid:
       type: object
@@ -903,6 +1030,15 @@ components:
         studentId: { type: string, format: uuid, nullable: true }
         date: { type: string, format: date }
         startTime: { type: string, pattern: '^\\d{2}:\\d{2}$' }
+
+    JournalAuditItem:
+      type: object
+      properties:
+        id: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        action_label: { type: string, enum: [создал, изменил, удалил] }
+        description: { type: string }
+        actor_login: { type: string, nullable: true }
 
     Notification:
       type: object

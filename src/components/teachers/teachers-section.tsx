@@ -58,6 +58,7 @@ type Teacher = {
   telegram_raw: string | null;
   telegram_display: string | null;
   phone: string | null;
+  email: string | null;
   comment: string | null;
   active_students_count: number;
   created_at: string;
@@ -90,6 +91,7 @@ type TeacherFormValues = {
   rateRub?: number | null;
   telegramRaw?: string | null;
   phone?: string | null;
+  email?: string | null;
   comment?: string | null;
 };
 
@@ -153,6 +155,7 @@ function emptyTeacherForm(): TeacherFormValues {
     rateRub: null,
     telegramRaw: '',
     phone: '',
+    email: '',
     comment: ''
   };
 }
@@ -165,6 +168,7 @@ function normalizeTeacherPayload(values: TeacherFormValues) {
     rateRub: values.rateRub ?? null,
     telegramRaw: values.telegramRaw?.trim() ? values.telegramRaw.trim() : null,
     phone: values.phone?.trim() ? values.phone.trim() : null,
+    email: values.email?.trim() ? values.email.trim().toLowerCase() : null,
     comment: values.comment?.trim() ? values.comment.trim() : null
   };
 }
@@ -206,6 +210,16 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState<TeacherDetails | null>(null);
+  const [accessLoading, setAccessLoading] = useState(false);
+  const [accessSubmitting, setAccessSubmitting] = useState(false);
+  const [accessInfo, setAccessInfo] = useState<{ hasAccess: boolean; login: string | null; lastLoginAt: string | null } | null>(null);
+  const [tempPassword, setTempPassword] = useState<string | null>(null);
+  const [tempPasswordDialogOpen, setTempPasswordDialogOpen] = useState(false);
+  const [accessLoginDialogOpen, setAccessLoginDialogOpen] = useState(false);
+  const [accessPasswordDialogOpen, setAccessPasswordDialogOpen] = useState(false);
+  const [accessLoginDraft, setAccessLoginDraft] = useState('');
+  const [accessPasswordDraft, setAccessPasswordDraft] = useState('');
+  const [accessPasswordConfirmDraft, setAccessPasswordConfirmDraft] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<TeacherFormValues>(emptyTeacherForm());
 
@@ -325,6 +339,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
       rateRub: detail.rate_rub,
       telegramRaw: detail.telegram_raw,
       phone: formatPhoneInput(detail.phone),
+      email: detail.email,
       comment: detail.comment
     });
   }, [detail, isEditing]);
@@ -345,6 +360,8 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
   const openTeacher = useCallback(async (teacherId: string) => {
     setDetailOpen(true);
     setDetailLoading(true);
+    setAccessLoading(true);
+    setAccessInfo(null);
     setIsEditing(false);
 
     try {
@@ -356,11 +373,26 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
 
       const payload = (await response.json()) as TeacherDetails;
       setDetail(payload);
+
+      const accessResponse = await fetch(`/api/v1/teachers/${teacherId}/access`, { cache: 'no-store' });
+      if (accessResponse.ok) {
+        const accessPayload = (await accessResponse.json()) as {
+          hasAccess: boolean;
+          login: string | null;
+          lastLoginAt: string | null;
+        };
+        setAccessInfo(accessPayload);
+        setAccessLoginDraft(accessPayload.login ?? '');
+      } else {
+        setAccessInfo({ hasAccess: false, login: null, lastLoginAt: null });
+        setAccessLoginDraft('');
+      }
     } catch (fetchError) {
       showError(fetchError instanceof Error ? fetchError.message : 'Ошибка загрузки');
       setDetailOpen(false);
     } finally {
       setDetailLoading(false);
+      setAccessLoading(false);
     }
   }, [showError]);
 
@@ -371,6 +403,100 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
       void loadMore();
     }
   };
+
+  async function reloadTeacherAccess(teacherId: string) {
+    setAccessLoading(true);
+    try {
+      const response = await fetch(`/api/v1/teachers/${teacherId}/access`, { cache: 'no-store' });
+      if (!response.ok) throw new Error('Не удалось загрузить доступ');
+      const payload = (await response.json()) as { hasAccess: boolean; login: string | null; lastLoginAt: string | null };
+      setAccessInfo(payload);
+    } catch (error) {
+      showError(error instanceof Error ? error.message : 'Не удалось загрузить доступ');
+    } finally {
+      setAccessLoading(false);
+    }
+  }
+
+  async function createTeacherAccessById(teacherId: string) {
+    setAccessSubmitting(true);
+    try {
+      const response = await fetch(`/api/v1/teachers/${teacherId}/access`, { method: 'POST' });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(payload?.message ?? 'Не удалось создать доступ');
+      }
+      const payload = (await response.json()) as { temporaryPassword: string };
+      setTempPassword(payload.temporaryPassword);
+      setTempPasswordDialogOpen(true);
+      await reloadTeacherAccess(teacherId);
+      showSuccess('Доступ создан');
+    } catch (error) {
+      showError(error instanceof Error ? error.message : 'Не удалось создать доступ');
+    } finally {
+      setAccessSubmitting(false);
+    }
+  }
+
+  async function changeTeacherAccessLogin(teacherId: string) {
+    const nextLogin = accessLoginDraft.trim().toLowerCase();
+    if (!nextLogin) {
+      showError('Введите логин');
+      return;
+    }
+
+    setAccessSubmitting(true);
+    try {
+      const response = await fetch(`/api/v1/teachers/${teacherId}/access/login`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login: nextLogin })
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(payload?.message ?? 'Не удалось изменить логин');
+      }
+      await reloadTeacherAccess(teacherId);
+      setAccessLoginDialogOpen(false);
+      showSuccess('Логин изменён');
+    } catch (error) {
+      showError(error instanceof Error ? error.message : 'Не удалось изменить логин');
+    } finally {
+      setAccessSubmitting(false);
+    }
+  }
+
+  async function changeTeacherAccessPassword(teacherId: string) {
+    if (!accessPasswordDraft) {
+      showError('Введите новый пароль');
+      return;
+    }
+    if (accessPasswordDraft !== accessPasswordConfirmDraft) {
+      showError('Пароли не совпадают');
+      return;
+    }
+
+    setAccessSubmitting(true);
+    try {
+      const response = await fetch(`/api/v1/teachers/${teacherId}/access/password`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: accessPasswordDraft })
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(payload?.message ?? 'Не удалось изменить пароль');
+      }
+      setAccessPasswordDialogOpen(false);
+      setAccessPasswordDraft('');
+      setAccessPasswordConfirmDraft('');
+      showSuccess('Пароль изменён. Все сессии завершены');
+    } catch (error) {
+      showError(error instanceof Error ? error.message : 'Не удалось изменить пароль');
+    } finally {
+      setAccessSubmitting(false);
+    }
+  }
 
   function toggleSort(nextSortBy: SortBy) {
     if (sortBy === nextSortBy) {
@@ -874,6 +1000,11 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
           if (!open) {
             setDetailOpen(false);
             setDetail(null);
+            setAccessInfo(null);
+            setAccessLoginDialogOpen(false);
+            setAccessPasswordDialogOpen(false);
+            setAccessPasswordDraft('');
+            setAccessPasswordConfirmDraft('');
             setIsEditing(false);
             return;
           }
@@ -910,7 +1041,64 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                   <p><span className="font-medium">Ставка:</span> {detail.rate_rub === null ? '—' : `${detail.rate_rub} ₽`}</p>
                   <p><span className="font-medium">Telegram:</span> {detail.telegram_display ?? '—'}</p>
                   <p><span className="font-medium">Телефон:</span> {detail.phone ?? '—'}</p>
+                  <p><span className="font-medium">Email:</span> {detail.email ?? '—'}</p>
                   <p className="sm:col-span-2"><span className="font-medium">Комментарий:</span> {detail.comment ?? '—'}</p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Доступ в систему</CardTitle>
+                  <CardDescription>
+                    Управление логином и паролем преподавателя
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-3 text-sm">
+                  {accessLoading ? (
+                    <p className="text-muted-foreground">Загрузка...</p>
+                  ) : (
+                    <>
+                      <p><span className="font-medium">Логин:</span> {accessInfo?.login ?? '—'}</p>
+                      <p>
+                        <span className="font-medium">Последний вход:</span>{' '}
+                        {accessInfo?.lastLoginAt ? new Date(accessInfo.lastLoginAt).toLocaleString('ru-RU') : '—'}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {!accessInfo?.hasAccess ? (
+                          <Button
+                            disabled={accessSubmitting || !detail.email}
+                            onClick={() => void createTeacherAccessById(detail.id)}
+                            title={!detail.email ? 'Сначала заполните email преподавателя' : undefined}
+                          >
+                            Создать доступ
+                          </Button>
+                        ) : (
+                          <>
+                            <Button
+                              disabled={accessSubmitting}
+                              onClick={() => {
+                                setAccessLoginDraft(accessInfo?.login ?? detail.email ?? '');
+                                setAccessLoginDialogOpen(true);
+                              }}
+                            >
+                              Сменить логин
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              disabled={accessSubmitting}
+                              onClick={() => {
+                                setAccessPasswordDraft('');
+                                setAccessPasswordConfirmDraft('');
+                                setAccessPasswordDialogOpen(true);
+                              }}
+                            >
+                              Сменить пароль
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </CardContent>
               </Card>
 
@@ -1044,6 +1232,17 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                     onChange={(event) => setEditForm((prev) => ({ ...prev, phone: formatPhoneInput(event.target.value) }))}
                   />
                 </div>
+
+                <div className="flex flex-col gap-1 sm:col-span-2">
+                  <label className="text-sm font-medium" htmlFor="edit-email">Email (логин)</label>
+                  <Input
+                    id="edit-email"
+                    type="email"
+                    placeholder="teacher@example.com"
+                    value={editForm.email ?? ''}
+                    onChange={(event) => setEditForm((prev) => ({ ...prev, email: event.target.value }))}
+                  />
+                </div>
               </div>
 
               <div className="flex flex-col gap-1">
@@ -1073,6 +1272,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                       rateRub: detail.rate_rub,
                       telegramRaw: detail.telegram_raw,
                       phone: detail.phone,
+                      email: detail.email,
                       comment: detail.comment
                     });
                   }}
@@ -1082,6 +1282,109 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
               </DialogFooter>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={tempPasswordDialogOpen} onOpenChange={setTempPasswordDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Временный пароль</DialogTitle>
+            <DialogDescription>
+              Пароль показывается один раз. Сохраните его и передайте преподавателю.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border bg-muted/40 px-3 py-2 font-mono text-sm">{tempPassword ?? '—'}</div>
+          <DialogFooter>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                if (!tempPassword) return;
+                void navigator.clipboard.writeText(tempPassword);
+                showSuccess('Пароль скопирован');
+              }}
+            >
+              Скопировать
+            </Button>
+            <Button onClick={() => setTempPasswordDialogOpen(false)}>Закрыть</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={accessLoginDialogOpen} onOpenChange={setAccessLoginDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Сменить логин</DialogTitle>
+            <DialogDescription>Логин преподавателя должен быть email.</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium" htmlFor="access-login-input">Новый логин</label>
+            <Input
+              id="access-login-input"
+              type="email"
+              placeholder="teacher@example.com"
+              value={accessLoginDraft}
+              onChange={(event) => setAccessLoginDraft(event.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setAccessLoginDialogOpen(false)}>
+              Отмена
+            </Button>
+            <Button
+              disabled={accessSubmitting || !detail}
+              onClick={() => {
+                if (!detail) return;
+                void changeTeacherAccessLogin(detail.id);
+              }}
+            >
+              {accessSubmitting ? 'Сохраняем...' : 'Сохранить'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={accessPasswordDialogOpen} onOpenChange={setAccessPasswordDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Сменить пароль</DialogTitle>
+            <DialogDescription>
+              После смены пароля все активные сессии преподавателя будут завершены.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium" htmlFor="access-password-input">Новый пароль</label>
+              <Input
+                id="access-password-input"
+                type="password"
+                value={accessPasswordDraft}
+                onChange={(event) => setAccessPasswordDraft(event.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium" htmlFor="access-password-confirm-input">Подтвердите пароль</label>
+              <Input
+                id="access-password-confirm-input"
+                type="password"
+                value={accessPasswordConfirmDraft}
+                onChange={(event) => setAccessPasswordConfirmDraft(event.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setAccessPasswordDialogOpen(false)}>
+              Отмена
+            </Button>
+            <Button
+              disabled={accessSubmitting || !detail}
+              onClick={() => {
+                if (!detail) return;
+                void changeTeacherAccessPassword(detail.id);
+              }}
+            >
+              {accessSubmitting ? 'Сохраняем...' : 'Сменить пароль'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -1171,6 +1474,17 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                 maxLength={18}
                 value={createForm.phone ?? ''}
                 onChange={(event) => setCreateForm((prev) => ({ ...prev, phone: formatPhoneInput(event.target.value) }))}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1 sm:col-span-2">
+              <label className="text-sm font-medium" htmlFor="create-email">Email (логин)</label>
+              <Input
+                id="create-email"
+                type="email"
+                placeholder="teacher@example.com"
+                value={createForm.email ?? ''}
+                onChange={(event) => setCreateForm((prev) => ({ ...prev, email: event.target.value }))}
               />
             </div>
           </div>

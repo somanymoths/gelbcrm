@@ -6,6 +6,7 @@ export type SessionUser = {
   id: string;
   role: AppRole;
   login: string;
+  sessionVersion: number;
 };
 
 function getSecret(): Uint8Array {
@@ -13,7 +14,7 @@ function getSecret(): Uint8Array {
 }
 
 export async function createSessionToken(user: SessionUser): Promise<string> {
-  return new SignJWT({ role: user.role, login: user.login })
+  return new SignJWT({ role: user.role, login: user.login, session_version: user.sessionVersion })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(user.id)
     .setIssuedAt()
@@ -29,13 +30,15 @@ export async function verifySessionToken(token: string): Promise<SessionUser | n
 
     const role = payload.role;
     const login = payload.login;
+    const sessionVersion = payload.session_version;
     const userId = payload.sub;
 
     if (typeof userId !== 'string') return null;
     if (role !== 'admin' && role !== 'teacher') return null;
     if (typeof login !== 'string') return null;
+    if (typeof sessionVersion !== 'number' || !Number.isFinite(sessionVersion) || sessionVersion < 1) return null;
 
-    return { id: userId, role, login };
+    return { id: userId, role, login, sessionVersion: Math.trunc(sessionVersion) };
   } catch {
     return null;
   }

@@ -113,6 +113,26 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   if (message === 'INVALID_DATE') {
     return NextResponse.json({ code: 'INVALID_DATE', message: 'Некорректная дата начала занятий' }, { status: 400 });
   }
+  if (message === 'WEEKLY_TEMPLATE_START_FROM_BEFORE_LAST_CONFIRMED') {
+    const studentId = typeof (error as { studentId?: unknown })?.studentId === 'string'
+      ? (error as { studentId: string }).studentId
+      : null;
+    const minAllowedDate = typeof (error as { minAllowedDate?: unknown })?.minAllowedDate === 'string'
+      ? (error as { minAllowedDate: string }).minAllowedDate
+      : null;
+
+    return NextResponse.json(
+      {
+        code: 'START_FROM_BEFORE_LAST_CONFIRMED',
+        message: minAllowedDate
+          ? `Дата начала не может быть раньше ${minAllowedDate}: это дата последнего подтвержденного занятия ученика`
+          : 'Дата начала не может быть раньше последнего подтвержденного занятия ученика',
+        studentId,
+        minAllowedDate
+      },
+      { status: 409 }
+    );
+  }
 
   const infraError = mapInfraError(error, {
     misconfiguredMessage: 'Сервер не настроен: проверьте DB_* в .env.local',

@@ -25,6 +25,7 @@
     "db:seed:admin": "node scripts/seed-admin.cjs",
     "db:seed:admin:sandbox": "bash scripts/with-sandbox-env.sh node scripts/seed-admin.cjs",
     "payments:backfill-sync": "node scripts/backfill-payments-sync.cjs",
+    "audit:cleanup:journal": "node scripts/cleanup-journal-audit.cjs",
     "sandbox:up": "bash scripts/sandbox-up.sh",
     "sandbox:down": "bash scripts/sandbox-down.sh",
     "ops:watch-journal-rename": "bash scripts/watch-journal-rename.sh"

@@ -75,6 +75,8 @@ export type DbUser = {
   login: string;
   password_hash: string;
   is_active: 0 | 1;
+  session_version: number;
+  last_login_at: string | null;
 };
 
 export type FunnelStage = {
@@ -100,21 +102,75 @@ export type StudentRow = {
 };
 
 export async function findActiveUserByLogin(login: string): Promise<DbUser | null> {
-  const [rows] = await queryWithTransientRetry<mysql.RowDataPacket[]>(
-    `
-      SELECT id, role, login, password_hash, is_active
-      FROM users
-      WHERE login = ?
-      LIMIT 1
-    `,
-    [login]
-  );
+  let rows: mysql.RowDataPacket[] = [];
+  try {
+    const [fullRows] = await queryWithTransientRetry<mysql.RowDataPacket[]>(
+      `
+        SELECT id, role, login, password_hash, is_active, session_version, last_login_at
+        FROM users
+        WHERE login = ?
+        LIMIT 1
+      `,
+      [login]
+    );
+    rows = fullRows;
+  } catch (error) {
+    const missingSessionVersion = isMysqlUnknownColumnError(error, 'session_version');
+    const missingLastLogin = isMysqlUnknownColumnError(error, 'last_login_at');
+    if (!missingSessionVersion && !missingLastLogin) throw error;
+
+    const [legacyRows] = await queryWithTransientRetry<mysql.RowDataPacket[]>(
+      `
+        SELECT id, role, login, password_hash, is_active
+        FROM users
+        WHERE login = ?
+        LIMIT 1
+      `,
+      [login]
+    );
+    rows = legacyRows.map((row) => ({
+      ...row,
+      session_version: 1,
+      last_login_at: null
+    })) as mysql.RowDataPacket[];
+  }
 
   if (rows.length === 0) return null;
 
   const user = rows[0] as DbUser;
   if (!user.is_active) return null;
   return user;
+}
+
+export async function getActiveUserSessionMetaById(id: string): Promise<{ session_version: number } | null> {
+  let rows: mysql.RowDataPacket[] = [];
+  try {
+    const [versionRows] = await queryWithTransientRetry<mysql.RowDataPacket[]>(
+      `
+        SELECT session_version
+        FROM users
+        WHERE id = ? AND is_active = 1
+        LIMIT 1
+      `,
+      [id]
+    );
+    rows = versionRows;
+  } catch (error) {
+    if (!isMysqlUnknownColumnError(error, 'session_version')) throw error;
+    const [legacyRows] = await queryWithTransientRetry<mysql.RowDataPacket[]>(
+      `
+        SELECT id
+        FROM users
+        WHERE id = ? AND is_active = 1
+        LIMIT 1
+      `,
+      [id]
+    );
+    rows = legacyRows.map(() => ({ session_version: 1 })) as mysql.RowDataPacket[];
+  }
+
+  if (rows.length === 0) return null;
+  return { session_version: Number(rows[0].session_version ?? 1) };
 }
 
 export async function findUserById(id: string): Promise<Pick<DbUser, 'id' | 'role' | 'login'> | null> {
@@ -131,6 +187,36 @@ export async function findUserById(id: string): Promise<Pick<DbUser, 'id' | 'rol
   if (rows.length === 0) return null;
   const user = rows[0] as Pick<DbUser, 'id' | 'role' | 'login'>;
   return user;
+}
+
+export async function markUserLastLoginAt(userId: string): Promise<void> {
+  try {
+    await queryWithTransientRetry<mysql.ResultSetHeader>(
+      `
+        UPDATE users
+        SET last_login_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND is_active = 1
+      `,
+      [userId]
+    );
+  } catch (error) {
+    if (!isMysqlUnknownColumnError(error, 'last_login_at')) throw error;
+  }
+}
+
+export async function incrementUserSessionVersion(userId: string): Promise<void> {
+  try {
+    await queryWithTransientRetry<mysql.ResultSetHeader>(
+      `
+        UPDATE users
+        SET session_version = session_version + 1
+        WHERE id = ? AND is_active = 1
+      `,
+      [userId]
+    );
+  } catch (error) {
+    if (!isMysqlUnknownColumnError(error, 'session_version')) throw error;
+  }
 }
 
 export async function listFunnelStages(): Promise<FunnelStage[]> {
@@ -471,6 +557,7 @@ export type TeacherListItem = {
   telegram_raw: string | null;
   telegram_display: string | null;
   phone: string | null;
+  email: string | null;
   comment: string | null;
   active_students_count: number;
   created_at: string;
@@ -596,6 +683,7 @@ export async function listTeachers(input: {
         t.telegram_raw,
         t.telegram_normalized,
         t.phone,
+        t.email,
         t.comment,
         t.created_at,
         t.updated_at,
@@ -639,6 +727,7 @@ export async function listTeachers(input: {
       telegram_raw: row.telegram_raw ? String(row.telegram_raw) : null,
       telegram_display: normalized ? `@${normalized}` : null,
       phone: row.phone ? String(row.phone) : null,
+      email: row.email ? String(row.email) : null,
       comment: row.comment ? String(row.comment) : null,
       active_students_count: Number(row.active_students_count ?? 0),
       created_at: String(row.created_at),
@@ -667,6 +756,7 @@ export async function getTeacherById(input: { id: string }): Promise<TeacherDeta
         t.telegram_raw,
         t.telegram_normalized,
         t.phone,
+        t.email,
         t.comment,
         t.created_at,
         t.updated_at,
@@ -719,6 +809,7 @@ export async function getTeacherById(input: { id: string }): Promise<TeacherDeta
     telegram_raw: row.telegram_raw ? String(row.telegram_raw) : null,
     telegram_display: normalized ? `@${normalized}` : null,
     phone: row.phone ? String(row.phone) : null,
+    email: row.email ? String(row.email) : null,
     comment: row.comment ? String(row.comment) : null,
     active_students_count: Number(row.active_students_count ?? 0),
     created_at: String(row.created_at),
@@ -728,6 +819,255 @@ export async function getTeacherById(input: { id: string }): Promise<TeacherDeta
   };
 }
 
+export type TeacherAccessStatus = {
+  teacher_id: string;
+  user_id: string | null;
+  login: string | null;
+  last_login_at: string | null;
+};
+
+export async function getTeacherAccessStatus(input: { teacherId: string }): Promise<TeacherAccessStatus | null> {
+  let rows: mysql.RowDataPacket[] = [];
+  try {
+    const [fullRows] = await getPool().query<mysql.RowDataPacket[]>(
+      `
+        SELECT
+          t.id AS teacher_id,
+          t.user_id,
+          u.login,
+          u.last_login_at
+        FROM teachers t
+        LEFT JOIN users u ON u.id = t.user_id
+        WHERE t.id = ? AND t.deleted_at IS NULL
+        LIMIT 1
+      `,
+      [input.teacherId]
+    );
+    rows = fullRows;
+  } catch (error) {
+    if (!isMysqlUnknownColumnError(error, 'last_login_at')) throw error;
+    const [legacyRows] = await getPool().query<mysql.RowDataPacket[]>(
+      `
+        SELECT
+          t.id AS teacher_id,
+          t.user_id,
+          u.login
+        FROM teachers t
+        LEFT JOIN users u ON u.id = t.user_id
+        WHERE t.id = ? AND t.deleted_at IS NULL
+        LIMIT 1
+      `,
+      [input.teacherId]
+    );
+    rows = legacyRows.map((row) => ({ ...row, last_login_at: null })) as mysql.RowDataPacket[];
+  }
+
+  if (rows.length === 0) return null;
+  const row = rows[0];
+
+  return {
+    teacher_id: String(row.teacher_id),
+    user_id: row.user_id ? String(row.user_id) : null,
+    login: row.login ? String(row.login) : null,
+    last_login_at: row.last_login_at ? new Date(row.last_login_at).toISOString() : null
+  };
+}
+
+export async function createTeacherAccess(input: {
+  teacherId: string;
+  actorUserId: string;
+  login: string;
+  passwordHash: string;
+}): Promise<{ teacher_id: string; user_id: string; login: string }> {
+  const connection = await getPool().getConnection();
+  const userId = randomUUID();
+
+  try {
+    await connection.beginTransaction();
+
+    const [teacherRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id, user_id, deleted_at
+        FROM teachers
+        WHERE id = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [input.teacherId]
+    );
+
+    if (teacherRows.length === 0) throw new Error('TEACHER_NOT_FOUND');
+    if (teacherRows[0].deleted_at) throw new Error('TEACHER_NOT_FOUND');
+    if (teacherRows[0].user_id) throw new Error('TEACHER_ACCESS_ALREADY_EXISTS');
+
+    try {
+      await connection.query(
+        `
+          INSERT INTO users (id, role, login, password_hash, is_active, session_version)
+          VALUES (?, 'teacher', ?, ?, 1, 1)
+        `,
+        [userId, input.login, input.passwordHash]
+      );
+    } catch (error) {
+      if (!isMysqlUnknownColumnError(error, 'session_version')) throw error;
+      await connection.query(
+        `
+          INSERT INTO users (id, role, login, password_hash, is_active)
+          VALUES (?, 'teacher', ?, ?, 1)
+        `,
+        [userId, input.login, input.passwordHash]
+      );
+    }
+
+    await connection.query(
+      `
+        UPDATE teachers
+        SET user_id = ?
+        WHERE id = ?
+      `,
+      [userId, input.teacherId]
+    );
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'teacher',
+      entityId: input.teacherId,
+      action: 'create_access',
+      diffAfter: { user_id: userId, login: input.login }
+    });
+
+    await connection.commit();
+    return {
+      teacher_id: input.teacherId,
+      user_id: userId,
+      login: input.login
+    };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function updateTeacherAccessLogin(input: {
+  teacherId: string;
+  actorUserId: string;
+  login: string;
+}): Promise<{ teacher_id: string; user_id: string; login: string }> {
+  const connection = await getPool().getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const [teacherRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id, user_id, deleted_at
+        FROM teachers
+        WHERE id = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [input.teacherId]
+    );
+
+    if (teacherRows.length === 0) throw new Error('TEACHER_NOT_FOUND');
+    if (teacherRows[0].deleted_at) throw new Error('TEACHER_NOT_FOUND');
+    const userId = teacherRows[0].user_id ? String(teacherRows[0].user_id) : null;
+    if (!userId) throw new Error('TEACHER_ACCESS_NOT_FOUND');
+
+    await connection.query(
+      `
+        UPDATE users
+        SET login = ?
+        WHERE id = ?
+      `,
+      [input.login, userId]
+    );
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'teacher',
+      entityId: input.teacherId,
+      action: 'update_access_login',
+      diffAfter: { user_id: userId, login: input.login }
+    });
+
+    await connection.commit();
+    return { teacher_id: input.teacherId, user_id: userId, login: input.login };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function updateTeacherAccessPassword(input: {
+  teacherId: string;
+  actorUserId: string;
+  passwordHash: string;
+}): Promise<{ teacher_id: string; user_id: string }> {
+  const connection = await getPool().getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const [teacherRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id, user_id, deleted_at
+        FROM teachers
+        WHERE id = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [input.teacherId]
+    );
+
+    if (teacherRows.length === 0) throw new Error('TEACHER_NOT_FOUND');
+    if (teacherRows[0].deleted_at) throw new Error('TEACHER_NOT_FOUND');
+    const userId = teacherRows[0].user_id ? String(teacherRows[0].user_id) : null;
+    if (!userId) throw new Error('TEACHER_ACCESS_NOT_FOUND');
+
+    try {
+      await connection.query(
+        `
+          UPDATE users
+          SET password_hash = ?, session_version = session_version + 1
+          WHERE id = ?
+        `,
+        [input.passwordHash, userId]
+      );
+    } catch (error) {
+      if (!isMysqlUnknownColumnError(error, 'session_version')) throw error;
+      await connection.query(
+        `
+          UPDATE users
+          SET password_hash = ?
+          WHERE id = ?
+        `,
+        [input.passwordHash, userId]
+      );
+    }
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'teacher',
+      entityId: input.teacherId,
+      action: 'update_access_password',
+      diffAfter: { user_id: userId, force_logout_all_sessions: true }
+    });
+
+    await connection.commit();
+    return { teacher_id: input.teacherId, user_id: userId };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 export async function createTeacher(input: {
   firstName: string;
   lastName: string;
@@ -735,11 +1075,13 @@ export async function createTeacher(input: {
   rateRub?: number | null;
   telegramRaw?: string | null;
   phone?: string | null;
+  email?: string | null;
   comment?: string | null;
   actorUserId: string;
 }): Promise<TeacherDetails> {
   const id = randomUUID();
   const telegramNormalized = deriveTelegramNormalized(input.telegramRaw);
+  const normalizedEmail = input.email?.trim() ? input.email.trim().toLowerCase() : null;
 
   await getPool().query(
     `
@@ -753,9 +1095,10 @@ export async function createTeacher(input: {
         telegram_raw,
         telegram_normalized,
         phone,
+        email,
         comment
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       id,
@@ -767,6 +1110,7 @@ export async function createTeacher(input: {
       input.telegramRaw ?? null,
       telegramNormalized,
       input.phone ?? null,
+      normalizedEmail,
       input.comment ?? null
     ]
   );
@@ -803,59 +1147,101 @@ export async function updateTeacher(input: {
   rateRub?: number | null;
   telegramRaw?: string | null;
   phone?: string | null;
+  email?: string | null;
   comment?: string | null;
   actorUserId: string;
 }): Promise<TeacherDetails> {
   const telegramNormalized = deriveTelegramNormalized(input.telegramRaw);
-
-  const [result] = await getPool().query<mysql.ResultSetHeader>(
-    `
-      UPDATE teachers
-      SET
-        full_name = ?,
-        first_name = ?,
-        last_name = ?,
-        language_id = ?,
-        rate_rub = ?,
-        telegram_raw = ?,
-        telegram_normalized = ?,
-        phone = ?,
-        comment = ?
-      WHERE id = ?
-    `,
-    [
-      `${input.firstName} ${input.lastName}`.trim(),
-      input.firstName,
-      input.lastName,
-      input.languageId ?? null,
-      input.rateRub ?? null,
-      input.telegramRaw ?? null,
-      telegramNormalized,
-      input.phone ?? null,
-      input.comment ?? null,
-      input.id
-    ]
-  );
-
-  if (result.affectedRows === 0) {
-    throw new Error('TEACHER_NOT_FOUND');
-  }
-
-  const updated = await getTeacherById({ id: input.id });
-  if (!updated) {
-    throw new Error('TEACHER_NOT_FOUND');
-  }
-
   const connection = await getPool().getConnection();
   try {
+    await connection.beginTransaction();
+
+    const [teacherRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id, user_id
+        FROM teachers
+        WHERE id = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [input.id]
+    );
+
+    if (teacherRows.length === 0) {
+      throw new Error('TEACHER_NOT_FOUND');
+    }
+
+    const teacherUserId = teacherRows[0].user_id ? String(teacherRows[0].user_id) : null;
+    const normalizedEmail = input.email?.trim() ? input.email.trim().toLowerCase() : null;
+
+    if (teacherUserId && !normalizedEmail) {
+      throw new Error('TEACHER_EMAIL_REQUIRED_FOR_ACCESS');
+    }
+
+    const [result] = await connection.query<mysql.ResultSetHeader>(
+      `
+        UPDATE teachers
+        SET
+          full_name = ?,
+          first_name = ?,
+          last_name = ?,
+          language_id = ?,
+          rate_rub = ?,
+          telegram_raw = ?,
+          telegram_normalized = ?,
+          phone = ?,
+          email = ?,
+          comment = ?
+        WHERE id = ?
+      `,
+      [
+        `${input.firstName} ${input.lastName}`.trim(),
+        input.firstName,
+        input.lastName,
+        input.languageId ?? null,
+        input.rateRub ?? null,
+        input.telegramRaw ?? null,
+        telegramNormalized,
+        input.phone ?? null,
+        normalizedEmail,
+        input.comment ?? null,
+        input.id
+      ]
+    );
+
+    if (result.affectedRows === 0) {
+      throw new Error('TEACHER_NOT_FOUND');
+    }
+
+    if (teacherUserId) {
+      await connection.query(
+        `
+          UPDATE users
+          SET login = ?
+          WHERE id = ?
+        `,
+        [normalizedEmail, teacherUserId]
+      );
+    }
+
     await writeAuditLog(connection, {
       actorUserId: input.actorUserId,
       entityType: 'teacher',
       entityId: input.id,
       action: 'update'
     });
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
   } finally {
     connection.release();
+  }
+
+  const updated = await getTeacherById({ id: input.id });
+  if (!updated) {
+    throw new Error('TEACHER_NOT_FOUND');
   }
 
   return updated;
@@ -1550,6 +1936,156 @@ export type JournalLessonSlot = {
   has_earlier_unconfirmed?: boolean;
 };
 
+export type JournalAuditEvent = {
+  id: number;
+  created_at: string;
+  action_label: 'создал' | 'изменил' | 'удалил';
+  description: string;
+  actor_login: string | null;
+};
+
+export async function listJournalAuditEvents(input: {
+  teacherId: string;
+  limit: number;
+  cursorCreatedAt?: string;
+  cursorId?: number;
+}): Promise<JournalAuditEvent[]> {
+  const whereCursor: string[] = [];
+  const params: Array<string | number> = [input.teacherId, input.teacherId, input.teacherId, input.teacherId];
+
+  if (input.cursorCreatedAt && typeof input.cursorId === 'number') {
+    whereCursor.push('(al.created_at < ? OR (al.created_at = ? AND al.id < ?))');
+    params.push(input.cursorCreatedAt, input.cursorCreatedAt, input.cursorId);
+  }
+
+  params.push(input.limit);
+
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        al.id,
+        al.entity_type,
+        al.action,
+        al.diff_before,
+        al.diff_after,
+        al.created_at,
+        actor.login AS actor_login
+      FROM audit_logs al
+      LEFT JOIN users actor ON actor.id = al.actor_user_id
+      LEFT JOIN lesson_slots ls ON ls.id = al.entity_id
+      WHERE (
+        (
+          al.entity_type = 'lesson_slot'
+          AND (
+            ls.teacher_id = ?
+            OR (
+              CASE
+                WHEN al.diff_before IS NOT NULL AND JSON_VALID(al.diff_before)
+                  THEN JSON_UNQUOTE(JSON_EXTRACT(al.diff_before, '$.teacher_id'))
+                ELSE NULL
+              END
+            ) = ?
+            OR (
+              CASE
+                WHEN al.diff_after IS NOT NULL AND JSON_VALID(al.diff_after)
+                  THEN JSON_UNQUOTE(JSON_EXTRACT(al.diff_after, '$.teacher_id'))
+                ELSE NULL
+              END
+            ) = ?
+          )
+        )
+        OR (al.entity_type = 'journal_weekly_template' AND al.entity_id = ?)
+      )
+      AND al.created_at >= (UTC_TIMESTAMP() - INTERVAL 12 MONTH)
+      ${whereCursor.length > 0 ? `AND ${whereCursor.join(' AND ')}` : ''}
+      ORDER BY al.created_at DESC, al.id DESC
+      LIMIT ?
+    `,
+    params
+  );
+
+  return rows.map((row) => {
+    const entityType = String(row.entity_type ?? '');
+    const action = String(row.action ?? '');
+    const diffBefore = parseAuditDiff(row.diff_before);
+    const diffAfter = parseAuditDiff(row.diff_after);
+
+    return {
+      id: Number(row.id),
+      created_at: new Date(row.created_at).toISOString(),
+      action_label: mapAuditActionLabel(action),
+      description: mapJournalAuditDescription({ entityType, action, diffBefore, diffAfter }),
+      actor_login: row.actor_login ? String(row.actor_login) : null
+    };
+  });
+}
+
+function parseAuditDiff(value: unknown): Record<string, unknown> {
+  if (!value) return {};
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === 'object' && parsed !== null) return parsed as Record<string, unknown>;
+      return {};
+    } catch {
+      return {};
+    }
+  }
+
+  if (typeof value === 'object') {
+    return value as Record<string, unknown>;
+  }
+
+  return {};
+}
+
+function mapAuditActionLabel(action: string): 'создал' | 'изменил' | 'удалил' {
+  if (action === 'create') return 'создал';
+  if (action === 'delete' || action === 'delete_series') return 'удалил';
+  return 'изменил';
+}
+
+function mapJournalAuditDescription(input: {
+  entityType: string;
+  action: string;
+  diffBefore: Record<string, unknown>;
+  diffAfter: Record<string, unknown>;
+}): string {
+  if (input.entityType === 'journal_weekly_template') {
+    return 'шаблон недели';
+  }
+
+  if (input.action === 'create') {
+    return 'занятие';
+  }
+
+  if (input.action === 'delete_series') {
+    return 'серию занятий';
+  }
+
+  if (input.action === 'delete') {
+    return 'занятие';
+  }
+
+  if (input.action === 'status_update') {
+    return 'статус занятия';
+  }
+
+  const date = typeof input.diffAfter.date === 'string' ? input.diffAfter.date : typeof input.diffBefore.date === 'string' ? input.diffBefore.date : null;
+  const startTime =
+    typeof input.diffAfter.start_time === 'string'
+      ? input.diffAfter.start_time
+      : typeof input.diffBefore.start_time === 'string'
+        ? input.diffBefore.start_time
+        : null;
+
+  if (date && startTime) {
+    return `занятие ${date} ${startTime}`;
+  }
+
+  return 'занятие';
+}
+
 export async function findTeacherByUserId(userId: string): Promise<JournalTeacherBasic | null> {
   const [rows] = await getPool().query<mysql.RowDataPacket[]>(
     `
@@ -1603,20 +2139,29 @@ export async function listTeacherStudentsForJournal(teacherId: string): Promise<
   last_name: string;
   full_name: string;
   paid_lessons_left: number;
+  last_confirmed_lesson_date: string | null;
 }>> {
   const [rows] = await getPool().query<mysql.RowDataPacket[]>(
     `
       SELECT
-        id,
-        first_name,
-        last_name,
-        CONCAT_WS(' ', first_name, last_name) AS full_name,
-        paid_lessons_left
-      FROM students
-      WHERE assigned_teacher_id = ? AND deleted_at IS NULL AND entity_type = 'student'
+        s.id,
+        s.first_name,
+        s.last_name,
+        CONCAT_WS(' ', s.first_name, s.last_name) AS full_name,
+        s.paid_lessons_left,
+        DATE_FORMAT(last_confirmed.last_confirmed_date, '%Y-%m-%d') AS last_confirmed_lesson_date
+      FROM students s
+      LEFT JOIN (
+        SELECT student_id, MAX(date) AS last_confirmed_date
+        FROM lesson_slots
+        WHERE teacher_id = ?
+          AND status IN ('completed', 'canceled')
+        GROUP BY student_id
+      ) last_confirmed ON last_confirmed.student_id = s.id
+      WHERE s.assigned_teacher_id = ? AND s.deleted_at IS NULL AND s.entity_type = 'student'
       ORDER BY last_name ASC, first_name ASC
     `,
-    [teacherId]
+    [teacherId, teacherId]
   );
 
   return rows.map((row) => ({
@@ -1624,7 +2169,8 @@ export async function listTeacherStudentsForJournal(teacherId: string): Promise<
     first_name: String(row.first_name),
     last_name: String(row.last_name),
     full_name: String(row.full_name),
-    paid_lessons_left: Number(row.paid_lessons_left ?? 0)
+    paid_lessons_left: Number(row.paid_lessons_left ?? 0),
+    last_confirmed_lesson_date: row.last_confirmed_lesson_date ? String(row.last_confirmed_lesson_date) : null
   }));
 }
 
@@ -1816,6 +2362,8 @@ export async function replaceTeacherWeeklyTemplate(input: {
       });
     }
 
+    await assertWeeklyTemplateStartFromBounds(connection, input.teacherId, uniqueSlots);
+
     const weeklySlotIdByKey = new Map<string, string>();
     for (const [key, value] of existingByKey.entries()) {
       weeklySlotIdByKey.set(key, value.id);
@@ -1976,6 +2524,58 @@ export async function replaceTeacherWeeklyTemplate(input: {
     throw error;
   } finally {
     connection.release();
+  }
+}
+
+async function assertWeeklyTemplateStartFromBounds(
+  connection: mysql.PoolConnection,
+  teacherId: string,
+  slots: Array<{ weekday: number; startTime: string; startFrom: string | null; studentId: string | null; isActive: boolean }>
+): Promise<void> {
+  const studentIdsToCheck = Array.from(
+    new Set(
+      slots
+        .filter((slot) => slot.isActive && slot.studentId && slot.startFrom)
+        .map((slot) => slot.studentId)
+        .filter((studentId): studentId is string => Boolean(studentId))
+    )
+  );
+
+  if (studentIdsToCheck.length === 0) return;
+
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        student_id,
+        DATE_FORMAT(MAX(date), '%Y-%m-%d') AS last_confirmed_date
+      FROM lesson_slots
+      WHERE teacher_id = ?
+        AND student_id IN (${studentIdsToCheck.map(() => '?').join(', ')})
+        AND status IN ('completed', 'canceled')
+      GROUP BY student_id
+    `,
+    [teacherId, ...studentIdsToCheck]
+  );
+
+  const lastConfirmedByStudentId = new Map<string, string>();
+  for (const row of rows) {
+    if (!row.student_id || !row.last_confirmed_date) continue;
+    lastConfirmedByStudentId.set(String(row.student_id), String(row.last_confirmed_date));
+  }
+
+  for (const slot of slots) {
+    if (!slot.isActive || !slot.studentId || !slot.startFrom) continue;
+    const minAllowedDate = lastConfirmedByStudentId.get(slot.studentId);
+    if (!minAllowedDate) continue;
+    if (slot.startFrom >= minAllowedDate) continue;
+
+    const error = new Error('WEEKLY_TEMPLATE_START_FROM_BEFORE_LAST_CONFIRMED') as Error & {
+      studentId?: string;
+      minAllowedDate?: string;
+    };
+    error.studentId = slot.studentId;
+    error.minAllowedDate = minAllowedDate;
+    throw error;
   }
 }
 
