@@ -81,7 +81,7 @@ function mapJournalError(error: unknown, fallbackMessage: string) {
   }
   if (message === 'SLOT_CONFLICT_ADMIN_WON') {
     return NextResponse.json(
-      { code: 'SLOT_CONFLICT_ADMIN_WON', message: 'Занятие уже изменено администратором. Обновите журнал.' },
+      { code: 'SLOT_CONFLICT_ADMIN_WON', message: 'Занятие уже изменено. Обновите журнал.' },
       { status: 409 }
     );
   }

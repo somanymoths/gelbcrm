@@ -3,9 +3,10 @@ import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { mapInfraError } from '@/lib/api-error-mappers';
 import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
-import { createTeacherLessonSlot, listTeacherLessonSlots, listTeacherPlannedSlotCountsBeforeDate } from '@/lib/db';
+import { createTeacherLessonSlot, getTeacherRateRub, listTeacherLessonSlots, listTeacherPlannedSlotCountsBeforeDate } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
+import { calculateJournalWeeklyKpi } from '@/lib/journal-weekly-kpi';
 
 const listSchema = z.object({
   teacherId: z.string().trim().optional(),
@@ -65,7 +66,10 @@ export async function GET(request: Request) {
       date: dateFrom
     });
 
-    return NextResponse.json({ slots, baseline }, {
+    const rateRub = await getTeacherRateRub({ teacherId: scope.teacherId });
+    const weeklyKpi = calculateJournalWeeklyKpi({ slots, rateRub });
+
+    return NextResponse.json({ slots, baseline, weeklyKpi }, {
       headers: {
         'Cache-Control': 'no-store, max-age=0'
       }
