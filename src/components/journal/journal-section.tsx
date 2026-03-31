@@ -39,6 +39,7 @@ import { Toggle } from '@/components/ui/toggle';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { calculateForecastBySlotId } from '@/lib/journal-forecast';
+import { formatRub } from '@/lib/payments/format';
 import { toast } from 'sonner';
 
 type RoleUser = { id: string; role: 'admin' | 'teacher'; login: string };
@@ -72,7 +73,9 @@ type LessonSlot = {
   source_weekly_slot_id?: string | null;
 };
 type PlannedForecastBaseline = { student_id: string; planned_count: number };
-type WeekSlotsResponse = { slots: LessonSlot[]; baseline: PlannedForecastBaseline[] };
+type WeeklyKpiMetric = { amount: number; count: number };
+type WeeklyKpi = { forecast: WeeklyKpiMetric; fact: WeeklyKpiMetric; cancellations: WeeklyKpiMetric };
+type WeekSlotsResponse = { slots: LessonSlot[]; baseline: PlannedForecastBaseline[]; weeklyKpi: WeeklyKpi };
 type JournalAuditItem = {
   id: number;
   created_at: string;
@@ -140,6 +143,7 @@ export function JournalSection() {
   const [weeklyTemplate, setWeeklyTemplate] = useState<WeeklySlot[]>([]);
   const [slots, setSlots] = useState<LessonSlot[]>([]);
   const [plannedBaselineByStudentId, setPlannedBaselineByStudentId] = useState<Record<string, number>>({});
+  const [weeklyKpi, setWeeklyKpi] = useState<WeeklyKpi>(createEmptyWeeklyKpi());
   const [weekStart, setWeekStart] = useState(() => clampWeekStart(getWeekStart(new Date())));
   const [weekStartHydrated, setWeekStartHydrated] = useState(false);
   const [dayDrafts, setDayDrafts] = useState<Record<number, DayDraft>>(() => createInitialDayDrafts());
@@ -228,7 +232,7 @@ export function JournalSection() {
     toast.success('Готово', { description: text });
   }, []);
   const isAdminConflictError = useCallback((error: unknown): boolean => {
-    return error instanceof Error && error.message.includes('Занятие уже изменено администратором');
+    return error instanceof Error && error.message.includes('Занятие уже изменено');
   }, []);
 
   const applyStudentBalanceDelta = useCallback((studentId: string | null, delta: number) => {
@@ -354,6 +358,7 @@ export function JournalSection() {
     setPlannedBaselineByStudentId(
       Object.fromEntries(payload.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
     );
+    setWeeklyKpi(normalizeWeeklyKpi(payload.weeklyKpi));
   }, [weekStart]);
 
   const prefetchWeekData = useCallback(
@@ -481,6 +486,7 @@ export function JournalSection() {
         setWeeklyTemplate([]);
         setSlots([]);
         setPlannedBaselineByStudentId({});
+        setWeeklyKpi(createEmptyWeeklyKpi());
         return;
       }
 
@@ -515,6 +521,7 @@ export function JournalSection() {
         setPlannedBaselineByStudentId(
           Object.fromEntries(cachedWeek.data.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
         );
+        setWeeklyKpi(normalizeWeeklyKpi(cachedWeek.data.weeklyKpi));
       }
 
       const fetchCurrentWeek = async (syncRange: boolean): Promise<WeekSlotsResponse> => {
@@ -541,6 +548,7 @@ export function JournalSection() {
         setPlannedBaselineByStudentId(
           Object.fromEntries(payload.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
         );
+        setWeeklyKpi(normalizeWeeklyKpi(payload.weeklyKpi));
       };
 
       if (hasFreshCachedWeek) {
@@ -573,6 +581,7 @@ export function JournalSection() {
         setWeeklyTemplate([]);
         setSlots([]);
         setPlannedBaselineByStudentId({});
+        setWeeklyKpi(createEmptyWeeklyKpi());
         return;
       }
       showError(error instanceof Error ? error.message : 'Не удалось загрузить журнал');
@@ -665,6 +674,10 @@ export function JournalSection() {
     if (!selectedTeacherId) return false;
     const draft = dayDrafts[weekday];
     if (!draft || !draft.time) return false;
+    if (!draft.studentId) {
+      showError('Выберите ученика');
+      return false;
+    }
 
     setCreatingSlot(true);
     try {
@@ -1159,16 +1172,20 @@ export function JournalSection() {
   const openCreateSlotModal = (weekday: number, date: string) => {
     const occupiedTimes = getOccupiedTimesForDay(weekday, date, weeklyTemplate, slotMapByDate);
     const firstAvailableTime = HOURLY_TIME_OPTIONS.find((option) => !occupiedTimes.has(option.value))?.value ?? '';
+    const firstStudentId = students[0]?.id ?? null;
 
     setDayDrafts((prev) => {
       const draft = prev[weekday] ?? createDayDraft();
       const nextTime = draft.time && !occupiedTimes.has(draft.time) ? draft.time : firstAvailableTime;
+      const nextStudentId =
+        draft.studentId && students.some((student) => student.id === draft.studentId) ? draft.studentId : firstStudentId;
 
       return {
         ...prev,
         [weekday]: {
           ...draft,
           time: nextTime,
+          studentId: nextStudentId,
           repeatWeekly: false
         }
       };
@@ -1227,6 +1244,14 @@ export function JournalSection() {
     if (!selectedTeacherId) return 'Преподаватель';
     return teachers.find((item) => item.id === selectedTeacherId)?.full_name ?? 'Преподаватель';
   }, [selectedTeacherId, teachers]);
+  const weeklyKpiCards = useMemo(
+    () => [
+      { label: 'План', metric: weeklyKpi.forecast },
+      { label: 'Факт', metric: weeklyKpi.fact },
+      { label: 'Отмены', metric: weeklyKpi.cancellations }
+    ],
+    [weeklyKpi]
+  );
 
   const templateTotalSlots = useMemo(() => weeklyTemplate.length, [weeklyTemplate]);
   const templateAssignedSlots = useMemo(
@@ -1322,14 +1347,22 @@ export function JournalSection() {
           } as WeeklySlot
         ];
 
-    await saveTemplate(nextTemplate);
-    setTemplateSlotState(null);
-    showSuccess('Шаблон недели сохранен');
+    try {
+      await saveTemplate(nextTemplate);
+      setTemplateSlotState(null);
+      showSuccess('Шаблон недели сохранен');
+    } catch {
+      // Ошибка уже обработана в saveTemplate через showError.
+    }
   };
 
   const removeTemplateSlot = async (slotId: string) => {
-    await saveTemplate(weeklyTemplate.filter((slot) => slot.id !== slotId));
-    showSuccess('Слот удален из шаблона недели');
+    try {
+      await saveTemplate(weeklyTemplate.filter((slot) => slot.id !== slotId));
+      showSuccess('Слот удален из шаблона недели');
+    } catch {
+      // Ошибка уже обработана в saveTemplate через showError.
+    }
   };
 
   if (teacherProfileMissing) {
@@ -1348,51 +1381,67 @@ export function JournalSection() {
 
   return (
     <div className="flex w-full flex-col gap-4">
-      <div className="flex min-h-9 items-center gap-4">
-        {loading && teachers.length === 0 ? <Skeleton className="h-9 w-[320px]" /> : null}
-        {roleUser?.role === 'admin' && teachers.length > 0 ? (
-          <Select
-            value={selectedTeacherId ?? ''}
-            onValueChange={setSelectedTeacherId}
-          >
-            <SelectTrigger className="w-[320px]">
-              <SelectValue placeholder="Преподаватель" />
-            </SelectTrigger>
-            <SelectContent>
-              {teachers.map((item) => (
-                <SelectItem key={item.id} value={item.id}>
-                  {item.full_name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : null}
-        {roleUser?.role === 'teacher' ? (
-          <h2 className="text-[20px] font-semibold text-foreground">
-            {selectedTeacherName}
-          </h2>
-        ) : null}
-        <Button
-          variant="outline"
-          className="h-9 gap-2"
-          aria-label="Открыть шаблон недели"
-          disabled={!selectedTeacherId}
-          onClick={() => setTemplateSheetOpen(true)}
-        >
-          <CalendarDays absoluteStrokeWidth className="size-4" />
-          <span>Шаблон недели</span>
-        </Button>
-        {roleUser?.role === 'admin' ? (
+      <div className="flex min-h-9 flex-wrap items-center justify-between gap-3">
+        <div className="flex min-h-9 flex-wrap items-center gap-4">
+          {loading && teachers.length === 0 ? <Skeleton className="h-9 w-[320px]" /> : null}
+          {roleUser?.role === 'admin' && teachers.length > 0 ? (
+            <Select
+              value={selectedTeacherId ?? ''}
+              onValueChange={setSelectedTeacherId}
+            >
+              <SelectTrigger className="w-[320px]">
+                <SelectValue placeholder="Преподаватель" />
+              </SelectTrigger>
+              <SelectContent>
+                {teachers.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {item.full_name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+          {roleUser?.role === 'teacher' ? (
+            <h2 className="text-[20px] font-semibold text-foreground">
+              {selectedTeacherName}
+            </h2>
+          ) : null}
           <Button
             variant="outline"
             className="h-9 gap-2"
-            aria-label="Открыть аудит журнала"
+            aria-label="Открыть шаблон недели"
             disabled={!selectedTeacherId}
-            onClick={() => setAuditOpen(true)}
+            onClick={() => setTemplateSheetOpen(true)}
           >
-            <span>Аудит</span>
+            <CalendarDays absoluteStrokeWidth className="size-4" />
+            <span>Шаблон недели</span>
           </Button>
-        ) : null}
+          {roleUser?.role === 'admin' ? (
+            <Button
+              variant="outline"
+              className="h-9 gap-2"
+              aria-label="Открыть аудит журнала"
+              disabled={!selectedTeacherId}
+              onClick={() => setAuditOpen(true)}
+            >
+              <span>Аудит</span>
+            </Button>
+          ) : null}
+        </div>
+        <div className="ml-auto flex min-h-9 flex-wrap items-center justify-end gap-2">
+          {weeklyKpiCards.map((item) => (
+            <div
+              key={item.label}
+              className="flex h-9 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3"
+            >
+              <span className="text-xs text-muted-foreground">{item.label}</span>
+              <span className="text-sm font-medium text-foreground">{formatWeeklyKpiAmount(item.metric)}</span>
+              <Badge variant="secondary" className="h-5 px-2 text-[11px] leading-none">
+                {item.metric.count}
+              </Badge>
+            </div>
+          ))}
+        </div>
       </div>
       <div className="h-px w-full bg-border" />
 
@@ -2122,7 +2171,7 @@ export function JournalSection() {
                 <div className="flex flex-col gap-2">
                   <span className="text-sm text-muted-foreground">Ученик</span>
                   <Select
-                    value={dayDrafts[createSlotState.weekday]?.studentId ?? undefined}
+                    value={dayDrafts[createSlotState.weekday]?.studentId ?? ''}
                     onValueChange={(value) =>
                       setDayDrafts((prev) => ({
                         ...prev,
@@ -2134,7 +2183,7 @@ export function JournalSection() {
                     }
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Выберите ученика" />
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       {studentOptions
@@ -2168,6 +2217,7 @@ export function JournalSection() {
                 !selectedTeacherId ||
                 !createSlotState ||
                 !(dayDrafts[createSlotState.weekday]?.time ?? '') ||
+                (createSlotState.mode === 'create' && !(dayDrafts[createSlotState.weekday]?.studentId ?? '')) ||
                 createSlotOccupiedTimes.has(dayDrafts[createSlotState.weekday]?.time ?? '') ||
                 creatingSlot
               }
@@ -2711,6 +2761,34 @@ function getOccupiedTimesForDay(
 
 function getWeekSlotsCacheKey(teacherId: string, dateFrom: string, dateTo: string): string {
   return `${teacherId}|${dateFrom}|${dateTo}`;
+}
+
+function createEmptyWeeklyKpi(): WeeklyKpi {
+  return {
+    forecast: { amount: 0, count: 0 },
+    fact: { amount: 0, count: 0 },
+    cancellations: { amount: 0, count: 0 }
+  };
+}
+
+function normalizeWeeklyKpi(value: WeeklyKpi | null | undefined): WeeklyKpi {
+  if (!value) return createEmptyWeeklyKpi();
+
+  const normalizeMetric = (metric: WeeklyKpiMetric | null | undefined): WeeklyKpiMetric => ({
+    amount: Math.max(0, Number(metric?.amount ?? 0) || 0),
+    count: Math.max(0, Number(metric?.count ?? 0) || 0)
+  });
+
+  return {
+    forecast: normalizeMetric(value.forecast),
+    fact: normalizeMetric(value.fact),
+    cancellations: normalizeMetric(value.cancellations)
+  };
+}
+
+function formatWeeklyKpiAmount(metric: WeeklyKpiMetric): string {
+  const amount = Math.round(Math.max(0, Number(metric.amount ?? 0) || 0));
+  return formatRub(amount);
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {

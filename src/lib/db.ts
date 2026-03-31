@@ -2197,6 +2197,24 @@ export async function listTeacherPlannedSlotCountsBeforeDate(input: {
   }));
 }
 
+export async function getTeacherRateRub(input: { teacherId: string }): Promise<number | null> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT rate_rub
+      FROM teachers
+      WHERE id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `,
+    [input.teacherId]
+  );
+
+  if (rows.length === 0) return null;
+  if (rows[0].rate_rub === null || rows[0].rate_rub === undefined) return null;
+
+  const value = Number(rows[0].rate_rub);
+  return Number.isFinite(value) ? value : null;
+}
+
 export async function getTeacherWeeklyTemplate(teacherId: string): Promise<WeeklyTemplateSlot[]> {
   const pool = getPool();
   let hasStudentIdColumn = true;
@@ -2313,7 +2331,7 @@ export async function replaceTeacherWeeklyTemplate(input: {
     const [existingRows] = hasWeeklySlotStudentIdColumn
       ? await connection.query<mysql.RowDataPacket[]>(
           `
-            SELECT id, student_id, weekday, TIME_FORMAT(start_time, '%H:%i') AS start_time
+            SELECT id, student_id, weekday, TIME_FORMAT(start_time, '%H:%i') AS start_time, is_active
             ${hasWeeklySlotStartFromColumn ? ", DATE_FORMAT(start_from, '%Y-%m-%d') AS start_from" : ''}
             FROM teacher_weekly_slots
             WHERE teacher_id = ?
@@ -2322,7 +2340,7 @@ export async function replaceTeacherWeeklyTemplate(input: {
         )
       : await connection.query<mysql.RowDataPacket[]>(
           `
-            SELECT id, weekday, TIME_FORMAT(start_time, '%H:%i') AS start_time
+            SELECT id, weekday, TIME_FORMAT(start_time, '%H:%i') AS start_time, is_active
             ${hasWeeklySlotStartFromColumn ? ", DATE_FORMAT(start_from, '%Y-%m-%d') AS start_from" : ''}
             FROM teacher_weekly_slots
             WHERE teacher_id = ?
@@ -2330,18 +2348,23 @@ export async function replaceTeacherWeeklyTemplate(input: {
           [input.teacherId]
         );
 
-    const existingByKey = new Map<string, { id: string; weekday: number; start_time: string; start_from: string | null; student_id: string | null }>();
+    const existingByKey = new Map<
+      string,
+      { id: string; weekday: number; start_time: string; start_from: string | null; student_id: string | null; is_active: boolean }
+    >();
     for (const row of existingRows) {
       const weekday = Number(row.weekday);
       const startTime = String(row.start_time);
       const startFrom = hasWeeklySlotStartFromColumn && row.start_from ? String(row.start_from) : null;
       const studentId = hasWeeklySlotStudentIdColumn && row.student_id ? String(row.student_id) : null;
+      const isActive = Boolean(Number(row.is_active ?? 0));
       existingByKey.set(`${weekday}-${startTime}`, {
         id: String(row.id),
         weekday,
         start_time: startTime,
         start_from: startFrom,
-        student_id: studentId
+        student_id: studentId,
+        is_active: isActive
       });
     }
 
@@ -2362,7 +2385,17 @@ export async function replaceTeacherWeeklyTemplate(input: {
       });
     }
 
-    await assertWeeklyTemplateStartFromBounds(connection, input.teacherId, uniqueSlots);
+    const slotsToValidate = uniqueSlots.filter((slot) => {
+      const existing = existingByKey.get(`${slot.weekday}-${slot.startTime}`);
+      if (!existing) return true;
+
+      return (
+        existing.student_id !== slot.studentId ||
+        existing.start_from !== slot.startFrom ||
+        existing.is_active !== slot.isActive
+      );
+    });
+    await assertWeeklyTemplateStartFromBounds(connection, input.teacherId, slotsToValidate);
 
     const weeklySlotIdByKey = new Map<string, string>();
     for (const [key, value] of existingByKey.entries()) {
