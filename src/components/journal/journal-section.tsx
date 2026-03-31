@@ -43,7 +43,7 @@ import { toast } from 'sonner';
 
 type RoleUser = { id: string; role: 'admin' | 'teacher'; login: string };
 type TeacherItem = { id: string; full_name: string };
-type StudentItem = { id: string; full_name: string; paid_lessons_left: number };
+type StudentItem = { id: string; full_name: string; paid_lessons_left: number; last_confirmed_lesson_date: string | null };
 type WeeklySlot = {
   id: string;
   weekday: number;
@@ -73,6 +73,17 @@ type LessonSlot = {
 };
 type PlannedForecastBaseline = { student_id: string; planned_count: number };
 type WeekSlotsResponse = { slots: LessonSlot[]; baseline: PlannedForecastBaseline[] };
+type JournalAuditItem = {
+  id: number;
+  created_at: string;
+  action_label: 'создал' | 'изменил' | 'удалил';
+  description: string;
+  actor_login: string | null;
+};
+type JournalAuditResponse = {
+  items: JournalAuditItem[];
+  nextCursor: { createdAt: string; id: number } | null;
+};
 
 type DayDraft = {
   time: string;
@@ -144,6 +155,11 @@ export function JournalSection() {
   const [assigningStudentSlotId, setAssigningStudentSlotId] = useState<string | null>(null);
   const [statusUpdatingSlotId, setStatusUpdatingSlotId] = useState<string | null>(null);
   const [confirmUpdatingSlotId, setConfirmUpdatingSlotId] = useState<string | null>(null);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditLoadingMore, setAuditLoadingMore] = useState(false);
+  const [auditItems, setAuditItems] = useState<JournalAuditItem[]>([]);
+  const [auditCursor, setAuditCursor] = useState<{ createdAt: string; id: number } | null>(null);
   const studentsCacheRef = useRef<Map<string, { ts: number; data: StudentItem[] }>>(new Map());
   const weeklyTemplateCacheRef = useRef<Map<string, { ts: number; data: WeeklySlot[] }>>(new Map());
   const weekSlotsCacheRef = useRef<Map<string, { ts: number; data: WeekSlotsResponse }>>(new Map());
@@ -152,6 +168,7 @@ export function JournalSection() {
   const loadAbortRef = useRef<AbortController | null>(null);
   const softRefreshTimerRef = useRef<number | null>(null);
   const weekColumnsScrollRef = useRef<HTMLDivElement | null>(null);
+  const auditListRef = useRef<HTMLDivElement | null>(null);
   const dragScrollStateRef = useRef<{
     startX: number;
     startY: number;
@@ -371,6 +388,57 @@ export function JournalSection() {
     }, 250);
   }, [refreshWeekData, selectedTeacherId]);
 
+  const loadAudit = useCallback(
+    async (options?: { append?: boolean }) => {
+      if (roleUser?.role !== 'admin' || !selectedTeacherId) return;
+      const append = options?.append ?? false;
+      if (append && !auditCursor) return;
+
+      if (append) {
+        setAuditLoadingMore(true);
+      } else {
+        setAuditLoading(true);
+      }
+
+      try {
+        const params = new URLSearchParams({
+          teacherId: selectedTeacherId,
+          limit: '50'
+        });
+
+        if (append && auditCursor) {
+          params.set('cursorCreatedAt', auditCursor.createdAt);
+          params.set('cursorId', String(auditCursor.id));
+        }
+
+        const payload = await fetchJson<JournalAuditResponse>(`/api/v1/journal/audit?${params.toString()}`);
+
+        setAuditItems((prev) => (append ? [...prev, ...payload.items] : payload.items));
+        setAuditCursor(payload.nextCursor);
+      } catch (error) {
+        showError(error instanceof Error ? error.message : 'Не удалось загрузить аудит журнала');
+      } finally {
+        if (append) {
+          setAuditLoadingMore(false);
+        } else {
+          setAuditLoading(false);
+        }
+      }
+    },
+    [auditCursor, roleUser?.role, selectedTeacherId, showError]
+  );
+
+  const handleAuditScroll = useCallback(() => {
+    const container = auditListRef.current;
+    if (!container) return;
+    if (auditLoading || auditLoadingMore || !auditCursor) return;
+
+    const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distanceToBottom < 120) {
+      void loadAudit({ append: true });
+    }
+  }, [auditCursor, auditLoading, auditLoadingMore, loadAudit]);
+
   const loadAll = useCallback(async () => {
     loadAbortRef.current?.abort();
     const controller = new AbortController();
@@ -553,6 +621,16 @@ export function JournalSection() {
     if (roleUser?.role !== 'admin' || !selectedTeacherId) return;
     localStorage.setItem(ADMIN_JOURNAL_TEACHER_STORAGE_KEY, selectedTeacherId);
   }, [roleUser?.role, selectedTeacherId]);
+
+  useEffect(() => {
+    setAuditItems([]);
+    setAuditCursor(null);
+  }, [selectedTeacherId]);
+
+  useEffect(() => {
+    if (!auditOpen) return;
+    void loadAudit();
+  }, [auditOpen, loadAudit]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !weekStartHydrated) return;
@@ -1128,6 +1206,15 @@ export function JournalSection() {
     return map;
   }, [students]);
 
+  const studentLastConfirmedDateById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const student of students) {
+      if (!student.last_confirmed_lesson_date) continue;
+      map.set(student.id, student.last_confirmed_lesson_date);
+    }
+    return map;
+  }, [students]);
+
   const forecastBySlotId = useMemo(() => {
     return calculateForecastBySlotId({
       slots,
@@ -1147,6 +1234,9 @@ export function JournalSection() {
     [weeklyTemplate]
   );
   const templateLoadPercent = templateTotalSlots > 0 ? Math.round((templateAssignedSlots / templateTotalSlots) * 100) : 0;
+  const templateSlotDraft = templateSlotState ? dayDrafts[templateSlotState.weekday] ?? null : null;
+  const templateSlotMinAllowedStartFrom =
+    templateSlotDraft?.studentId ? studentLastConfirmedDateById.get(templateSlotDraft.studentId) ?? null : null;
 
   const openTemplateSlotModal = (weekday: number, slot?: WeeklySlot) => {
     if (slot) {
@@ -1199,6 +1289,16 @@ export function JournalSection() {
       return;
     }
 
+    if (draft.studentId && draft.startFrom) {
+      const minAllowedDate = templateSlotMinAllowedStartFrom ?? studentLastConfirmedDateById.get(draft.studentId);
+      if (minAllowedDate && draft.startFrom < minAllowedDate) {
+        showError(
+          `Дата начала не может быть раньше ${formatIsoDateHuman(minAllowedDate)}: это дата последнего подтвержденного занятия ученика`
+        );
+        return;
+      }
+    }
+
     const nextTemplate = templateSlotState.slotId
       ? weeklyTemplate.map((slot) =>
           slot.id === templateSlotState.slotId
@@ -1248,13 +1348,12 @@ export function JournalSection() {
 
   return (
     <div className="flex w-full flex-col gap-4">
-      <div className="flex min-h-9 items-center gap-2">
+      <div className="flex min-h-9 items-center gap-4">
         {loading && teachers.length === 0 ? <Skeleton className="h-9 w-[320px]" /> : null}
-        {teachers.length > 0 ? (
+        {roleUser?.role === 'admin' && teachers.length > 0 ? (
           <Select
             value={selectedTeacherId ?? ''}
             onValueChange={setSelectedTeacherId}
-            disabled={roleUser?.role !== 'admin'}
           >
             <SelectTrigger className="w-[320px]">
               <SelectValue placeholder="Преподаватель" />
@@ -1268,6 +1367,11 @@ export function JournalSection() {
             </SelectContent>
           </Select>
         ) : null}
+        {roleUser?.role === 'teacher' ? (
+          <h2 className="text-[20px] font-semibold text-foreground">
+            {selectedTeacherName}
+          </h2>
+        ) : null}
         <Button
           variant="outline"
           className="h-9 gap-2"
@@ -1278,6 +1382,17 @@ export function JournalSection() {
           <CalendarDays absoluteStrokeWidth className="size-4" />
           <span>Шаблон недели</span>
         </Button>
+        {roleUser?.role === 'admin' ? (
+          <Button
+            variant="outline"
+            className="h-9 gap-2"
+            aria-label="Открыть аудит журнала"
+            disabled={!selectedTeacherId}
+            onClick={() => setAuditOpen(true)}
+          >
+            <span>Аудит</span>
+          </Button>
+        ) : null}
       </div>
       <div className="h-px w-full bg-border" />
 
@@ -1290,6 +1405,7 @@ export function JournalSection() {
           <Button
             variant="secondary"
             size="icon-sm"
+            className="h-9 w-9 hover:bg-black hover:text-white"
             disabled={!canGoToPreviousWeek}
             aria-label="Предыдущая неделя"
             onClick={() => setWeekStart(clampWeekStart(addDays(weekStart, -7)))}
@@ -1298,12 +1414,22 @@ export function JournalSection() {
           </Button>
           <Button
             variant="secondary"
-            disabled={isCurrentWeekSelected}
+            className={
+              isCurrentWeekSelected
+                ? 'h-9 cursor-default text-blue-600 hover:bg-secondary hover:text-blue-600'
+                : 'h-9 hover:bg-black hover:text-white'
+            }
             onClick={() => setWeekStart(clampWeekStart(getWeekStart(new Date())))}
           >
             Текущая неделя
           </Button>
-          <Button variant="secondary" size="icon-sm" aria-label="Следующая неделя" onClick={() => setWeekStart(addDays(weekStart, 7))}>
+          <Button
+            variant="secondary"
+            size="icon-sm"
+            className="h-9 w-9 hover:bg-black hover:text-white"
+            aria-label="Следующая неделя"
+            onClick={() => setWeekStart(addDays(weekStart, 7))}
+          >
             <ArrowRight absoluteStrokeWidth className="size-4" />
           </Button>
         </ButtonGroup>
@@ -1896,6 +2022,38 @@ export function JournalSection() {
         </div>
       </div>
 
+      <Dialog open={auditOpen} onOpenChange={setAuditOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Аудит журнала</DialogTitle>
+          </DialogHeader>
+          <div
+            ref={auditListRef}
+            onScroll={handleAuditScroll}
+            className="max-h-[60vh] space-y-2 overflow-y-auto rounded-md border p-2"
+          >
+            {auditLoading ? (
+              <p className="text-sm text-muted-foreground">Загрузка...</p>
+            ) : auditItems.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Событий пока нет</p>
+            ) : (
+              auditItems.map((event) => (
+                <div key={event.id} className="rounded-md border p-2 text-sm">
+                  <p className="font-medium">
+                    {new Date(event.created_at).toLocaleString('ru-RU')} — {event.action_label} {event.description}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Пользователь: {event.actor_login ?? '—'}</p>
+                </div>
+              ))
+            )}
+            {auditLoadingMore ? <p className="text-sm text-muted-foreground">Загрузка...</p> : null}
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setAuditOpen(false)}>Закрыть</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={Boolean(createSlotState)} onOpenChange={(open) => !open && setCreateSlotState(null)}>
         <DialogContent>
           <DialogHeader>
@@ -2103,6 +2261,7 @@ export function JournalSection() {
                 <span className="text-sm text-muted-foreground">Дата начала занятий</span>
                 <Input
                   type="date"
+                  min={templateSlotMinAllowedStartFrom ?? undefined}
                   value={dayDrafts[templateSlotState.weekday]?.startFrom ?? ''}
                   onChange={(event) =>
                     setDayDrafts((prev) => ({
@@ -2115,6 +2274,11 @@ export function JournalSection() {
                     }))
                   }
                 />
+                {templateSlotMinAllowedStartFrom ? (
+                  <p className="text-xs text-muted-foreground">
+                    Минимальная дата: {formatIsoDateHuman(templateSlotMinAllowedStartFrom)}
+                  </p>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -2489,6 +2653,12 @@ function parseIsoDateToDate(value: string | null): Date | null {
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return null;
   return date;
+}
+
+function formatIsoDateHuman(value: string): string {
+  const date = parseIsoDateToDate(value);
+  if (!date) return value;
+  return date.toLocaleDateString('ru-RU');
 }
 
 function clampWeekStart(date: Date): Date {

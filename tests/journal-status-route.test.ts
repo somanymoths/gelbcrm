@@ -26,7 +26,7 @@ describe('Journal status route', () => {
 
   it('returns teacher/admin conflict message and 409', async () => {
     mockedRequireUser.mockResolvedValue({
-      session: { id: 'teacher-user-1', role: 'teacher', login: 'teacher1' }
+      session: { id: 'teacher-user-1', role: 'teacher', login: 'teacher1', sessionVersion: 1 }
     } as Awaited<ReturnType<typeof requireUser>>);
     mockedFindTeacherByUserId.mockResolvedValue({
       id: 'teacher-1',
@@ -64,7 +64,7 @@ describe('Journal status route', () => {
 
   it('maps future day completion guard', async () => {
     mockedRequireUser.mockResolvedValue({
-      session: { id: 'teacher-user-2', role: 'teacher', login: 'teacher2' }
+      session: { id: 'teacher-user-2', role: 'teacher', login: 'teacher2', sessionVersion: 1 }
     } as Awaited<ReturnType<typeof requireUser>>);
     mockedFindTeacherByUserId.mockResolvedValue({
       id: 'teacher-2',

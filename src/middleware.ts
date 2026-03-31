@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { SESSION_COOKIE_NAME } from '@/lib/constants';
 import { verifySessionToken } from '@/lib/session';
+import { getActiveUserSessionMetaById } from '@/lib/db';
 
 const adminOnly = ['/funnel', '/teachers', '/payments'];
 const allProtected = ['/funnel', '/teachers', '/payments', '/journal'];
@@ -22,6 +23,10 @@ export async function middleware(request: NextRequest) {
       if (token) {
         const session = await verifySessionToken(token);
         if (session) {
+          const meta = await getActiveUserSessionMetaById(session.id);
+          if (!meta || meta.session_version !== session.sessionVersion) {
+            return withRequestId(NextResponse.next({ request: { headers: requestHeaders } }), requestId);
+          }
           return withRequestId(redirectTo(request, session.role === 'admin' ? '/funnel' : '/journal'), requestId);
         }
       }
@@ -40,6 +45,11 @@ export async function middleware(request: NextRequest) {
 
   const session = await verifySessionToken(token);
   if (!session) {
+    return withRequestId(redirectTo(request, '/login'), requestId);
+  }
+
+  const meta = await getActiveUserSessionMetaById(session.id);
+  if (!meta || meta.session_version !== session.sessionVersion) {
     return withRequestId(redirectTo(request, '/login'), requestId);
   }
 

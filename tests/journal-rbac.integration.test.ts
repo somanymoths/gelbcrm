@@ -31,7 +31,7 @@ describe('Journal RBAC integration', () => {
 
   it('teacher always receives own journal even with foreign teacherId in query', async () => {
     mockedRequireUser.mockResolvedValue({
-      session: { id: 'user-teacher-1', role: 'teacher', login: 'teacher1' }
+      session: { id: 'user-teacher-1', role: 'teacher', login: 'teacher1', sessionVersion: 1 }
     } as Awaited<ReturnType<typeof requireUser>>);
     mockedFindTeacherByUserId.mockResolvedValue({
       id: 'teacher-own-1',
@@ -57,7 +57,7 @@ describe('Journal RBAC integration', () => {
 
   it('teacher updates slot only within own scope even if payload has foreign teacherId', async () => {
     mockedRequireUser.mockResolvedValue({
-      session: { id: 'user-teacher-2', role: 'teacher', login: 'teacher2' }
+      session: { id: 'user-teacher-2', role: 'teacher', login: 'teacher2', sessionVersion: 1 }
     } as Awaited<ReturnType<typeof requireUser>>);
     mockedFindTeacherByUserId.mockResolvedValue({
       id: 'teacher-own-2',
@@ -105,7 +105,7 @@ describe('Journal RBAC integration', () => {
 
   it('admin can request journal for selected teacher', async () => {
     mockedRequireUser.mockResolvedValue({
-      session: { id: 'admin-1', role: 'admin', login: 'admin' }
+      session: { id: 'admin-1', role: 'admin', login: 'admin', sessionVersion: 1 }
     } as Awaited<ReturnType<typeof requireUser>>);
     mockedListTeacherLessonSlots.mockResolvedValue([]);
 
@@ -124,7 +124,7 @@ describe('Journal RBAC integration', () => {
 
   it('returns 404 when teacher account has no linked teacher profile', async () => {
     mockedRequireUser.mockResolvedValue({
-      session: { id: 'user-teacher-3', role: 'teacher', login: 'teacher3' }
+      session: { id: 'user-teacher-3', role: 'teacher', login: 'teacher3', sessionVersion: 1 }
     } as Awaited<ReturnType<typeof requireUser>>);
     mockedFindTeacherByUserId.mockResolvedValue(null);
 

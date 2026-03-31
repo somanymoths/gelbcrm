@@ -12,6 +12,7 @@ const updateSchema = z.object({
   rateRub: z.number().int().min(0).nullable().optional(),
   telegramRaw: z.string().trim().max(255).nullable().optional(),
   phone: z.string().trim().max(64).nullable().optional(),
+  email: z.string().trim().email().max(191).nullable().optional(),
   comment: z.string().trim().max(1000).nullable().optional()
 });
 
@@ -58,6 +59,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       rateRub: parsed.data.rateRub ?? null,
       telegramRaw: normalizeTelegramRaw(parsed.data.telegramRaw ?? null),
       phone,
+      email: parsed.data.email?.trim().toLowerCase() ?? null,
       comment: parsed.data.comment ?? null,
       actorUserId: guard.session.id
     });
@@ -76,6 +78,15 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return NextResponse.json(
         { code: 'DUPLICATE_TELEGRAM', message: 'Преподаватель с таким Telegram уже существует' },
         { status: 409 }
+      );
+    }
+    if (isDuplicateError(error, 'uq_teachers_email')) {
+      return NextResponse.json({ code: 'DUPLICATE_EMAIL', message: 'Преподаватель с таким email уже существует' }, { status: 409 });
+    }
+    if (isKnownError(error, 'TEACHER_EMAIL_REQUIRED_FOR_ACCESS')) {
+      return NextResponse.json(
+        { code: 'TEACHER_EMAIL_REQUIRED_FOR_ACCESS', message: 'Нельзя очистить email у преподавателя с активным доступом' },
+        { status: 422 }
       );
     }
 

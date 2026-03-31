@@ -113,6 +113,16 @@ npm run release:gate
 2. Проверить консоль браузера на ошибки доступа к storage.
 3. При необходимости очистить ключи `gelbcrm:tariffs` и `gelbcrm:payments`.
 
+### 2.8 Retention аудита журнала (12 месяцев)
+Симптом: рост таблицы `audit_logs` из-за событий журнала.
+
+Действия:
+1. Проверить кандидатов на удаление:
+   `npm run audit:cleanup:journal -- --dry-run`
+2. Выполнить очистку:
+   `npm run audit:cleanup:journal`
+3. Для production настроить периодический запуск (cron/systemd timer), например 1 раз в сутки.
+
 ## 3. Полезные команды
 
 ```bash
