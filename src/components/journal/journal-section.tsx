@@ -76,6 +76,7 @@ type PlannedForecastBaseline = { student_id: string; planned_count: number };
 type WeeklyKpiMetric = { amount: number; count: number };
 type WeeklyKpi = { forecast: WeeklyKpiMetric; fact: WeeklyKpiMetric; cancellations: WeeklyKpiMetric };
 type WeekSlotsResponse = { slots: LessonSlot[]; baseline: PlannedForecastBaseline[]; weeklyKpi: WeeklyKpi };
+type JournalViewMode = 'week' | 'month';
 type JournalAuditItem = {
   id: number;
   created_at: string;
@@ -124,6 +125,7 @@ const DAYS: Array<{ weekday: number; short: string; full: string }> = [
 const FREE_SLOT_VALUE = '__free_slot__';
 const ADMIN_JOURNAL_TEACHER_STORAGE_KEY = 'gelbcrm:journal:selectedTeacherId';
 const JOURNAL_WEEK_START_STORAGE_KEY = 'gelbcrm:journal:weekStart';
+const JOURNAL_VIEW_MODE_STORAGE_KEY = 'gelbcrm:journal:viewMode';
 const JOURNAL_MIN_WEEK_START_ISO = '2025-12-29';
 const REFERENCE_CACHE_TTL_MS = 60_000;
 const WEEK_SLOTS_CACHE_TTL_MS = 5 * 60_000;
@@ -144,7 +146,10 @@ export function JournalSection() {
   const [slots, setSlots] = useState<LessonSlot[]>([]);
   const [plannedBaselineByStudentId, setPlannedBaselineByStudentId] = useState<Record<string, number>>({});
   const [weeklyKpi, setWeeklyKpi] = useState<WeeklyKpi>(createEmptyWeeklyKpi());
+  const [viewMode, setViewMode] = useState<JournalViewMode>('week');
   const [weekStart, setWeekStart] = useState(() => clampWeekStart(getWeekStart(new Date())));
+  const [monthStart, setMonthStart] = useState(() => getMonthStart(new Date()));
+  const [focusedWeekDayIso, setFocusedWeekDayIso] = useState<string | null>(null);
   const [weekStartHydrated, setWeekStartHydrated] = useState(false);
   const [dayDrafts, setDayDrafts] = useState<Record<number, DayDraft>>(() => createInitialDayDrafts());
   const [createSlotState, setCreateSlotState] = useState<CreateSlotState | null>(null);
@@ -172,6 +177,7 @@ export function JournalSection() {
   const loadAbortRef = useRef<AbortController | null>(null);
   const softRefreshTimerRef = useRef<number | null>(null);
   const weekColumnsScrollRef = useRef<HTMLDivElement | null>(null);
+  const weekDayRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const auditListRef = useRef<HTMLDivElement | null>(null);
   const dragScrollStateRef = useRef<{
     startX: number;
@@ -322,18 +328,33 @@ export function JournalSection() {
   const isCurrentWeekSelected = useMemo(() => {
     return toIsoDate(weekStart) === toIsoDate(clampWeekStart(getWeekStart(new Date())));
   }, [weekStart]);
+  const isCurrentMonthSelected = useMemo(() => {
+    return toIsoDate(monthStart) === toIsoDate(getMonthStart(new Date()));
+  }, [monthStart]);
 
   const weekRangeLabel = useMemo(() => {
     const weekEnd = addDays(weekStart, 6);
     const formatter = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' });
     return `${formatter.format(weekStart)} — ${formatter.format(weekEnd)}`;
   }, [weekStart]);
+  const monthRangeLabel = useMemo(() => {
+    return new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(monthStart);
+  }, [monthStart]);
+  const periodLabel = viewMode === 'week' ? weekRangeLabel : capitalizeFirst(monthRangeLabel);
 
-  const refreshWeekData = useCallback(async (teacherId: string, options?: { syncRange?: boolean; signal?: AbortSignal }) => {
-    const dateFrom = toIsoDate(weekStart);
-    const dateTo = toIsoDate(addDays(weekStart, 6));
+  const periodRange = useMemo(() => {
+    if (viewMode === 'week') {
+      return { dateFrom: toIsoDate(weekStart), dateTo: toIsoDate(addDays(weekStart, 6)), isWeekMode: true };
+    }
 
-    if (options?.syncRange) {
+    const monthEnd = getMonthEnd(monthStart);
+    return { dateFrom: toIsoDate(monthStart), dateTo: toIsoDate(monthEnd), isWeekMode: false };
+  }, [monthStart, viewMode, weekStart]);
+
+  const refreshPeriodData = useCallback(async (teacherId: string, options?: { syncRange?: boolean; signal?: AbortSignal }) => {
+    const { dateFrom, dateTo, isWeekMode } = periodRange;
+
+    if (options?.syncRange && isWeekMode) {
       await fetchJson(
         '/api/v1/journal/slots/sync-range',
         withIdempotencyHeaders({
@@ -359,12 +380,12 @@ export function JournalSection() {
       Object.fromEntries(payload.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
     );
     setWeeklyKpi(normalizeWeeklyKpi(payload.weeklyKpi));
-  }, [weekStart]);
+  }, [periodRange]);
 
-  const prefetchWeekData = useCallback(
-    async (teacherId: string, weekStartDate: Date, signal?: AbortSignal) => {
-      const dateFrom = toIsoDate(weekStartDate);
-      const dateTo = toIsoDate(addDays(weekStartDate, 6));
+  const prefetchPeriodData = useCallback(
+    async (teacherId: string, baseDate: Date, mode: JournalViewMode, signal?: AbortSignal) => {
+      const dateFrom = mode === 'week' ? toIsoDate(baseDate) : toIsoDate(getMonthStart(baseDate));
+      const dateTo = mode === 'week' ? toIsoDate(addDays(baseDate, 6)) : toIsoDate(getMonthEnd(baseDate));
       const cacheKey = getWeekSlotsCacheKey(teacherId, dateFrom, dateTo);
       const cached = weekSlotsCacheRef.current.get(cacheKey);
       if (cached && Date.now() - cached.ts <= WEEK_SLOTS_CACHE_TTL_MS) return;
@@ -389,9 +410,9 @@ export function JournalSection() {
       window.clearTimeout(softRefreshTimerRef.current);
     }
     softRefreshTimerRef.current = window.setTimeout(() => {
-      void refreshWeekData(targetTeacherId, { syncRange: false });
+      void refreshPeriodData(targetTeacherId, { syncRange: false });
     }, 250);
-  }, [refreshWeekData, selectedTeacherId]);
+  }, [refreshPeriodData, selectedTeacherId]);
 
   const loadAudit = useCallback(
     async (options?: { append?: boolean }) => {
@@ -511,21 +532,20 @@ export function JournalSection() {
       } else {
         templateData = templateCached.data;
       }
-      const dateFrom = toIsoDate(weekStart);
-      const dateTo = toIsoDate(addDays(weekStart, 6));
-      const weekCacheKey = getWeekSlotsCacheKey(nextTeacherId, dateFrom, dateTo);
-      const cachedWeek = weekSlotsCacheRef.current.get(weekCacheKey);
-      const hasFreshCachedWeek = Boolean(cachedWeek && Date.now() - cachedWeek.ts <= WEEK_SLOTS_CACHE_TTL_MS);
-      if (hasFreshCachedWeek && cachedWeek) {
-        setSlots(cachedWeek.data.slots);
+      const { dateFrom, dateTo, isWeekMode } = periodRange;
+      const periodCacheKey = getWeekSlotsCacheKey(nextTeacherId, dateFrom, dateTo);
+      const cachedPeriod = weekSlotsCacheRef.current.get(periodCacheKey);
+      const hasFreshCachedPeriod = Boolean(cachedPeriod && Date.now() - cachedPeriod.ts <= WEEK_SLOTS_CACHE_TTL_MS);
+      if (hasFreshCachedPeriod && cachedPeriod) {
+        setSlots(cachedPeriod.data.slots);
         setPlannedBaselineByStudentId(
-          Object.fromEntries(cachedWeek.data.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
+          Object.fromEntries(cachedPeriod.data.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
         );
-        setWeeklyKpi(normalizeWeeklyKpi(cachedWeek.data.weeklyKpi));
+        setWeeklyKpi(normalizeWeeklyKpi(cachedPeriod.data.weeklyKpi));
       }
 
-      const fetchCurrentWeek = async (syncRange: boolean): Promise<WeekSlotsResponse> => {
-        if (syncRange) {
+      const fetchCurrentPeriod = async (syncRange: boolean): Promise<WeekSlotsResponse> => {
+        if (syncRange && isWeekMode) {
           await fetchJson(
             '/api/v1/journal/slots/sync-range',
             withIdempotencyHeaders({
@@ -542,8 +562,8 @@ export function JournalSection() {
         );
       };
 
-      const applyWeekPayload = (payload: WeekSlotsResponse) => {
-        weekSlotsCacheRef.current.set(weekCacheKey, { ts: Date.now(), data: payload });
+      const applyPeriodPayload = (payload: WeekSlotsResponse) => {
+        weekSlotsCacheRef.current.set(periodCacheKey, { ts: Date.now(), data: payload });
         setSlots(payload.slots);
         setPlannedBaselineByStudentId(
           Object.fromEntries(payload.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
@@ -551,25 +571,30 @@ export function JournalSection() {
         setWeeklyKpi(normalizeWeeklyKpi(payload.weeklyKpi));
       };
 
-      if (hasFreshCachedWeek) {
+      if (hasFreshCachedPeriod) {
         void (async () => {
           try {
-            const freshWeek = await fetchCurrentWeek(false);
-            applyWeekPayload(freshWeek);
+            const freshPeriod = await fetchCurrentPeriod(false);
+            applyPeriodPayload(freshPeriod);
           } catch (error) {
             if (error instanceof DOMException && error.name === 'AbortError') return;
           }
         })();
       } else {
-        const slotsPayload = await fetchCurrentWeek(true);
-        applyWeekPayload(slotsPayload);
+        const slotsPayload = await fetchCurrentPeriod(true);
+        applyPeriodPayload(slotsPayload);
       }
 
       setStudents(studentsData);
       setWeeklyTemplate(templateData);
 
-      void prefetchWeekData(nextTeacherId, addDays(weekStart, -7), controller.signal);
-      void prefetchWeekData(nextTeacherId, addDays(weekStart, 7), controller.signal);
+      if (viewMode === 'week') {
+        void prefetchPeriodData(nextTeacherId, addDays(weekStart, -7), 'week', controller.signal);
+        void prefetchPeriodData(nextTeacherId, addDays(weekStart, 7), 'week', controller.signal);
+      } else {
+        void prefetchPeriodData(nextTeacherId, addMonths(monthStart, -1), 'month', controller.signal);
+        void prefetchPeriodData(nextTeacherId, addMonths(monthStart, 1), 'month', controller.signal);
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
       const messageText = error instanceof Error ? error.message : '';
@@ -588,7 +613,7 @@ export function JournalSection() {
     } finally {
       setLoading(false);
     }
-  }, [prefetchWeekData, selectedTeacherId, showError, weekStart]);
+  }, [monthStart, periodRange, prefetchPeriodData, selectedTeacherId, showError, viewMode, weekStart]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -623,6 +648,10 @@ export function JournalSection() {
     if (parsed) {
       setWeekStart(clampWeekStart(getWeekStart(parsed)));
     }
+    const persistedViewMode = localStorage.getItem(JOURNAL_VIEW_MODE_STORAGE_KEY);
+    if (persistedViewMode === 'week' || persistedViewMode === 'month') {
+      setViewMode(persistedViewMode);
+    }
     setWeekStartHydrated(true);
   }, []);
 
@@ -645,6 +674,20 @@ export function JournalSection() {
     if (typeof window === 'undefined' || !weekStartHydrated) return;
     localStorage.setItem(JOURNAL_WEEK_START_STORAGE_KEY, toIsoDate(weekStart));
   }, [weekStart, weekStartHydrated]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !weekStartHydrated) return;
+    localStorage.setItem(JOURNAL_VIEW_MODE_STORAGE_KEY, viewMode);
+  }, [viewMode, weekStartHydrated]);
+
+  useEffect(() => {
+    if (!focusedWeekDayIso || viewMode !== 'week') return;
+    const target = weekDayRefs.current.get(focusedWeekDayIso);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    const timer = window.setTimeout(() => setFocusedWeekDayIso(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [focusedWeekDayIso, viewMode, weekDays]);
 
   const saveTemplate = async (nextTemplate: WeeklySlot[]) => {
     if (!selectedTeacherId) return;
@@ -992,6 +1035,28 @@ export function JournalSection() {
     }
     return map;
   }, [slots]);
+  const monthDays = useMemo(() => {
+    return listMonthDays(monthStart);
+  }, [monthStart]);
+  const monthGridCells = useMemo(() => {
+    return listMonthGrid(monthStart);
+  }, [monthStart]);
+  const monthSlotsByDate = useMemo(() => {
+    const map = new Map<string, LessonSlot[]>();
+    for (const day of monthDays) {
+      const daySlots = (slotMapByDate.get(day.dateIso) ?? []).filter((slot) => Boolean(slot.student_id));
+      map.set(day.dateIso, daySlots);
+    }
+    return map;
+  }, [monthDays, slotMapByDate]);
+
+  const switchToWeekWithDate = useCallback((dateIso: string) => {
+    const nextDate = parseIsoDateToDate(dateIso);
+    if (!nextDate) return;
+    setViewMode('week');
+    setWeekStart(clampWeekStart(getWeekStart(nextDate)));
+    setFocusedWeekDayIso(dateIso);
+  }, []);
 
   const applyRescheduleDate = useCallback(
     (nextDate: string) => {
@@ -1448,51 +1513,103 @@ export function JournalSection() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-xl font-semibold">Журнал занятий</h3>
-          <Badge variant="outline">{weekRangeLabel}</Badge>
+          <Badge variant="outline">{periodLabel}</Badge>
         </div>
-        <ButtonGroup className="shrink-0">
+        <div className="flex items-center gap-2">
+          <ButtonGroup className="shrink-0">
+            <Button
+              variant={viewMode === 'week' ? 'default' : 'outline'}
+              className="h-9"
+              onClick={() => setViewMode('week')}
+            >
+              Неделя
+            </Button>
+            <Button
+              variant={viewMode === 'month' ? 'default' : 'outline'}
+              className="h-9"
+              onClick={() => {
+                setMonthStart(getMonthStart(weekStart));
+                setViewMode('month');
+              }}
+            >
+              Месяц
+            </Button>
+          </ButtonGroup>
+          <ButtonGroup className="shrink-0">
           <Button
             variant="secondary"
             size="icon-sm"
             className="h-9 w-9 hover:bg-black hover:text-white"
-            disabled={!canGoToPreviousWeek}
-            aria-label="Предыдущая неделя"
-            onClick={() => setWeekStart(clampWeekStart(addDays(weekStart, -7)))}
+            disabled={viewMode === 'week' ? !canGoToPreviousWeek : false}
+            aria-label={viewMode === 'week' ? 'Предыдущая неделя' : 'Предыдущий месяц'}
+            onClick={() => {
+              if (viewMode === 'week') {
+                setWeekStart(clampWeekStart(addDays(weekStart, -7)));
+                return;
+              }
+              setMonthStart(getMonthStart(addMonths(monthStart, -1)));
+            }}
           >
             <ArrowLeft absoluteStrokeWidth className="size-4" />
           </Button>
           <Button
             variant="secondary"
             className={
-              isCurrentWeekSelected
+              (viewMode === 'week' ? isCurrentWeekSelected : isCurrentMonthSelected)
                 ? 'h-9 cursor-default text-blue-600 hover:bg-secondary hover:text-blue-600'
                 : 'h-9 hover:bg-black hover:text-white'
             }
-            onClick={() => setWeekStart(clampWeekStart(getWeekStart(new Date())))}
+            onClick={() => {
+              if (viewMode === 'week') {
+                setWeekStart(clampWeekStart(getWeekStart(new Date())));
+                return;
+              }
+              setMonthStart(getMonthStart(new Date()));
+            }}
           >
-            Текущая неделя
+            {viewMode === 'week' ? 'Текущая неделя' : 'Текущий месяц'}
           </Button>
           <Button
             variant="secondary"
             size="icon-sm"
             className="h-9 w-9 hover:bg-black hover:text-white"
-            aria-label="Следующая неделя"
-            onClick={() => setWeekStart(addDays(weekStart, 7))}
+            aria-label={viewMode === 'week' ? 'Следующая неделя' : 'Следующий месяц'}
+            onClick={() => {
+              if (viewMode === 'week') {
+                setWeekStart(addDays(weekStart, 7));
+                return;
+              }
+              setMonthStart(getMonthStart(addMonths(monthStart, 1)));
+            }}
           >
             <ArrowRight absoluteStrokeWidth className="size-4" />
           </Button>
-        </ButtonGroup>
+          </ButtonGroup>
+        </div>
       </div>
 
       <div
         ref={weekColumnsScrollRef}
         onMouseDown={handleColumnsMouseDown}
         onMouseLeave={stopColumnsDrag}
-        className={`h-[calc(100dvh-16px)] w-full overflow-auto rounded-xl bg-muted/30 p-[8px] ${isDraggingColumns ? 'cursor-grabbing' : 'cursor-default'}`}
+        className={`${viewMode === 'week' ? 'h-[calc(100dvh-16px)]' : 'hidden h-0'} w-full overflow-auto rounded-xl bg-muted/30 p-[8px] ${isDraggingColumns ? 'cursor-grabbing' : 'cursor-default'}`}
       >
         <div className="grid grid-cols-1 gap-3 lg:flex lg:min-w-max lg:items-start">
           {weekDays.map((day) => (
-            <Card key={day.dateIso} data-journal-day-column className="cursor-default lg:w-[360px] lg:min-w-[360px]">
+            <Card
+              key={day.dateIso}
+              ref={(node) => {
+                if (!node) {
+                  weekDayRefs.current.delete(day.dateIso);
+                  return;
+                }
+                weekDayRefs.current.set(day.dateIso, node);
+              }}
+              data-journal-day-column
+              className={`cursor-default lg:w-[360px] lg:min-w-[360px] ${
+                focusedWeekDayIso === day.dateIso ? 'ring-2 ring-primary ring-offset-2 transition-shadow duration-300' : ''
+              }`}
+            >
             <CardHeader>
               <CardTitle>{day.dateLabel}</CardTitle>
               <CardDescription>{day.full}</CardDescription>
@@ -2068,6 +2185,93 @@ export function JournalSection() {
             </CardContent>
             </Card>
           ))}
+        </div>
+      </div>
+
+      <div className={viewMode === 'month' ? 'block' : 'hidden'}>
+        <div className="hidden rounded-xl bg-muted/30 p-3 md:block">
+          <div className="mb-2 grid grid-cols-7 gap-2">
+            {DAYS.map((day) => (
+              <div key={day.weekday} className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                {day.short}
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-2">
+            {monthGridCells.map((day, index) => {
+              if (!day) {
+                return <div key={`month-empty-${index}`} className="min-h-[140px] rounded-lg border border-dashed bg-background/40" />;
+              }
+              const daySlots = monthSlotsByDate.get(day.dateIso) ?? [];
+              const previewSlots = daySlots.slice(0, 4);
+              return (
+                <button
+                  key={day.dateIso}
+                  type="button"
+                  className="flex min-h-[140px] flex-col items-start justify-start rounded-lg border bg-background p-2 text-left transition-colors hover:bg-muted/40"
+                  onClick={() => switchToWeekWithDate(day.dateIso)}
+                >
+                  <div className="mb-2 text-sm font-semibold">{day.dayOfMonth}</div>
+                  <div className="space-y-1">
+                    {previewSlots.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">Нет занятий</p>
+                    ) : (
+                      previewSlots.map((slot) => (
+                        <div key={slot.id} className="flex items-center gap-1.5 text-xs">
+                          <span className={`inline-block size-2 rounded-full ${statusDotClass(slot.status)}`} />
+                          <span className="font-medium">{slot.start_time}</span>
+                          <span className="truncate">{slot.student_full_name}</span>
+                        </div>
+                      ))
+                    )}
+                    {daySlots.length > 4 ? (
+                      <button
+                        type="button"
+                        className="text-xs font-medium text-blue-600 hover:underline"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          switchToWeekWithDate(day.dateIso);
+                        }}
+                      >
+                        ещё…
+                      </button>
+                    ) : null}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="space-y-2 md:hidden">
+          {monthDays.map((day) => {
+            const daySlots = monthSlotsByDate.get(day.dateIso) ?? [];
+            return (
+              <button
+                key={day.dateIso}
+                type="button"
+                onClick={() => switchToWeekWithDate(day.dateIso)}
+                className="flex w-full flex-col items-start justify-start rounded-lg border bg-background p-3 text-left"
+              >
+                <div className="mb-2 text-sm font-semibold">
+                  {formatDayMonthRu(day.dateIso)}
+                </div>
+                <div className="space-y-1">
+                  {daySlots.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">Нет занятий</p>
+                  ) : (
+                    daySlots.map((slot) => (
+                      <div key={slot.id} className="flex items-center gap-2 text-xs">
+                        <span className={`inline-block size-2 rounded-full ${statusDotClass(slot.status)}`} />
+                        <span className="font-medium">{slot.start_time}</span>
+                        <span className="truncate">{slot.student_full_name}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -2841,4 +3045,57 @@ function addDays(value: Date, amount: number): Date {
   const date = new Date(value.getFullYear(), value.getMonth(), value.getDate());
   date.setDate(date.getDate() + amount);
   return date;
+}
+
+function addMonths(value: Date, amount: number): Date {
+  const date = new Date(value.getFullYear(), value.getMonth(), 1);
+  date.setMonth(date.getMonth() + amount);
+  return date;
+}
+
+function getMonthStart(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), 1);
+}
+
+function getMonthEnd(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth() + 1, 0);
+}
+
+function listMonthDays(monthStart: Date): Array<{ dateIso: string; dayOfMonth: number }> {
+  const monthEnd = getMonthEnd(monthStart);
+  const days: Array<{ dateIso: string; dayOfMonth: number }> = [];
+  for (let day = 1; day <= monthEnd.getDate(); day += 1) {
+    const current = new Date(monthStart.getFullYear(), monthStart.getMonth(), day);
+    days.push({ dateIso: toIsoDate(current), dayOfMonth: day });
+  }
+  return days;
+}
+
+function listMonthGrid(monthStart: Date): Array<{ dateIso: string; dayOfMonth: number } | null> {
+  const days = listMonthDays(monthStart);
+  const firstDay = monthStart;
+  const firstWeekday = ((firstDay.getDay() + 6) % 7) + 1;
+  const leading = Math.max(0, firstWeekday - 1);
+  const baseCount = leading + days.length;
+  const totalCells = baseCount > 35 ? 42 : 35;
+  const trailing = Math.max(0, totalCells - baseCount);
+
+  return [
+    ...Array.from({ length: leading }, () => null),
+    ...days,
+    ...Array.from({ length: trailing }, () => null)
+  ];
+}
+
+function capitalizeFirst(value: string): string {
+  if (!value) return value;
+  return value[0].toUpperCase() + value.slice(1);
+}
+
+function statusDotClass(status: LessonStatus): string {
+  if (status === 'completed') return 'bg-emerald-500';
+  if (status === 'overdue') return 'bg-orange-500';
+  if (status === 'canceled') return 'bg-rose-500';
+  if (status === 'rescheduled') return 'bg-amber-500';
+  return 'bg-slate-500';
 }
