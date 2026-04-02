@@ -133,8 +133,26 @@ async function writeAuditLog(connection: mysql.PoolConnection, input: AuditInput
 }
 
 function toNullableDate(input?: string | null): string | null {
-  if (!input) return null;
-  return input;
+  if (typeof input !== 'string') return null;
+
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  // Preserve plain DATE values as-is.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  // Normalize ISO datetime values to DATE (local calendar day).
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error('INVALID_DATE_FORMAT');
+  }
+
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function parseJsonColumn(value: unknown): Record<string, unknown> | null {
@@ -544,17 +562,19 @@ export async function updateFunnelCard(input: {
     }
 
     if (typeof input.startLessonsAt === 'string' || input.startLessonsAt === null) {
+      const normalizedStartLessonsAt = toNullableDate(input.startLessonsAt);
       setParts.push('start_lessons_at = ?');
-      params.push(toNullableDate(input.startLessonsAt));
+      params.push(normalizedStartLessonsAt);
       diffBefore.start_lessons_at = current.start_lessons_at;
-      diffAfter.start_lessons_at = input.startLessonsAt ?? null;
+      diffAfter.start_lessons_at = normalizedStartLessonsAt;
     }
 
     if (typeof input.lastLessonAt === 'string' || input.lastLessonAt === null) {
+      const normalizedLastLessonAt = toNullableDate(input.lastLessonAt);
       setParts.push('last_lesson_at = ?');
-      params.push(toNullableDate(input.lastLessonAt));
+      params.push(normalizedLastLessonAt);
       diffBefore.last_lesson_at = current.last_lesson_at;
-      diffAfter.last_lesson_at = input.lastLessonAt ?? null;
+      diffAfter.last_lesson_at = normalizedLastLessonAt;
     }
 
     if (setParts.length > 0) {

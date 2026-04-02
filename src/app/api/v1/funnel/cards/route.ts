@@ -64,6 +64,10 @@ export async function POST(request: Request) {
 
     return NextResponse.json(created, { status: 201 });
   } catch (error) {
+    if (isKnownError(error, 'INVALID_DATE_FORMAT')) {
+      return NextResponse.json({ code: 'INVALID_DATE_FORMAT', message: 'Некорректный формат даты начала занятий' }, { status: 422 });
+    }
+
     if (isDuplicateError(error, 'uq_students_phone_active')) {
       return NextResponse.json({ code: 'DUPLICATE_PHONE', message: 'Карточка с таким телефоном уже существует' }, { status: 409 });
     }
@@ -88,6 +92,10 @@ function isDuplicateError(error: unknown, indexName: string): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const candidate = error as { code?: string; message?: string };
   return candidate.code === 'ER_DUP_ENTRY' && Boolean(candidate.message?.includes(indexName));
+}
+
+function isKnownError(error: unknown, code: string): boolean {
+  return error instanceof Error && error.message === code;
 }
 
 function toNullableTrimmed(value?: string | null): string | null {

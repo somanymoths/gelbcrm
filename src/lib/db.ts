@@ -1481,6 +1481,27 @@ export async function upsertYookassaPayment(input: {
   );
 }
 
+export async function reconcileYookassaPaymentsWithCardLinks(): Promise<void> {
+  await getPool().query(
+    `
+      UPDATE yookassa_payments yp
+      INNER JOIN student_payment_links spl
+        ON spl.provider_payment_id = yp.provider_payment_id
+      SET
+        yp.status = CASE
+          WHEN spl.status = 'paid' THEN 'succeeded'
+          ELSE yp.status
+        END,
+        yp.paid_at = CASE
+          WHEN spl.status = 'paid' THEN COALESCE(yp.paid_at, spl.updated_at)
+          ELSE yp.paid_at
+        END
+      WHERE yp.status = 'pending'
+        AND spl.status = 'paid'
+    `
+  );
+}
+
 export async function listPaymentHistory(limit = 200): Promise<PaymentHistoryRow[]> {
   const [rows] = await getPool().query<mysql.RowDataPacket[]>(
     `
