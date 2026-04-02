@@ -51,21 +51,7 @@ export async function POST(request: Request) {
 
   try {
     const paymentLinkId = payment.metadata?.payment_link_id?.trim() ?? '';
-    const syncPromise = paymentLinkId
-      ? syncCardPaymentStatusByLinkId({
-          paymentLinkId,
-          providerPaymentId: payment.id,
-          providerStatus: payment.status,
-          lessonsCount: payment.metadata?.lessons_count ? Number(payment.metadata.lessons_count) : null
-        })
-      : syncCardPaymentStatusByProviderPaymentId({
-          providerPaymentId: payment.id,
-          providerStatus: payment.status,
-          lessonsCount: payment.metadata?.lessons_count ? Number(payment.metadata.lessons_count) : null
-        });
-
-    await Promise.all([
-      upsertYookassaPayment({
+    await upsertYookassaPayment({
       providerPaymentId: payment.id,
       status: payment.status,
       amount,
@@ -77,9 +63,22 @@ export async function POST(request: Request) {
       metadata: payment.metadata ?? null,
       rawPayload: payload as unknown as Record<string, unknown>,
       paidAt: payment.captured_at ?? null
-      }),
-      syncPromise
-    ]);
+    });
+
+    if (paymentLinkId) {
+      await syncCardPaymentStatusByLinkId({
+        paymentLinkId,
+        providerPaymentId: payment.id,
+        providerStatus: payment.status,
+        lessonsCount: payment.metadata?.lessons_count ? Number(payment.metadata.lessons_count) : null
+      });
+    } else {
+      await syncCardPaymentStatusByProviderPaymentId({
+        providerPaymentId: payment.id,
+        providerStatus: payment.status,
+        lessonsCount: payment.metadata?.lessons_count ? Number(payment.metadata.lessons_count) : null
+      });
+    }
 
     return NextResponse.json({ ok: true });
   } catch (error) {

@@ -85,6 +85,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return NextResponse.json({ code: 'STUDENT_NOT_FOUND', message: 'Карточка не найдена' }, { status: 404 });
     }
 
+    if (isKnownError(error, 'INVALID_DATE_FORMAT')) {
+      return NextResponse.json({ code: 'INVALID_DATE_FORMAT', message: 'Некорректный формат даты занятия' }, { status: 422 });
+    }
+
     if (isDuplicateError(error, 'uq_students_phone_active')) {
       return NextResponse.json({ code: 'DUPLICATE_PHONE', message: 'Карточка с таким телефоном уже существует' }, { status: 409 });
     }

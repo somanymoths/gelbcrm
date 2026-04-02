@@ -22,7 +22,6 @@ const CloseOutlined = () => <span>✕</span>;
 const CopyOutlined = () => <span>⧉</span>;
 const DeleteOutlined = () => <span>🗑</span>;
 const ExportOutlined = () => <span>↗</span>;
-const PlusOutlined = () => <span>＋</span>;
 const RedoOutlined = () => <span>↻</span>;
 
 type FunnelStage = {
@@ -365,9 +364,6 @@ export function FunnelBoard() {
   const [selectedTariffId, setSelectedTariffId] = useState<string | null>(null);
   const [paymentLinkCreating, setPaymentLinkCreating] = useState(false);
   const [paymentLinkDeleting, setPaymentLinkDeleting] = useState(false);
-  const [manualLessonsToAdd, setManualLessonsToAdd] = useState<number>(1);
-  const [manualLessonsComment, setManualLessonsComment] = useState('');
-  const [manualLessonsSaving, setManualLessonsSaving] = useState(false);
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [newNoteBody, setNewNoteBody] = useState('');
@@ -572,8 +568,6 @@ export function FunnelBoard() {
       setSelectedCard(boardCard);
       setSelectedTeacherId(boardCard.assigned_teacher_id);
     }
-    setManualLessonsToAdd(1);
-    setManualLessonsComment('');
     setShowFullHistory(false);
     setEditMode(false);
     setNewNoteBody('');
@@ -760,45 +754,6 @@ export function FunnelBoard() {
     await loadBoard();
     await refreshSelectedCard(selectedCard.id);
     setEditMode(false);
-  }
-
-  async function onAddManualLessons() {
-    if (!selectedCard) return;
-
-    const lessonsToAdd = Math.trunc(manualLessonsToAdd);
-    const trimmedComment = manualLessonsComment.trim();
-
-    if (!Number.isInteger(lessonsToAdd) || lessonsToAdd < 1) {
-      toast.error('Укажите положительное целое количество занятий');
-      return;
-    }
-
-    if (!trimmedComment) {
-      toast.error('Комментарий обязателен');
-      return;
-    }
-
-    setManualLessonsSaving(true);
-
-    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/manual-lessons`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lessonsToAdd, comment: trimmedComment })
-    });
-
-    setManualLessonsSaving(false);
-
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось добавить занятия');
-      return;
-    }
-
-    toast.success(`Добавлено ${lessonsToAdd} занятий`);
-    setManualLessonsToAdd(1);
-    setManualLessonsComment('');
-    await loadBoard();
-    await refreshSelectedCard(selectedCard.id);
   }
 
   async function onAddNote() {
@@ -1000,8 +955,6 @@ export function FunnelBoard() {
   function closeCardDrawer() {
     setDrawerOpen(false);
     setSelectedCard(null);
-    setManualLessonsToAdd(1);
-    setManualLessonsComment('');
     setShowFullHistory(false);
     setEditMode(false);
     setNewNoteBody('');
@@ -1385,28 +1338,6 @@ export function FunnelBoard() {
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm text-muted-foreground">Осталось занятий</span>
                       <span className="text-base font-semibold">{selectedCard.paid_lessons_left}</span>
-                    </div>
-
-                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[120px_minmax(0,1fr)_auto]">
-                      <UIInput
-                        type="number"
-                        min={1}
-                        value={manualLessonsToAdd}
-                        className="h-9"
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          setManualLessonsToAdd(value === '' ? 1 : Number(value) || 1);
-                        }}
-                      />
-                      <UIInput
-                        value={manualLessonsComment}
-                        onChange={(event) => setManualLessonsComment(event.target.value)}
-                        placeholder="Комментарий к добавлению (обязательно)"
-                      />
-                      <UIButton onClick={() => void onAddManualLessons()} disabled={manualLessonsSaving}>
-                        {manualLessonsSaving ? <Spinner className="size-4" /> : <PlusOutlined />}
-                        Добавить
-                      </UIButton>
                     </div>
 
                     <Separator className="my-4" />

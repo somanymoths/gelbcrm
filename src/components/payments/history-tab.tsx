@@ -21,7 +21,7 @@ type PaymentHistoryItem = {
 };
 
 function getStatusBadge(status: string) {
-  if (status === 'succeeded') {
+  if (status === 'succeeded' || status === 'paid') {
     return <Badge>Оплачено</Badge>;
   }
 
