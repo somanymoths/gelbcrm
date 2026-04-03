@@ -70,12 +70,14 @@ export async function POST(request: Request) {
         paymentLinkId,
         providerPaymentId: payment.id,
         providerStatus: payment.status,
+        providerPaid: payment.paid ?? null,
         lessonsCount: payment.metadata?.lessons_count ? Number(payment.metadata.lessons_count) : null
       });
     } else {
       await syncCardPaymentStatusByProviderPaymentId({
         providerPaymentId: payment.id,
         providerStatus: payment.status,
+        providerPaid: payment.paid ?? null,
         lessonsCount: payment.metadata?.lessons_count ? Number(payment.metadata.lessons_count) : null
       });
     }

@@ -10,6 +10,35 @@ on:
       - main
 
 jobs:
+  payments-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DB_HOST: localhost
+      DB_DATABASE: ci
+      DB_USERNAME: ci
+      DB_PASSWORD: ci
+      SESSION_SECRET: ci-session-secret
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Payments Regression Tests
+        run: npm run test -- tests/payments-routes-regression.test.ts tests/payments-db-regression.test.ts
+
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -82,6 +82,7 @@ export async function POST(request: Request) {
           paymentLinkId: linkIdForSync,
           providerPaymentId: paymentId,
           providerStatus: 'succeeded',
+          providerPaid: true,
           lessonsCount: payload.lessonsCount
         });
       }
@@ -140,6 +141,7 @@ export async function POST(request: Request) {
         paymentLinkId: linkIdForSync,
         providerPaymentId: payment.id,
         providerStatus: payment.status,
+        providerPaid: payment.paid,
         lessonsCount: payload.lessonsCount
       });
     }

@@ -1581,7 +1581,8 @@ export async function deleteActiveCardPaymentLink(input: { cardId: string; actor
   }
 }
 
-function mapYookassaStatusToCardStatus(status: string): FunnelPaymentLink['status'] {
+function mapYookassaStatusToCardStatus(status: string, paid?: boolean | null): FunnelPaymentLink['status'] {
+  if (paid) return 'paid';
   if (status === 'succeeded') return 'paid';
   if (status === 'canceled' || status === 'failed') return 'failed';
   return 'pending';
@@ -1590,10 +1591,12 @@ function mapYookassaStatusToCardStatus(status: string): FunnelPaymentLink['statu
 export async function syncCardPaymentStatusByProviderPaymentId(input: {
   providerPaymentId: string;
   providerStatus: string;
+  providerPaid?: boolean | null;
   lessonsCount?: number | null;
 }): Promise<void> {
   await syncCardPaymentStatus({
     providerStatus: input.providerStatus,
+    providerPaid: input.providerPaid ?? null,
     lessonsCount: input.lessonsCount ?? null,
     providerPaymentId: input.providerPaymentId
   });
@@ -1636,25 +1639,64 @@ export async function syncCardPaymentStatusByLinkId(input: {
   paymentLinkId: string;
   providerPaymentId: string;
   providerStatus: string;
+  providerPaid?: boolean | null;
   lessonsCount?: number | null;
 }): Promise<void> {
   await syncCardPaymentStatus({
     paymentLinkId: input.paymentLinkId,
     providerPaymentId: input.providerPaymentId,
     providerStatus: input.providerStatus,
+    providerPaid: input.providerPaid ?? null,
     lessonsCount: input.lessonsCount ?? null
   });
 }
 
+export async function getCardPaymentLinkSyncContextById(input: {
+  paymentLinkId: string;
+}): Promise<{
+  paymentLinkId: string;
+  providerPaymentId: string;
+  status: FunnelPaymentLink['status'];
+  lessonsCount: number;
+  studentId: string;
+} | null> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        spl.id,
+        spl.provider_payment_id,
+        spl.status,
+        spl.student_id,
+        tp.lessons_count
+      FROM student_payment_links spl
+      LEFT JOIN tariff_packages tp ON tp.id = spl.tariff_package_id
+      WHERE spl.id = ?
+      LIMIT 1
+    `,
+    [input.paymentLinkId]
+  );
+
+  if (rows.length === 0) return null;
+
+  return {
+    paymentLinkId: String(rows[0].id),
+    providerPaymentId: String(rows[0].provider_payment_id),
+    status: String(rows[0].status) as FunnelPaymentLink['status'],
+    studentId: String(rows[0].student_id),
+    lessonsCount: Math.max(0, Number(rows[0].lessons_count ?? 0))
+  };
+}
+
 async function syncCardPaymentStatus(input: {
   providerStatus: string;
+  providerPaid?: boolean | null;
   lessonsCount?: number | null;
   providerPaymentId?: string;
   paymentLinkId?: string;
 }): Promise<void> {
   if (!input.providerPaymentId && !input.paymentLinkId) return;
 
-  const nextStatus = mapYookassaStatusToCardStatus(input.providerStatus);
+  const nextStatus = mapYookassaStatusToCardStatus(input.providerStatus, input.providerPaid);
   const connection = await getPool().getConnection();
 
   try {

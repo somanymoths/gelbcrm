@@ -16,6 +16,12 @@ type CreatePaymentApiResponse = {
   confirmationUrl: string;
 };
 
+type ReconcilePaymentApiResponse = {
+  ok: boolean;
+  status: 'pending' | 'paid' | 'failed' | 'expired';
+  synced: boolean;
+};
+
 type PublicTariffPackage = {
   id: string;
   lessons_count: number;
@@ -65,6 +71,10 @@ export default function PaymentLinkPage() {
   const presetEmail = useMemo(() => searchParams.get('email')?.trim() ?? '', [searchParams]);
   const expiresAt = useMemo(() => searchParams.get('expiresAt')?.trim() ?? null, [searchParams]);
   const paymentLinkId = useMemo(() => searchParams.get('paymentLinkId')?.trim() ?? '', [searchParams]);
+  const syncMarkerKey = useMemo(
+    () => (paymentLinkId ? `gelbcrm:payment-in-progress:${paymentLinkId}` : null),
+    [paymentLinkId]
+  );
 
   useEffect(() => {
     const timer = window.setInterval(() => setNowTs(Date.now()), 1000);
@@ -126,6 +136,52 @@ export default function PaymentLinkPage() {
       return (preferred ?? tariff.packages[0]).id;
     });
   }, [tariff]);
+
+  useEffect(() => {
+    if (!paymentLinkId || !syncMarkerKey) return;
+    if (typeof window === 'undefined') return;
+    if (!window.sessionStorage.getItem(syncMarkerKey)) return;
+
+    let cancelled = false;
+
+    const runSync = async () => {
+      for (let i = 0; i < 8; i += 1) {
+        if (cancelled) return;
+
+        const response = await fetch('/api/v1/payments/reconcile-link', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ paymentLinkId })
+        }).catch(() => null);
+
+        if (!response?.ok) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          continue;
+        }
+
+        const payload = (await response.json().catch(() => null)) as ReconcilePaymentApiResponse | null;
+        if (!payload) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          continue;
+        }
+
+        if (payload.status === 'paid' || payload.status === 'failed' || payload.status === 'expired') {
+          window.sessionStorage.removeItem(syncMarkerKey);
+          return;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    };
+
+    void runSync();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [paymentLinkId, syncMarkerKey]);
 
   const selectedPackage = useMemo(
     () => tariff?.packages.find((item) => item.id === selectedPackageId) ?? null,
@@ -229,6 +285,10 @@ export default function PaymentLinkPage() {
       if (!response.ok || !result?.confirmationUrl) {
         setErrorText(result?.message ?? 'Не удалось инициализировать платеж');
         return;
+      }
+
+      if (syncMarkerKey && typeof window !== 'undefined') {
+        window.sessionStorage.setItem(syncMarkerKey, String(Date.now()));
       }
 
       window.location.href = result.confirmationUrl;
