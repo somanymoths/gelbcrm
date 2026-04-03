@@ -1424,6 +1424,20 @@ export type PaymentHistoryRow = {
   paid_at: string | null;
 };
 
+function toMysqlDateTime(value?: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const hour = String(date.getUTCHours()).padStart(2, '0');
+  const minute = String(date.getUTCMinutes()).padStart(2, '0');
+  const second = String(date.getUTCSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+}
+
 export async function upsertYookassaPayment(input: {
   providerPaymentId: string;
   status: string;
@@ -1476,7 +1490,7 @@ export async function upsertYookassaPayment(input: {
       input.lessonsCount ?? null,
       input.metadata ? JSON.stringify(input.metadata) : null,
       input.rawPayload ? JSON.stringify(input.rawPayload) : null,
-      input.paidAt ?? null
+      toMysqlDateTime(input.paidAt)
     ]
   );
 }
@@ -2727,6 +2741,133 @@ export async function listTeacherLessonSlots(input: {
     status_reason: row.status_reason ? String(row.status_reason) : null,
     has_earlier_unconfirmed: Boolean(Number(row.has_earlier_unconfirmed ?? 0))
   }));
+}
+
+export async function listTeacherLessonSlotsChangedSince(input: {
+  teacherId: string;
+  dateFrom: string;
+  dateTo: string;
+  sinceUnix: number;
+}): Promise<JournalLessonSlot[]> {
+  // Keep a 1-second overlap window to avoid missing updates when DB timestamps
+  // have second-level precision and multiple writes happen within the same second.
+  const effectiveSinceUnix = Math.max(0, Math.floor(input.sinceUnix) - 1);
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        ls.id,
+        ls.teacher_id,
+        ls.student_id,
+        CONCAT_WS(' ', s.first_name, s.last_name) AS student_full_name,
+        s.paid_lessons_left AS student_paid_lessons_left,
+        DATE_FORMAT(ls.date, '%Y-%m-%d') AS date,
+        TIME_FORMAT(ls.start_time, '%H:%i') AS start_time,
+        CASE
+          WHEN ls.status NOT IN ('completed', 'canceled', 'rescheduled')
+            AND ls.date < DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
+            THEN 'overdue'
+          WHEN ls.status = 'overdue'
+            AND ls.date >= DATE(UTC_TIMESTAMP() + INTERVAL 3 HOUR)
+            THEN 'planned'
+          ELSE ls.status
+        END AS status,
+        ls.rescheduled_to_slot_id,
+        DATE_FORMAT(rsl.date, '%Y-%m-%d') AS reschedule_target_date,
+        TIME_FORMAT(rsl.start_time, '%H:%i') AS reschedule_target_time,
+        COALESCE(ls.source_weekly_slot_id, reschedule_source.inherited_source_weekly_slot_id) AS source_weekly_slot_id,
+        UNIX_TIMESTAMP(ls.updated_at) AS lock_version,
+        status_audit.created_at AS status_changed_at,
+        actor.login AS status_changed_by_login,
+        JSON_UNQUOTE(JSON_EXTRACT(status_audit.diff_after, '$.reason')) AS status_reason,
+        CASE
+          WHEN ls.student_id IS NULL THEN 0
+          WHEN EXISTS (
+            SELECT 1
+            FROM lesson_slots ls_prev
+            WHERE ls_prev.teacher_id = ls.teacher_id
+              AND ls_prev.student_id = ls.student_id
+              AND ls_prev.status NOT IN ('completed', 'canceled', 'rescheduled')
+              AND (
+                ls_prev.date < ls.date
+                OR (ls_prev.date = ls.date AND ls_prev.start_time < ls.start_time)
+              )
+              AND ls_prev.id <> ls.id
+              AND (ls_prev.rescheduled_to_slot_id IS NULL OR ls_prev.rescheduled_to_slot_id <> ls.id)
+            LIMIT 1
+          ) THEN 1
+          ELSE 0
+        END AS has_earlier_unconfirmed
+      FROM lesson_slots ls
+      LEFT JOIN students s ON s.id = ls.student_id
+      LEFT JOIN lesson_slots rsl ON rsl.id = ls.rescheduled_to_slot_id
+      LEFT JOIN (
+        SELECT
+          rescheduled_to_slot_id AS target_slot_id,
+          MAX(source_weekly_slot_id) AS inherited_source_weekly_slot_id
+        FROM lesson_slots
+        WHERE rescheduled_to_slot_id IS NOT NULL
+        GROUP BY rescheduled_to_slot_id
+      ) reschedule_source ON reschedule_source.target_slot_id = ls.id
+      LEFT JOIN (
+        SELECT entity_id, MAX(id) AS latest_audit_id
+        FROM audit_logs
+        WHERE entity_type = 'lesson_slot' AND action = 'status_update'
+        GROUP BY entity_id
+      ) latest_status_audit ON latest_status_audit.entity_id = ls.id
+      LEFT JOIN audit_logs status_audit ON status_audit.id = latest_status_audit.latest_audit_id
+      LEFT JOIN users actor ON actor.id = status_audit.actor_user_id
+      WHERE ls.teacher_id = ?
+        AND ls.date BETWEEN ? AND ?
+        AND UNIX_TIMESTAMP(ls.updated_at) > ?
+      ORDER BY ls.date ASC, ls.start_time ASC
+    `,
+    [input.teacherId, input.dateFrom, input.dateTo, effectiveSinceUnix]
+  );
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    teacher_id: String(row.teacher_id),
+    student_id: row.student_id ? String(row.student_id) : null,
+    student_full_name: row.student_full_name ? String(row.student_full_name) : null,
+    student_paid_lessons_left: row.student_paid_lessons_left !== null ? Number(row.student_paid_lessons_left) : null,
+    date: String(row.date),
+    start_time: String(row.start_time),
+    status: String(row.status) as JournalLessonStatus,
+    rescheduled_to_slot_id: row.rescheduled_to_slot_id ? String(row.rescheduled_to_slot_id) : null,
+    reschedule_target_date: row.reschedule_target_date ? String(row.reschedule_target_date) : null,
+    reschedule_target_time: row.reschedule_target_time ? String(row.reschedule_target_time) : null,
+    source_weekly_slot_id: row.source_weekly_slot_id ? String(row.source_weekly_slot_id) : null,
+    lock_version: Number(row.lock_version ?? 0),
+    status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
+    status_changed_at: row.status_changed_at ? new Date(row.status_changed_at).toISOString() : null,
+    status_reason: row.status_reason ? String(row.status_reason) : null,
+    has_earlier_unconfirmed: Boolean(Number(row.has_earlier_unconfirmed ?? 0))
+  }));
+}
+
+export async function listTeacherLessonSlotIdsInRange(input: {
+  teacherId: string;
+  dateFrom: string;
+  dateTo: string;
+}): Promise<string[]> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `
+      SELECT id
+      FROM lesson_slots
+      WHERE teacher_id = ?
+        AND date BETWEEN ? AND ?
+    `,
+    [input.teacherId, input.dateFrom, input.dateTo]
+  );
+
+  return rows.map((row) => String(row.id));
+}
+
+export async function getCurrentDbUnixTimestamp(): Promise<number> {
+  const [rows] = await getPool().query<mysql.RowDataPacket[]>(
+    `SELECT UNIX_TIMESTAMP(UTC_TIMESTAMP()) AS ts`
+  );
+  return Number(rows[0]?.ts ?? 0);
 }
 
 export async function syncTeacherLessonSlotsForRange(input: {

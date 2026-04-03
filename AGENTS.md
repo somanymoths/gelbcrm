@@ -64,3 +64,75 @@ After bootstrap, follow this order:
 5. Use `TASK.md` + `SUMMARY.md` + `FINAL_REVIEW.md` as mandatory context for final review and PR text.
 
 If limits are exceeded, stop and report progress before continuing with new large edits.
+
+## Critical Flow Guardrails (Do Not Break)
+
+These rules are mandatory for all agents and all tasks, including tasks that do not directly mention payments.
+
+### 1) Protected modules
+
+Without explicit user approval in the current chat, the agent must not change behavior in these paths:
+
+- `src/app/api/v1/payments/**`
+- `src/app/api/v1/funnel/cards/[id]/payment-links/**`
+- `src/app/payment-links/**`
+- `src/lib/funnel.ts` (payment link and payment sync logic)
+- `src/lib/db.ts` (payment persistence and payment history blocks)
+- `src/lib/payments/**`
+- `scripts/backfill-payments-sync.cjs`
+
+Allowed without extra approval:
+
+- non-functional refactors (rename, formatting, comments) that do not change runtime behavior;
+- adding tests that only increase coverage for existing behavior.
+
+### 2) Scope gate before editing
+
+Before making edits, the agent must list target files and confirm they are in scope of the user request.
+If a protected file must be changed for an unrelated task, stop and ask for explicit confirmation.
+
+### 3) Payment regression suite is required
+
+For any PR that touches at least one protected module, the agent must run and report:
+
+- `npm run typecheck`
+- `npm run test`
+
+And must ensure regression coverage exists for:
+
+- successful payment transition `pending -> paid`;
+- lesson balance increment for the student;
+- payment history status update from pending to paid/succeeded;
+- `paid_at` persistence with ISO input converted to MySQL-compatible datetime.
+
+If required tests are missing, the agent must add them in the same task.
+
+### 4) No silent contract changes
+
+The agent must not change these contracts unless user explicitly requests it:
+
+- payment status mapping semantics (`pending`, `paid`, `failed`, `expired`, provider `succeeded`);
+- metadata keys used for linking (`payment_link_id`, `lessons_count`, payer metadata);
+- fallback reconciliation behavior between provider status and local payment links.
+
+If a contract change is necessary, the agent must:
+
+1. explain the change;
+2. update tests;
+3. mention migration/rollback impact.
+
+### 5) Diff safety check
+
+Before finalizing, if protected modules are touched, the agent must provide:
+
+- file-by-file reason for each protected file changed;
+- explicit confirmation whether behavior changed (`yes/no`);
+- if `yes`, list the exact user-approved requirement that allowed it.
+
+### 6) Stop conditions
+
+The agent must stop and ask the user before proceeding when any of the following happens:
+
+- changes exceed task scope and require editing protected modules;
+- test failures in payment regression flows;
+- uncertainty about behavior in payment status synchronization.

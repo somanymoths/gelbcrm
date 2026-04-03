@@ -54,14 +54,16 @@ export async function GET() {
               paymentLinkId,
               providerPaymentId: latest.id,
               providerStatus: latest.status,
+              providerPaid: latest.paid,
               lessonsCount: latest.metadata.lessons_count ? Number(latest.metadata.lessons_count) : row.lessons_count
             });
-            return;
+            continue;
           }
 
           await syncCardPaymentStatusByProviderPaymentId({
             providerPaymentId: latest.id,
             providerStatus: latest.status,
+            providerPaid: latest.paid,
             lessonsCount: latest.metadata.lessons_count ? Number(latest.metadata.lessons_count) : row.lessons_count
           });
         } catch (syncError) {
