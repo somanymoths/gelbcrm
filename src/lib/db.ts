@@ -2595,6 +2595,506 @@ export async function replaceTeacherWeeklyTemplate(input: {
   }
 }
 
+const WEEKLY_TEMPLATE_SYNC_HORIZON_DAYS = 62;
+
+function buildWeeklyTemplateSyncWindow(startFrom: string | null): { dateFrom: string; dateTo: string } {
+  const today = formatIsoDate(new Date());
+  const dateFrom = startFrom && startFrom > today ? startFrom : today;
+  const dateToDate = parseIsoDate(dateFrom);
+  dateToDate.setUTCDate(dateToDate.getUTCDate() + WEEKLY_TEMPLATE_SYNC_HORIZON_DAYS);
+  return {
+    dateFrom,
+    dateTo: formatIsoDate(dateToDate)
+  };
+}
+
+async function getTeacherWeeklyTemplateSlotById(
+  connection: mysql.PoolConnection,
+  input: { teacherId: string; slotId: string; hasWeeklySlotStudentIdColumn: boolean; hasWeeklySlotStartFromColumn: boolean }
+): Promise<WeeklyTemplateSlot | null> {
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT
+        id,
+        weekday,
+        TIME_FORMAT(start_time, '%H:%i') AS start_time,
+        is_active
+        ${input.hasWeeklySlotStudentIdColumn ? ', student_id' : ''}
+        ${input.hasWeeklySlotStartFromColumn ? ", DATE_FORMAT(start_from, '%Y-%m-%d') AS start_from" : ''}
+      FROM teacher_weekly_slots
+      WHERE id = ? AND teacher_id = ?
+      LIMIT 1
+    `,
+    [input.slotId, input.teacherId]
+  );
+
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  return {
+    id: String(row.id),
+    weekday: Number(row.weekday),
+    start_time: String(row.start_time),
+    start_from: input.hasWeeklySlotStartFromColumn && row.start_from ? String(row.start_from) : null,
+    is_active: Number(row.is_active) ? 1 : 0,
+    student_id: input.hasWeeklySlotStudentIdColumn && row.student_id ? String(row.student_id) : null
+  };
+}
+
+export async function createTeacherWeeklyTemplateSlot(input: {
+  teacherId: string;
+  actorUserId: string;
+  weekday: number;
+  startTime: string;
+  startFrom?: string | null;
+  studentId?: string | null;
+  isActive?: boolean;
+}): Promise<WeeklyTemplateSlot> {
+  const pool = getPool();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    await assertTeacherExists(connection, input.teacherId);
+    await assertStudentBelongsToTeacher(connection, input.teacherId, input.studentId ?? null);
+
+    const hasWeeklySlotStudentIdColumn = await hasTeacherWeeklySlotStudentIdColumn(connection);
+    const hasWeeklySlotStartFromColumn = await hasTeacherWeeklySlotStartFromColumn(connection);
+
+    const normalizedStartFrom = hasWeeklySlotStartFromColumn ? input.startFrom ?? null : null;
+    const normalizedStudentId = input.studentId ?? null;
+    const normalizedIsActive = input.isActive ?? true;
+
+    await assertWeeklyTemplateStartFromBounds(connection, input.teacherId, [
+      {
+        weekday: input.weekday,
+        startTime: input.startTime,
+        startFrom: normalizedStartFrom,
+        studentId: normalizedStudentId,
+        isActive: normalizedIsActive
+      }
+    ]);
+
+    const [existingRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id
+        FROM teacher_weekly_slots
+        WHERE teacher_id = ? AND weekday = ? AND start_time = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [input.teacherId, input.weekday, `${input.startTime}:00`]
+    );
+
+    let slotId: string = randomUUID();
+    const isExistingSlot = existingRows.length > 0;
+    let existingBefore: WeeklyTemplateSlot | null = null;
+
+    if (isExistingSlot) {
+      slotId = String(existingRows[0].id);
+      existingBefore = await getTeacherWeeklyTemplateSlotById(connection, {
+        teacherId: input.teacherId,
+        slotId,
+        hasWeeklySlotStudentIdColumn,
+        hasWeeklySlotStartFromColumn
+      });
+
+      if (hasWeeklySlotStudentIdColumn) {
+        if (hasWeeklySlotStartFromColumn) {
+          await connection.query(
+            `
+              UPDATE teacher_weekly_slots
+              SET student_id = ?, start_from = ?, is_active = 1
+              WHERE id = ? AND teacher_id = ?
+            `,
+            [normalizedStudentId, normalizedStartFrom, slotId, input.teacherId]
+          );
+        } else {
+          await connection.query(
+            `
+              UPDATE teacher_weekly_slots
+              SET student_id = ?, is_active = 1
+              WHERE id = ? AND teacher_id = ?
+            `,
+            [normalizedStudentId, slotId, input.teacherId]
+          );
+        }
+      } else if (hasWeeklySlotStartFromColumn) {
+        await connection.query(
+          `
+            UPDATE teacher_weekly_slots
+            SET start_from = ?, is_active = 1
+            WHERE id = ? AND teacher_id = ?
+          `,
+          [normalizedStartFrom, slotId, input.teacherId]
+        );
+      } else {
+        await connection.query(
+          `
+            UPDATE teacher_weekly_slots
+            SET is_active = 1
+            WHERE id = ? AND teacher_id = ?
+          `,
+          [slotId, input.teacherId]
+        );
+      }
+    } else {
+      try {
+        if (hasWeeklySlotStudentIdColumn) {
+          if (hasWeeklySlotStartFromColumn) {
+            await connection.query(
+              `
+                INSERT INTO teacher_weekly_slots (id, teacher_id, student_id, weekday, start_time, start_from, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+              `,
+              [
+                slotId,
+                input.teacherId,
+                normalizedStudentId,
+                input.weekday,
+                `${input.startTime}:00`,
+                normalizedStartFrom,
+                normalizedIsActive ? 1 : 0
+              ]
+            );
+          } else {
+            await connection.query(
+              `
+                INSERT INTO teacher_weekly_slots (id, teacher_id, student_id, weekday, start_time, is_active)
+                VALUES (?, ?, ?, ?, ?, ?)
+              `,
+              [slotId, input.teacherId, normalizedStudentId, input.weekday, `${input.startTime}:00`, normalizedIsActive ? 1 : 0]
+            );
+          }
+        } else if (hasWeeklySlotStartFromColumn) {
+          await connection.query(
+            `
+              INSERT INTO teacher_weekly_slots (id, teacher_id, weekday, start_time, start_from, is_active)
+              VALUES (?, ?, ?, ?, ?, ?)
+            `,
+            [slotId, input.teacherId, input.weekday, `${input.startTime}:00`, normalizedStartFrom, normalizedIsActive ? 1 : 0]
+          );
+        } else {
+          await connection.query(
+            `
+              INSERT INTO teacher_weekly_slots (id, teacher_id, weekday, start_time, is_active)
+              VALUES (?, ?, ?, ?, ?)
+            `,
+            [slotId, input.teacherId, input.weekday, `${input.startTime}:00`, normalizedIsActive ? 1 : 0]
+          );
+        }
+      } catch (error) {
+        if (isMysqlDuplicateError(error, 'uq_teacher_weekly_slots_unique')) {
+          throw new Error('SLOT_ALREADY_EXISTS');
+        }
+        throw error;
+      }
+    }
+
+    if (normalizedIsActive) {
+      await connection.query(
+        `
+          DELETE FROM lesson_slots
+          WHERE teacher_id = ?
+            AND source_weekly_slot_id = ?
+            AND status = 'planned'
+            AND date >= CURRENT_DATE()
+        `,
+        [input.teacherId, slotId]
+      );
+
+      const syncWindow = buildWeeklyTemplateSyncWindow(normalizedStartFrom);
+      await ensureTemplateSlotsForRange(connection, input.teacherId, syncWindow.dateFrom, syncWindow.dateTo);
+      if (!hasWeeklySlotStudentIdColumn) {
+        await syncWeeklyStudentAssignment(connection, {
+          teacherId: input.teacherId,
+          sourceWeeklySlotId: slotId,
+          fromDate: syncWindow.dateFrom,
+          studentId: normalizedStudentId
+        });
+      }
+    }
+
+    const created = await getTeacherWeeklyTemplateSlotById(connection, {
+      teacherId: input.teacherId,
+      slotId,
+      hasWeeklySlotStudentIdColumn,
+      hasWeeklySlotStartFromColumn
+    });
+    if (!created) throw new Error('WEEKLY_TEMPLATE_SLOT_NOT_FOUND');
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'journal_weekly_template',
+      entityId: input.teacherId,
+      action: isExistingSlot ? 'update' : 'create',
+      ...(isExistingSlot && existingBefore
+        ? {
+            diffBefore: {
+              slot: {
+                id: existingBefore.id,
+                weekday: existingBefore.weekday,
+                startTime: existingBefore.start_time,
+                startFrom: existingBefore.start_from,
+                studentId: existingBefore.student_id,
+                isActive: existingBefore.is_active === 1
+              }
+            }
+          }
+        : {}),
+      diffAfter: {
+        slot: {
+          id: created.id,
+          weekday: created.weekday,
+          startTime: created.start_time,
+          startFrom: created.start_from,
+          studentId: created.student_id,
+          isActive: created.is_active === 1
+        }
+      }
+    });
+
+    await connection.commit();
+    return created;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function updateTeacherWeeklyTemplateSlot(input: {
+  teacherId: string;
+  slotId: string;
+  actorUserId: string;
+  weekday?: number;
+  startTime?: string;
+  startFrom?: string | null;
+  studentId?: string | null;
+  isActive?: boolean;
+}): Promise<WeeklyTemplateSlot> {
+  const pool = getPool();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    await assertTeacherExists(connection, input.teacherId);
+    const hasWeeklySlotStudentIdColumn = await hasTeacherWeeklySlotStudentIdColumn(connection);
+    const hasWeeklySlotStartFromColumn = await hasTeacherWeeklySlotStartFromColumn(connection);
+
+    const existing = await getTeacherWeeklyTemplateSlotById(connection, {
+      teacherId: input.teacherId,
+      slotId: input.slotId,
+      hasWeeklySlotStudentIdColumn,
+      hasWeeklySlotStartFromColumn
+    });
+    if (!existing) throw new Error('WEEKLY_TEMPLATE_SLOT_NOT_FOUND');
+
+    const nextWeekday = input.weekday ?? existing.weekday;
+    const nextStartTime = input.startTime ?? existing.start_time;
+    const nextStartFrom = hasWeeklySlotStartFromColumn ? input.startFrom ?? existing.start_from : null;
+    const nextStudentId = hasWeeklySlotStudentIdColumn ? input.studentId ?? existing.student_id : input.studentId ?? existing.student_id;
+    const nextIsActive = input.isActive ?? existing.is_active === 1;
+
+    await assertStudentBelongsToTeacher(connection, input.teacherId, nextStudentId ?? null);
+    await assertWeeklyTemplateStartFromBounds(connection, input.teacherId, [
+      {
+        weekday: nextWeekday,
+        startTime: nextStartTime,
+        startFrom: nextStartFrom,
+        studentId: nextStudentId ?? null,
+        isActive: nextIsActive
+      }
+    ]);
+
+    try {
+      if (hasWeeklySlotStudentIdColumn) {
+        if (hasWeeklySlotStartFromColumn) {
+          await connection.query(
+            `
+              UPDATE teacher_weekly_slots
+              SET weekday = ?, start_time = ?, start_from = ?, student_id = ?, is_active = ?
+              WHERE id = ? AND teacher_id = ?
+            `,
+            [nextWeekday, `${nextStartTime}:00`, nextStartFrom, nextStudentId, nextIsActive ? 1 : 0, input.slotId, input.teacherId]
+          );
+        } else {
+          await connection.query(
+            `
+              UPDATE teacher_weekly_slots
+              SET weekday = ?, start_time = ?, student_id = ?, is_active = ?
+              WHERE id = ? AND teacher_id = ?
+            `,
+            [nextWeekday, `${nextStartTime}:00`, nextStudentId, nextIsActive ? 1 : 0, input.slotId, input.teacherId]
+          );
+        }
+      } else if (hasWeeklySlotStartFromColumn) {
+        await connection.query(
+          `
+            UPDATE teacher_weekly_slots
+            SET weekday = ?, start_time = ?, start_from = ?, is_active = ?
+            WHERE id = ? AND teacher_id = ?
+          `,
+          [nextWeekday, `${nextStartTime}:00`, nextStartFrom, nextIsActive ? 1 : 0, input.slotId, input.teacherId]
+        );
+      } else {
+        await connection.query(
+          `
+            UPDATE teacher_weekly_slots
+            SET weekday = ?, start_time = ?, is_active = ?
+            WHERE id = ? AND teacher_id = ?
+          `,
+          [nextWeekday, `${nextStartTime}:00`, nextIsActive ? 1 : 0, input.slotId, input.teacherId]
+        );
+      }
+    } catch (error) {
+      if (isMysqlDuplicateError(error, 'uq_teacher_weekly_slots_unique')) {
+        throw new Error('SLOT_ALREADY_EXISTS');
+      }
+      throw error;
+    }
+
+    const today = formatIsoDate(new Date());
+    await connection.query(
+      `
+        DELETE FROM lesson_slots
+        WHERE teacher_id = ?
+          AND source_weekly_slot_id = ?
+          AND status = 'planned'
+          AND date >= ?
+      `,
+      [input.teacherId, input.slotId, today]
+    );
+
+    if (nextIsActive) {
+      const syncWindow = buildWeeklyTemplateSyncWindow(nextStartFrom);
+      await ensureTemplateSlotsForRange(connection, input.teacherId, syncWindow.dateFrom, syncWindow.dateTo);
+      if (!hasWeeklySlotStudentIdColumn) {
+        await syncWeeklyStudentAssignment(connection, {
+          teacherId: input.teacherId,
+          sourceWeeklySlotId: input.slotId,
+          fromDate: syncWindow.dateFrom,
+          studentId: nextStudentId ?? null
+        });
+      }
+    }
+
+    const updated = await getTeacherWeeklyTemplateSlotById(connection, {
+      teacherId: input.teacherId,
+      slotId: input.slotId,
+      hasWeeklySlotStudentIdColumn,
+      hasWeeklySlotStartFromColumn
+    });
+    if (!updated) throw new Error('WEEKLY_TEMPLATE_SLOT_NOT_FOUND');
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'journal_weekly_template',
+      entityId: input.teacherId,
+      action: 'update',
+      diffBefore: {
+        slot: {
+          id: existing.id,
+          weekday: existing.weekday,
+          startTime: existing.start_time,
+          startFrom: existing.start_from,
+          studentId: existing.student_id,
+          isActive: existing.is_active === 1
+        }
+      },
+      diffAfter: {
+        slot: {
+          id: updated.id,
+          weekday: updated.weekday,
+          startTime: updated.start_time,
+          startFrom: updated.start_from,
+          studentId: updated.student_id,
+          isActive: updated.is_active === 1
+        }
+      }
+    });
+
+    await connection.commit();
+    return updated;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function deleteTeacherWeeklyTemplateSlot(input: {
+  teacherId: string;
+  slotId: string;
+  actorUserId: string;
+}): Promise<void> {
+  const pool = getPool();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    await assertTeacherExists(connection, input.teacherId);
+    const hasWeeklySlotStudentIdColumn = await hasTeacherWeeklySlotStudentIdColumn(connection);
+    const hasWeeklySlotStartFromColumn = await hasTeacherWeeklySlotStartFromColumn(connection);
+
+    const existing = await getTeacherWeeklyTemplateSlotById(connection, {
+      teacherId: input.teacherId,
+      slotId: input.slotId,
+      hasWeeklySlotStudentIdColumn,
+      hasWeeklySlotStartFromColumn
+    });
+    if (!existing) throw new Error('WEEKLY_TEMPLATE_SLOT_NOT_FOUND');
+
+    await connection.query(
+      `
+        DELETE FROM lesson_slots
+        WHERE teacher_id = ?
+          AND source_weekly_slot_id = ?
+          AND status = 'planned'
+          AND date >= CURRENT_DATE()
+      `,
+      [input.teacherId, input.slotId]
+    );
+
+    await connection.query(
+      `
+        UPDATE teacher_weekly_slots
+        SET is_active = 0
+        WHERE id = ? AND teacher_id = ?
+      `,
+      [input.slotId, input.teacherId]
+    );
+
+    await writeAuditLog(connection, {
+      actorUserId: input.actorUserId,
+      entityType: 'journal_weekly_template',
+      entityId: input.teacherId,
+      action: 'delete',
+      diffBefore: {
+        slot: {
+          id: existing.id,
+          weekday: existing.weekday,
+          startTime: existing.start_time,
+          startFrom: existing.start_from,
+          studentId: existing.student_id,
+          isActive: existing.is_active === 1
+        }
+      }
+    });
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 async function assertWeeklyTemplateStartFromBounds(
   connection: mysql.PoolConnection,
   teacherId: string,

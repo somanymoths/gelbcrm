@@ -352,9 +352,9 @@ export function JournalSection() {
   }, [monthStart, viewMode, weekStart]);
 
   const refreshPeriodData = useCallback(async (teacherId: string, options?: { syncRange?: boolean; signal?: AbortSignal }) => {
-    const { dateFrom, dateTo, isWeekMode } = periodRange;
+    const { dateFrom, dateTo } = periodRange;
 
-    if (options?.syncRange && isWeekMode) {
+    if (options?.syncRange) {
       await fetchJson(
         '/api/v1/journal/slots/sync-range',
         withIdempotencyHeaders({
@@ -545,7 +545,7 @@ export function JournalSection() {
       }
 
       const fetchCurrentPeriod = async (syncRange: boolean): Promise<WeekSlotsResponse> => {
-        if (syncRange && isWeekMode) {
+        if (syncRange) {
           await fetchJson(
             '/api/v1/journal/slots/sync-range',
             withIdempotencyHeaders({
@@ -574,7 +574,7 @@ export function JournalSection() {
       if (hasFreshCachedPeriod) {
         void (async () => {
           try {
-            const freshPeriod = await fetchCurrentPeriod(false);
+            const freshPeriod = await fetchCurrentPeriod(!isWeekMode);
             applyPeriodPayload(freshPeriod);
           } catch (error) {
             if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -688,30 +688,6 @@ export function JournalSection() {
     const timer = window.setTimeout(() => setFocusedWeekDayIso(null), 3000);
     return () => window.clearTimeout(timer);
   }, [focusedWeekDayIso, viewMode, weekDays]);
-
-  const saveTemplate = async (nextTemplate: WeeklySlot[]) => {
-    if (!selectedTeacherId) return;
-    try {
-      await fetchJson(`/api/v1/journal/weekly-template?teacherId=${encodeURIComponent(selectedTeacherId)}`, {
-        ...withIdempotencyHeaders(),
-        method: 'PUT',
-        body: JSON.stringify({
-          slots: nextTemplate.map((slot) => ({
-            weekday: slot.weekday,
-            startTime: slot.start_time,
-            startFrom: sanitizeIsoDate(slot.start_from),
-            studentId: slot.student_id ?? null,
-            isActive: true
-          }))
-        })
-      });
-      setWeeklyTemplate(nextTemplate);
-      weeklyTemplateCacheRef.current.set(selectedTeacherId, { ts: Date.now(), data: nextTemplate });
-    } catch (error) {
-      showError(error instanceof Error ? error.message : 'Не удалось сохранить шаблон');
-      throw error;
-    }
-  };
 
   const createSlotForDay = async (weekday: number, date: string): Promise<boolean> => {
     if (!selectedTeacherId) return false;
@@ -1035,6 +1011,16 @@ export function JournalSection() {
     }
     return map;
   }, [slots]);
+  const weekVisibleSlotsByDate = useMemo(() => {
+    const map = new Map<string, LessonSlot[]>();
+    for (const [dateIso, daySlots] of slotMapByDate.entries()) {
+      map.set(
+        dateIso,
+        daySlots.filter((slot) => Boolean(slot.student_id))
+      );
+    }
+    return map;
+  }, [slotMapByDate]);
   const monthDays = useMemo(() => {
     return listMonthDays(monthStart);
   }, [monthStart]);
@@ -1049,6 +1035,7 @@ export function JournalSection() {
     }
     return map;
   }, [monthDays, slotMapByDate]);
+  const isMonthDataPending = loading || !weekStartHydrated || !roleUser;
 
   const switchToWeekWithDate = useCallback((dateIso: string) => {
     const nextDate = parseIsoDateToDate(dateIso);
@@ -1112,6 +1099,19 @@ export function JournalSection() {
     }
     return map;
   }, [slots]);
+
+  const getMonthSlotStatusLabel = useCallback(
+    (slot: LessonSlot): string => {
+      if (slot.status === 'rescheduled' && slot.reschedule_target_date) {
+        return 'Перенесено на';
+      }
+      if (rescheduledSourceByTargetSlotId.has(slot.id)) {
+        return 'Перенесено с';
+      }
+      return statusLabel(slot.status);
+    },
+    [rescheduledSourceByTargetSlotId]
+  );
 
   const openRescheduleEditorForTargetSlot = (
     targetSlot: LessonSlot,
@@ -1360,7 +1360,7 @@ export function JournalSection() {
   };
 
   const saveTemplateSlot = async () => {
-    if (!templateSlotState) return;
+    if (!templateSlotState || !selectedTeacherId) return;
     const draft = dayDrafts[templateSlotState.weekday];
     if (!draft?.time) {
       showError('Выберите время');
@@ -1389,6 +1389,8 @@ export function JournalSection() {
       }
     }
 
+    const previousTemplate = weeklyTemplate;
+    const optimisticSlotId = templateSlotState.slotId ?? `temp-${templateSlotState.weekday}-${draft.time}-${Date.now()}`;
     const nextTemplate = templateSlotState.slotId
       ? weeklyTemplate.map((slot) =>
           slot.id === templateSlotState.slotId
@@ -1403,7 +1405,7 @@ export function JournalSection() {
       : [
           ...weeklyTemplate,
           {
-            id: `temp-${templateSlotState.weekday}-${draft.time}-${Date.now()}`,
+            id: optimisticSlotId,
             weekday: templateSlotState.weekday,
             start_time: draft.time,
             start_from: draft.startFrom,
@@ -1412,21 +1414,86 @@ export function JournalSection() {
           } as WeeklySlot
         ];
 
+    setWeeklyTemplate(nextTemplate);
+    weeklyTemplateCacheRef.current.set(selectedTeacherId, { ts: Date.now(), data: nextTemplate });
+    setTemplateSlotState(null);
+
     try {
-      await saveTemplate(nextTemplate);
-      setTemplateSlotState(null);
+      if (templateSlotState.slotId) {
+        const updated = await fetchJson<WeeklySlot>(
+          `/api/v1/journal/weekly-template/slots/${encodeURIComponent(templateSlotState.slotId)}?teacherId=${encodeURIComponent(selectedTeacherId)}`,
+          {
+            ...withIdempotencyHeaders(),
+            method: 'PATCH',
+            body: JSON.stringify({
+              weekday: templateSlotState.weekday,
+              startTime: draft.time,
+              startFrom: draft.startFrom,
+              studentId: draft.studentId,
+              isActive: true
+            })
+          }
+        );
+        setWeeklyTemplate((prev) => {
+          const next = prev.map((slot) => (slot.id === templateSlotState.slotId ? updated : slot));
+          weeklyTemplateCacheRef.current.set(selectedTeacherId, { ts: Date.now(), data: next });
+          return next;
+        });
+      } else {
+        const created = await fetchJson<WeeklySlot>(
+          `/api/v1/journal/weekly-template/slots?teacherId=${encodeURIComponent(selectedTeacherId)}`,
+          {
+            ...withIdempotencyHeaders(),
+            method: 'POST',
+            body: JSON.stringify({
+              weekday: templateSlotState.weekday,
+              startTime: draft.time,
+              startFrom: draft.startFrom,
+              studentId: draft.studentId,
+              isActive: true
+            })
+          }
+        );
+        setWeeklyTemplate((prev) => {
+          const next = prev.map((slot) => (slot.id === optimisticSlotId ? created : slot));
+          weeklyTemplateCacheRef.current.set(selectedTeacherId, { ts: Date.now(), data: next });
+          return next;
+        });
+      }
+      scheduleSoftRefresh(selectedTeacherId);
       showSuccess('Шаблон недели сохранен');
-    } catch {
-      // Ошибка уже обработана в saveTemplate через showError.
+    } catch (error) {
+      setWeeklyTemplate(previousTemplate);
+      weeklyTemplateCacheRef.current.set(selectedTeacherId, { ts: Date.now(), data: previousTemplate });
+      showError(error instanceof Error ? error.message : 'Не удалось сохранить шаблон недели');
     }
   };
 
   const removeTemplateSlot = async (slotId: string) => {
+    if (!selectedTeacherId) return;
+    if (slotId.startsWith('temp-')) {
+      showError('Слот еще сохраняется, попробуйте через секунду');
+      return;
+    }
+    const previousTemplate = weeklyTemplate;
+    const nextTemplate = weeklyTemplate.filter((slot) => slot.id !== slotId);
+    setWeeklyTemplate(nextTemplate);
+    weeklyTemplateCacheRef.current.set(selectedTeacherId, { ts: Date.now(), data: nextTemplate });
+
     try {
-      await saveTemplate(weeklyTemplate.filter((slot) => slot.id !== slotId));
+      await fetchJson<void>(
+        `/api/v1/journal/weekly-template/slots/${encodeURIComponent(slotId)}?teacherId=${encodeURIComponent(selectedTeacherId)}`,
+        {
+          ...withIdempotencyHeaders(),
+          method: 'DELETE'
+        }
+      );
+      scheduleSoftRefresh(selectedTeacherId);
       showSuccess('Слот удален из шаблона недели');
-    } catch {
-      // Ошибка уже обработана в saveTemplate через showError.
+    } catch (error) {
+      setWeeklyTemplate(previousTemplate);
+      weeklyTemplateCacheRef.current.set(selectedTeacherId, { ts: Date.now(), data: previousTemplate });
+      showError(error instanceof Error ? error.message : 'Не удалось удалить слот из шаблона недели');
     }
   };
 
@@ -1494,18 +1561,29 @@ export function JournalSection() {
           ) : null}
         </div>
         <div className="ml-auto flex min-h-9 flex-wrap items-center justify-end gap-2">
-          {weeklyKpiCards.map((item) => (
-            <div
-              key={item.label}
-              className="flex h-9 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3"
-            >
-              <span className="text-xs text-muted-foreground">{item.label}</span>
-              <span className="text-sm font-medium text-foreground">{formatWeeklyKpiAmount(item.metric)}</span>
-              <Badge variant="secondary" className="h-5 px-2 text-[11px] leading-none">
-                {item.metric.count}
-              </Badge>
-            </div>
-          ))}
+          {loading
+            ? weeklyKpiCards.map((item) => (
+                <div
+                  key={`weekly-kpi-skeleton-${item.label}`}
+                  className="flex h-9 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3"
+                >
+                  <Skeleton className="h-3 w-9" />
+                  <Skeleton className="h-4 w-14" />
+                  <Skeleton className="h-5 w-8 rounded-full" />
+                </div>
+              ))
+            : weeklyKpiCards.map((item) => (
+                <div
+                  key={item.label}
+                  className="flex h-9 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3"
+                >
+                  <span className="text-xs text-muted-foreground">{item.label}</span>
+                  <span className="text-sm font-medium text-foreground">{formatWeeklyKpiAmount(item.metric)}</span>
+                  <Badge variant="secondary" className="h-5 px-2 text-[11px] leading-none">
+                    {item.metric.count}
+                  </Badge>
+                </div>
+              ))}
         </div>
       </div>
       <div className="h-px w-full bg-border" />
@@ -1628,7 +1706,7 @@ export function JournalSection() {
                     <Skeleton className="h-8 w-48" />
                   </div>
                 </>
-              ) : (slotMapByDate.get(day.dateIso) ?? []).length === 0 ? (
+              ) : (weekVisibleSlotsByDate.get(day.dateIso) ?? []).length === 0 ? (
                 weekStartHydrated && roleUser ? (
                   <p className="text-sm text-muted-foreground">Нет слотов</p>
                 ) : (
@@ -1639,7 +1717,7 @@ export function JournalSection() {
                   </div>
                 )
               ) : (
-                (slotMapByDate.get(day.dateIso) ?? []).map((slot) => (
+                (weekVisibleSlotsByDate.get(day.dateIso) ?? []).map((slot) => (
                   <Card key={slot.id} data-journal-slot-card className="cursor-default">
                     <CardContent className="flex flex-col gap-3">
                       {(() => {
@@ -2189,90 +2267,133 @@ export function JournalSection() {
       </div>
 
       <div className={viewMode === 'month' ? 'block' : 'hidden'}>
-        <div className="hidden rounded-xl bg-muted/30 p-3 md:block">
-          <div className="mb-2 grid grid-cols-7 gap-2">
-            {DAYS.map((day) => (
-              <div key={day.weekday} className="px-2 py-1 text-xs font-medium text-muted-foreground">
-                {day.short}
-              </div>
-            ))}
-          </div>
-          <div className="grid grid-cols-7 gap-2">
-            {monthGridCells.map((day, index) => {
-              if (!day) {
-                return <div key={`month-empty-${index}`} className="min-h-[140px] rounded-lg border border-dashed bg-background/40" />;
-              }
-              const daySlots = monthSlotsByDate.get(day.dateIso) ?? [];
-              const previewSlots = daySlots.slice(0, 4);
-              return (
-                <button
-                  key={day.dateIso}
-                  type="button"
-                  className="flex min-h-[140px] flex-col items-start justify-start rounded-lg border bg-background p-2 text-left transition-colors hover:bg-muted/40"
-                  onClick={() => switchToWeekWithDate(day.dateIso)}
-                >
-                  <div className="mb-2 text-sm font-semibold">{day.dayOfMonth}</div>
-                  <div className="space-y-1">
-                    {previewSlots.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">Нет занятий</p>
-                    ) : (
-                      previewSlots.map((slot) => (
-                        <div key={slot.id} className="flex items-center gap-1.5 text-xs">
-                          <span className={`inline-block size-2 rounded-full ${statusDotClass(slot.status)}`} />
-                          <span className="font-medium">{slot.start_time}</span>
-                          <span className="truncate">{slot.student_full_name}</span>
-                        </div>
-                      ))
-                    )}
-                    {daySlots.length > 4 ? (
-                      <button
-                        type="button"
-                        className="text-xs font-medium text-blue-600 hover:underline"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          switchToWeekWithDate(day.dateIso);
-                        }}
-                      >
-                        ещё…
-                      </button>
-                    ) : null}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="space-y-2 md:hidden">
-          {monthDays.map((day) => {
-            const daySlots = monthSlotsByDate.get(day.dateIso) ?? [];
-            return (
-              <button
-                key={day.dateIso}
-                type="button"
-                onClick={() => switchToWeekWithDate(day.dateIso)}
-                className="flex w-full flex-col items-start justify-start rounded-lg border bg-background p-3 text-left"
-              >
-                <div className="mb-2 text-sm font-semibold">
-                  {formatDayMonthRu(day.dateIso)}
+        <TooltipProvider>
+          <div className="hidden rounded-xl bg-muted/30 p-3 md:block">
+            <div className="mb-2 grid grid-cols-7 gap-2">
+              {DAYS.map((day) => (
+                <div key={day.weekday} className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                  {day.short}
                 </div>
-                <div className="space-y-1">
-                  {daySlots.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">Нет занятий</p>
-                  ) : (
-                    daySlots.map((slot) => (
-                      <div key={slot.id} className="flex items-center gap-2 text-xs">
-                        <span className={`inline-block size-2 rounded-full ${statusDotClass(slot.status)}`} />
-                        <span className="font-medium">{slot.start_time}</span>
-                        <span className="truncate">{slot.student_full_name}</span>
+              ))}
+            </div>
+            <div className="grid grid-cols-7 gap-2">
+              {isMonthDataPending
+                ? monthGridCells.map((_, index) => (
+                    <div
+                      key={`month-loading-${index}`}
+                      className="flex min-h-[140px] flex-col items-start justify-start rounded-lg border bg-background p-2"
+                    >
+                      <Skeleton className="mb-2 h-4 w-8" />
+                      <div className="w-full space-y-1">
+                        <Skeleton className="h-3 w-full" />
+                        <Skeleton className="h-3 w-5/6" />
+                        <Skeleton className="h-3 w-4/6" />
                       </div>
-                    ))
-                  )}
-                </div>
-              </button>
-            );
-          })}
-        </div>
+                    </div>
+                  ))
+                : monthGridCells.map((day, index) => {
+                    if (!day) {
+                      return <div key={`month-empty-${index}`} className="min-h-[140px] rounded-lg border border-dashed bg-background/40" />;
+                    }
+                    const daySlots = monthSlotsByDate.get(day.dateIso) ?? [];
+                    const previewSlots = daySlots.slice(0, 4);
+                    return (
+                      <button
+                        key={day.dateIso}
+                        type="button"
+                        className="flex min-h-[140px] flex-col items-start justify-start rounded-lg border bg-background p-2 text-left transition-colors hover:bg-muted/40"
+                        onClick={() => switchToWeekWithDate(day.dateIso)}
+                      >
+                        <div className="mb-2 text-sm font-semibold">{day.dayOfMonth}</div>
+                        <div className="space-y-1">
+                          {previewSlots.length === 0 ? (
+                            <p className="text-xs text-muted-foreground">Нет занятий</p>
+                          ) : (
+                            previewSlots.map((slot) => (
+                              <Tooltip key={slot.id}>
+                                <TooltipTrigger asChild>
+                                  <div className="flex items-center gap-1.5 text-xs">
+                                    <span className={`inline-block size-2 rounded-full ${statusDotClass(slot.status)}`} />
+                                    <span className="font-medium">{slot.start_time}</span>
+                                    <span className="truncate">{slot.student_full_name}</span>
+                                  </div>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" sideOffset={6}>
+                                  <span>{getMonthSlotStatusLabel(slot)}</span>
+                                </TooltipContent>
+                              </Tooltip>
+                            ))
+                          )}
+                          {daySlots.length > 4 ? (
+                            <button
+                              type="button"
+                              className="text-xs font-medium text-blue-600 hover:underline"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                switchToWeekWithDate(day.dateIso);
+                              }}
+                            >
+                              ещё…
+                            </button>
+                          ) : null}
+                        </div>
+                      </button>
+                    );
+                  })}
+            </div>
+          </div>
+        </TooltipProvider>
+
+        <TooltipProvider>
+          <div className="space-y-2 md:hidden">
+            {isMonthDataPending
+              ? Array.from({ length: 6 }, (_, index) => (
+                  <div key={`month-mobile-loading-${index}`} className="flex w-full flex-col rounded-lg border bg-background p-3">
+                    <Skeleton className="mb-2 h-4 w-24" />
+                    <div className="space-y-1">
+                      <Skeleton className="h-3 w-full" />
+                      <Skeleton className="h-3 w-5/6" />
+                      <Skeleton className="h-3 w-4/6" />
+                    </div>
+                  </div>
+                ))
+              : monthDays.map((day) => {
+                  const daySlots = monthSlotsByDate.get(day.dateIso) ?? [];
+                  return (
+                    <button
+                      key={day.dateIso}
+                      type="button"
+                      onClick={() => switchToWeekWithDate(day.dateIso)}
+                      className="flex w-full flex-col items-start justify-start rounded-lg border bg-background p-3 text-left"
+                    >
+                      <div className="mb-2 text-sm font-semibold">
+                        {formatDayMonthRu(day.dateIso)}
+                      </div>
+                      <div className="space-y-1">
+                        {daySlots.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">Нет занятий</p>
+                        ) : (
+                          daySlots.map((slot) => (
+                            <Tooltip key={slot.id}>
+                              <TooltipTrigger asChild>
+                                <div className="flex items-center gap-2 text-xs">
+                                  <span className={`inline-block size-2 rounded-full ${statusDotClass(slot.status)}`} />
+                                  <span className="font-medium">{slot.start_time}</span>
+                                  <span className="truncate">{slot.student_full_name}</span>
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" sideOffset={6}>
+                                <span>{getMonthSlotStatusLabel(slot)}</span>
+                              </TooltipContent>
+                            </Tooltip>
+                          ))
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+          </div>
+        </TooltipProvider>
       </div>
 
       <Dialog open={auditOpen} onOpenChange={setAuditOpen}>
@@ -2286,7 +2407,12 @@ export function JournalSection() {
             className="max-h-[60vh] space-y-2 overflow-y-auto rounded-md border p-2"
           >
             {auditLoading ? (
-              <p className="text-sm text-muted-foreground">Загрузка...</p>
+              Array.from({ length: 5 }, (_, index) => (
+                <div key={`audit-loading-${index}`} className="rounded-md border p-2">
+                  <Skeleton className="h-4 w-5/6" />
+                  <Skeleton className="mt-2 h-3 w-1/3" />
+                </div>
+              ))
             ) : auditItems.length === 0 ? (
               <p className="text-sm text-muted-foreground">Событий пока нет</p>
             ) : (
@@ -2299,7 +2425,12 @@ export function JournalSection() {
                 </div>
               ))
             )}
-            {auditLoadingMore ? <p className="text-sm text-muted-foreground">Загрузка...</p> : null}
+            {auditLoadingMore ? (
+              <div className="rounded-md border p-2">
+                <Skeleton className="h-4 w-4/6" />
+                <Skeleton className="mt-2 h-3 w-1/3" />
+              </div>
+            ) : null}
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={() => setAuditOpen(false)}>Закрыть</Button>
@@ -2641,16 +2772,17 @@ export function JournalSection() {
                                 <span className="text-sm text-muted-foreground">Без ученика</span>
                               )}
                             </div>
-                            <Button
-                              type="button"
-                              size="icon-xs"
-                              variant="ghost"
-                              aria-label="Удалить слот из шаблона"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void removeTemplateSlot(slot.id);
-                              }}
-                            >
+                              <Button
+                                type="button"
+                                size="icon-xs"
+                                variant="ghost"
+                                aria-label="Удалить слот из шаблона"
+                                disabled={slot.id.startsWith('temp-')}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void removeTemplateSlot(slot.id);
+                                }}
+                              >
                               <CircleX absoluteStrokeWidth className="size-4" />
                             </Button>
                           </div>
