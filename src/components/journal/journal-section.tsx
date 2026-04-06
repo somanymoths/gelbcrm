@@ -352,7 +352,7 @@ export function JournalSection() {
   }, [monthStart, viewMode, weekStart]);
 
   const refreshPeriodData = useCallback(async (teacherId: string, options?: { syncRange?: boolean; signal?: AbortSignal }) => {
-    const { dateFrom, dateTo, isWeekMode } = periodRange;
+    const { dateFrom, dateTo } = periodRange;
 
     if (options?.syncRange) {
       await fetchJson(
@@ -688,31 +688,6 @@ export function JournalSection() {
     const timer = window.setTimeout(() => setFocusedWeekDayIso(null), 3000);
     return () => window.clearTimeout(timer);
   }, [focusedWeekDayIso, viewMode, weekDays]);
-
-  const saveTemplate = async (nextTemplate: WeeklySlot[]) => {
-    if (!selectedTeacherId) return;
-    try {
-      await fetchJson(`/api/v1/journal/weekly-template?teacherId=${encodeURIComponent(selectedTeacherId)}`, {
-        ...withIdempotencyHeaders(),
-        method: 'PUT',
-        body: JSON.stringify({
-          slots: nextTemplate.map((slot) => ({
-            weekday: slot.weekday,
-            startTime: slot.start_time,
-            startFrom: sanitizeIsoDate(slot.start_from),
-            studentId: slot.student_id ?? null,
-            isActive: true
-          }))
-        })
-      });
-      setWeeklyTemplate(nextTemplate);
-      weeklyTemplateCacheRef.current.set(selectedTeacherId, { ts: Date.now(), data: nextTemplate });
-      scheduleSoftRefresh(selectedTeacherId);
-    } catch (error) {
-      showError(error instanceof Error ? error.message : 'Не удалось сохранить шаблон');
-      throw error;
-    }
-  };
 
   const createSlotForDay = async (weekday: number, date: string): Promise<boolean> => {
     if (!selectedTeacherId) return false;
