@@ -54,7 +54,7 @@ export function AppShell({ children, session }: { children: React.ReactNode; ses
         </SidebarContent>
       </Sidebar>
       <SidebarInset className="min-w-0 overflow-x-hidden bg-background/70">
-        <main className="min-w-0 w-full overflow-x-hidden px-4 py-6">{children}</main>
+        <main className="min-w-0 w-full overflow-x-hidden">{children}</main>
       </SidebarInset>
     </SidebarProvider>
   );
