@@ -1,3 +1,6 @@
+@import '../styles/_variables.scss';
+@import '../styles/_keyframe-animations.scss';
+
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
@@ -125,5 +128,66 @@
   }
   html {
     @apply font-sans;
+  }
+}
+
+@layer components {
+  .instructions-editor .tiptap,
+  .instructions-readonly {
+    @apply leading-7 text-foreground;
+  }
+
+  .instructions-editor .tiptap h1,
+  .instructions-readonly h1 {
+    @apply mb-4 mt-1 text-3xl font-semibold;
+  }
+
+  .instructions-editor .tiptap h2,
+  .instructions-readonly h2 {
+    @apply mb-3 mt-6 text-xl font-semibold;
+  }
+
+  .instructions-editor .tiptap p,
+  .instructions-readonly p {
+    @apply mb-3;
+  }
+
+  .instructions-editor .tiptap ul,
+  .instructions-editor .tiptap ol,
+  .instructions-readonly ul,
+  .instructions-readonly ol {
+    @apply mb-3 list-inside;
+  }
+
+  .instructions-editor .tiptap ul,
+  .instructions-readonly ul {
+    @apply list-disc;
+  }
+
+  .instructions-editor .tiptap ol,
+  .instructions-readonly ol {
+    @apply list-decimal;
+  }
+
+  .instructions-editor .tiptap a,
+  .instructions-readonly a {
+    @apply text-primary underline underline-offset-2;
+  }
+
+  .instructions-editor .tiptap img,
+  .instructions-readonly img {
+    @apply my-4 rounded-md border;
+  }
+
+  .instructions-editor .tiptap table,
+  .instructions-readonly table {
+    @apply my-4 w-full border-collapse;
+  }
+
+  .instructions-editor .tiptap th,
+  .instructions-editor .tiptap td,
+  .instructions-readonly th,
+  .instructions-readonly td {
+    @apply border px-3 py-2 align-top;
   }
 }

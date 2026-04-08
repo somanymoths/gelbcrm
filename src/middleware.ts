@@ -3,9 +3,10 @@ import type { NextRequest } from 'next/server';
 import { SESSION_COOKIE_NAME } from '@/lib/constants';
 import { verifySessionToken } from '@/lib/session';
 import { getActiveUserSessionMetaById } from '@/lib/db';
+import { findCurrentInstructionSlugByLegacySlug } from '@/lib/instructions-db';
 
 const adminOnly = ['/funnel', '/teachers', '/payments'];
-const allProtected = ['/funnel', '/teachers', '/payments', '/journal'];
+const allProtected = ['/funnel', '/teachers', '/payments', '/journal', '/instructions'];
 
 function isPublicPath(pathname: string): boolean {
   return pathname === '/login' || pathname.startsWith('/api') || pathname.startsWith('/_next') || pathname === '/favicon.ico';
@@ -57,6 +58,17 @@ export async function middleware(request: NextRequest) {
     return withRequestId(redirectTo(request, '/forbidden'), requestId);
   }
 
+  if (pathname.startsWith('/instructions/')) {
+    const slug = extractInstructionSlug(pathname);
+    if (slug) {
+      const currentSlug = await findCurrentInstructionSlugByLegacySlug(slug);
+      if (currentSlug && currentSlug !== slug) {
+        const statusCode = process.env.NODE_ENV === 'production' ? 301 : 302;
+        return withRequestId(redirectTo(request, `/instructions/${currentSlug}`, statusCode), requestId);
+      }
+    }
+  }
+
   return withRequestId(NextResponse.next({ request: { headers: requestHeaders } }), requestId);
 }
 
@@ -65,7 +77,7 @@ export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)']
 };
 
-function redirectTo(request: NextRequest, path: string) {
+function redirectTo(request: NextRequest, path: string, statusCode: 301 | 302 | 307 | 308 = 307) {
   const url = request.nextUrl.clone();
   const forwardedProto = request.headers.get('x-forwarded-proto');
   const forwardedHost = request.headers.get('x-forwarded-host');
@@ -80,7 +92,7 @@ function redirectTo(request: NextRequest, path: string) {
 
   url.pathname = path;
   url.search = '';
-  return NextResponse.redirect(url);
+  return NextResponse.redirect(url, statusCode);
 }
 
 function withRequestId(response: NextResponse, requestId: string) {
@@ -94,4 +106,15 @@ function createRequestId() {
   }
 
   return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function extractInstructionSlug(pathname: string): string | null {
+  const parts = pathname.split('/').filter(Boolean);
+  if (parts.length !== 2 || parts[0] !== 'instructions') return null;
+
+  try {
+    return decodeURIComponent(parts[1]);
+  } catch {
+    return parts[1];
+  }
 }

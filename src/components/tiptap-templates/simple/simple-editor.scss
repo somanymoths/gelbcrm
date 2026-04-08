@@ -1,0 +1,92 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap");
+
+.simple-editor-wrapper {
+  --tt-toolbar-height: 44px;
+  --tt-theme-text: var(--tt-gray-light-900);
+  color: var(--tt-theme-text);
+  background-color: var(--tt-bg-color);
+}
+
+::-webkit-scrollbar {
+  width: 0.25rem;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--tt-scrollbar-color) transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--tt-scrollbar-color);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tiptap.ProseMirror {
+  font-family: "DM Sans", sans-serif;
+}
+
+.simple-editor-wrapper {
+  width: 100%;
+  min-height: 560px;
+  height: auto;
+  overflow: hidden;
+  border: none;
+  border-radius: 0;
+}
+
+.simple-editor-content {
+  max-width: 100%;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding-top: var(--tt-toolbar-height);
+}
+
+.simple-editor-content.simple-editor-content-readonly {
+  padding-top: 0;
+}
+
+.simple-editor-content .tiptap.ProseMirror.simple-editor {
+  flex: 1;
+  min-height: 440px;
+  padding: 1.5rem;
+}
+
+.simple-editor-content .tiptap.ProseMirror.simple-editor .loom-embed-wrapper {
+  position: relative;
+  width: 100%;
+  margin: 1rem 0;
+  overflow: hidden;
+  isolation: isolate;
+  contain: layout paint;
+  border: 1px solid var(--tt-border-color);
+  border-radius: 0.75rem;
+  background: #000;
+  padding-top: 56.25%;
+}
+
+.simple-editor-content .tiptap.ProseMirror.simple-editor .loom-embed-iframe {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+@media screen and (max-width: 480px) {
+  .simple-editor-content .tiptap.ProseMirror.simple-editor {
+    min-height: 320px;
+    padding: 1rem;
+  }
+}

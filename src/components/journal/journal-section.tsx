@@ -1512,8 +1512,8 @@ export function JournalSection() {
   }
 
   return (
-    <div className="flex w-full flex-col gap-4">
-      <div className="flex min-h-9 flex-wrap items-center justify-between gap-3">
+    <div className="flex h-[100dvh] w-full flex-col gap-4 overflow-hidden">
+      <div className="flex min-h-9 flex-wrap items-center justify-between gap-3 px-4 pt-4">
         <div className="flex min-h-9 flex-wrap items-center gap-4">
           {loading && teachers.length === 0 ? <Skeleton className="h-9 w-[320px]" /> : null}
           {roleUser?.role === 'admin' && teachers.length > 0 ? (
@@ -1588,7 +1588,7 @@ export function JournalSection() {
       </div>
       <div className="h-px w-full bg-border" />
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-xl font-semibold">Журнал занятий</h3>
           <Badge variant="outline">{periodLabel}</Badge>
@@ -1670,7 +1670,7 @@ export function JournalSection() {
         ref={weekColumnsScrollRef}
         onMouseDown={handleColumnsMouseDown}
         onMouseLeave={stopColumnsDrag}
-        className={`${viewMode === 'week' ? 'h-[calc(100dvh-16px)]' : 'hidden h-0'} w-full overflow-auto rounded-xl bg-muted/30 p-[8px] ${isDraggingColumns ? 'cursor-grabbing' : 'cursor-default'}`}
+        className={`${viewMode === 'week' ? 'min-h-0 flex-1' : 'hidden h-0'} w-full overflow-auto bg-muted/30 p-[8px] px-4 ${isDraggingColumns ? 'cursor-grabbing' : 'cursor-default'}`}
       >
         <div className="grid grid-cols-1 gap-3 lg:flex lg:min-w-max lg:items-start">
           {weekDays.map((day) => (
@@ -2266,7 +2266,7 @@ export function JournalSection() {
         </div>
       </div>
 
-      <div className={viewMode === 'month' ? 'block' : 'hidden'}>
+      <div className={viewMode === 'month' ? 'min-h-0 flex-1 overflow-auto px-4 pb-4' : 'hidden'}>
         <TooltipProvider>
           <div className="hidden rounded-xl bg-muted/30 p-3 md:block">
             <div className="mb-2 grid grid-cols-7 gap-2">
