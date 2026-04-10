@@ -4,6 +4,7 @@ import { requireUser } from '@/lib/api-auth';
 import { mapInfraError } from '@/lib/api-error-mappers';
 import { syncTeacherLessonSlotsForRange } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
+import { invalidateJournalTeacherCache } from '@/lib/journal-cache';
 import { normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const bodySchema = z.object({
@@ -36,6 +37,7 @@ export async function POST(request: Request) {
       });
       return true;
     });
+    invalidateJournalTeacherCache(scope.teacherId);
 
     return new NextResponse(null, { status: 204 });
   } catch (error) {

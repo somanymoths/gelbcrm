@@ -4,6 +4,7 @@ import { requireUser } from '@/lib/api-auth';
 import { mapInfraError } from '@/lib/api-error-mappers';
 import { deleteTeacherWeeklyTemplateSlot, updateTeacherWeeklyTemplateSlot } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
+import { invalidateJournalTeacherCache } from '@/lib/journal-cache';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const querySchema = z.object({
@@ -56,6 +57,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
         isActive: parsedBody.data.isActive
       })
     );
+    invalidateJournalTeacherCache(scope.teacherId);
 
     return NextResponse.json(slot);
   } catch (error) {
@@ -87,6 +89,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
         actorUserId: guard.session.id
       })
     );
+    invalidateJournalTeacherCache(scope.teacherId);
 
     return new NextResponse(null, { status: 204 });
   } catch (error) {

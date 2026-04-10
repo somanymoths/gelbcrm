@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { mapInfraError } from '@/lib/api-error-mappers';
 import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
+import { invalidateJournalTeacherCache } from '@/lib/journal-cache';
 import { createTeacherLessonSlot, getTeacherRateRub, listTeacherLessonSlots, listTeacherPlannedSlotCountsBeforeDate } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
@@ -105,6 +106,7 @@ export async function POST(request: Request) {
     );
 
     invalidateFunnelBoardRelatedCache();
+    invalidateJournalTeacherCache(scope.teacherId);
     if (created.student_id) {
       invalidateFunnelCardCache(created.student_id);
     }

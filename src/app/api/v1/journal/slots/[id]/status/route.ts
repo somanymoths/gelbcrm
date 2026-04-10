@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { mapInfraError } from '@/lib/api-error-mappers';
 import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
+import { invalidateJournalTeacherCache } from '@/lib/journal-cache';
 import { getTeacherLessonSlotStudentId, updateTeacherLessonSlotStatus, type JournalLessonStatus } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
@@ -53,6 +54,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     );
 
     invalidateFunnelBoardRelatedCache();
+    invalidateJournalTeacherCache(scope.teacherId);
     const affectedStudentIds = new Set<string>();
     if (previousStudentId) affectedStudentIds.add(previousStudentId);
     if (updated.student_id) affectedStudentIds.add(updated.student_id);

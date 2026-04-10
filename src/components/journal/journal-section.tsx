@@ -65,6 +65,9 @@ type LessonSlot = {
   rescheduled_to_slot_id: string | null;
   reschedule_target_date: string | null;
   reschedule_target_time: string | null;
+  reschedule_source_slot_id?: string | null;
+  reschedule_source_date?: string | null;
+  reschedule_source_time?: string | null;
   lock_version: number;
   status_changed_by_login: string | null;
   status_changed_at: string | null;
@@ -76,6 +79,14 @@ type PlannedForecastBaseline = { student_id: string; planned_count: number };
 type WeeklyKpiMetric = { amount: number; count: number };
 type WeeklyKpi = { forecast: WeeklyKpiMetric; fact: WeeklyKpiMetric; cancellations: WeeklyKpiMetric };
 type WeekSlotsResponse = { slots: LessonSlot[]; baseline: PlannedForecastBaseline[]; weeklyKpi: WeeklyKpi };
+type JournalBootstrapResponse = {
+  me: RoleUser;
+  teachers: TeacherItem[];
+  selectedTeacherId: string | null;
+  students: StudentItem[];
+  weeklyTemplate: WeeklySlot[];
+  slotsPayload: WeekSlotsResponse;
+};
 type JournalViewMode = 'week' | 'month';
 type JournalAuditItem = {
   id: number;
@@ -127,7 +138,6 @@ const ADMIN_JOURNAL_TEACHER_STORAGE_KEY = 'gelbcrm:journal:selectedTeacherId';
 const JOURNAL_WEEK_START_STORAGE_KEY = 'gelbcrm:journal:weekStart';
 const JOURNAL_VIEW_MODE_STORAGE_KEY = 'gelbcrm:journal:viewMode';
 const JOURNAL_MIN_WEEK_START_ISO = '2025-12-29';
-const REFERENCE_CACHE_TTL_MS = 60_000;
 const WEEK_SLOTS_CACHE_TTL_MS = 5 * 60_000;
 const HOURLY_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
   const value = `${String(hour).padStart(2, '0')}:00`;
@@ -473,34 +483,39 @@ export function JournalSection() {
     setLoading(true);
     try {
       const now = Date.now();
-      const me =
-        roleUserCacheRef.current && now - roleUserCacheRef.current.ts <= REFERENCE_CACHE_TTL_MS
-          ? roleUserCacheRef.current.data
-          : await fetchJson<RoleUser>('/api/v1/auth/me');
-      roleUserCacheRef.current = { ts: now, data: me };
-      setRoleUser(me);
+      const { dateFrom, dateTo, isWeekMode } = periodRange;
+      const persistedTeacherId = typeof window !== 'undefined' ? localStorage.getItem(ADMIN_JOURNAL_TEACHER_STORAGE_KEY) : null;
+      const requestedTeacherId = selectedTeacherId ?? persistedTeacherId ?? null;
+      const requestedCacheKey = requestedTeacherId ? getWeekSlotsCacheKey(requestedTeacherId, dateFrom, dateTo) : null;
+      const cachedPeriod = requestedCacheKey ? weekSlotsCacheRef.current.get(requestedCacheKey) : null;
+      const hasFreshCachedPeriod = Boolean(cachedPeriod && Date.now() - cachedPeriod.ts <= WEEK_SLOTS_CACHE_TTL_MS);
+
+      if (hasFreshCachedPeriod && cachedPeriod) {
+        setSlots(cachedPeriod.data.slots);
+        setPlannedBaselineByStudentId(
+          Object.fromEntries(cachedPeriod.data.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
+        );
+        setWeeklyKpi(normalizeWeeklyKpi(cachedPeriod.data.weeklyKpi));
+      }
+
+      const query = new URLSearchParams({
+        dateFrom,
+        dateTo,
+        syncRange: !hasFreshCachedPeriod || !isWeekMode ? '1' : '0'
+      });
+      if (requestedTeacherId) query.set('teacherId', requestedTeacherId);
+
+      const bootstrap = await fetchJson<JournalBootstrapResponse>(`/api/v1/journal/bootstrap?${query.toString()}`, {
+        signal: controller.signal
+      });
+
+      roleUserCacheRef.current = { ts: now, data: bootstrap.me };
+      teachersCacheRef.current = { ts: now, data: bootstrap.teachers };
+      setRoleUser(bootstrap.me);
       setTeacherProfileMissing(false);
+      setTeachers(bootstrap.teachers);
 
-      const teacherItems =
-        teachersCacheRef.current && now - teachersCacheRef.current.ts <= REFERENCE_CACHE_TTL_MS
-          ? teachersCacheRef.current.data
-          : await fetchJson<TeacherItem[]>('/api/v1/journal/teachers');
-      teachersCacheRef.current = { ts: now, data: teacherItems };
-      setTeachers(teacherItems);
-      const teacherIds = new Set(teacherItems.map((item) => item.id));
-
-      let nextTeacherId = selectedTeacherId;
-      if (me.role === 'admin') {
-        const persistedTeacherId = typeof window !== 'undefined' ? localStorage.getItem(ADMIN_JOURNAL_TEACHER_STORAGE_KEY) : null;
-        if (!nextTeacherId && persistedTeacherId && teacherIds.has(persistedTeacherId)) {
-          nextTeacherId = persistedTeacherId;
-        }
-      }
-
-      if (!nextTeacherId || !teacherIds.has(nextTeacherId)) {
-        nextTeacherId = teacherItems[0]?.id ?? null;
-      }
-
+      const nextTeacherId = bootstrap.selectedTeacherId;
       setSelectedTeacherId(nextTeacherId);
       if (!nextTeacherId) {
         setStudents([]);
@@ -511,82 +526,17 @@ export function JournalSection() {
         return;
       }
 
-      const qs = new URLSearchParams({ teacherId: nextTeacherId });
-      const studentsCached = studentsCacheRef.current.get(nextTeacherId);
-      const templateCached = weeklyTemplateCacheRef.current.get(nextTeacherId);
-      const shouldFetchStudents = !studentsCached || now - studentsCached.ts > REFERENCE_CACHE_TTL_MS;
-      const shouldFetchTemplate = !templateCached || now - templateCached.ts > REFERENCE_CACHE_TTL_MS;
-
-      let studentsData: StudentItem[];
-      if (shouldFetchStudents) {
-        studentsData = await fetchJson<StudentItem[]>(`/api/v1/journal/students?${qs.toString()}`);
-        studentsCacheRef.current.set(nextTeacherId, { ts: now, data: studentsData });
-      } else {
-        studentsData = studentsCached.data;
-      }
-
-      let templateData: WeeklySlot[];
-      if (shouldFetchTemplate) {
-        templateData = await fetchJson<WeeklySlot[]>(`/api/v1/journal/weekly-template?${qs.toString()}`);
-        weeklyTemplateCacheRef.current.set(nextTeacherId, { ts: now, data: templateData });
-      } else {
-        templateData = templateCached.data;
-      }
-      const { dateFrom, dateTo, isWeekMode } = periodRange;
       const periodCacheKey = getWeekSlotsCacheKey(nextTeacherId, dateFrom, dateTo);
-      const cachedPeriod = weekSlotsCacheRef.current.get(periodCacheKey);
-      const hasFreshCachedPeriod = Boolean(cachedPeriod && Date.now() - cachedPeriod.ts <= WEEK_SLOTS_CACHE_TTL_MS);
-      if (hasFreshCachedPeriod && cachedPeriod) {
-        setSlots(cachedPeriod.data.slots);
-        setPlannedBaselineByStudentId(
-          Object.fromEntries(cachedPeriod.data.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
-        );
-        setWeeklyKpi(normalizeWeeklyKpi(cachedPeriod.data.weeklyKpi));
-      }
-
-      const fetchCurrentPeriod = async (syncRange: boolean): Promise<WeekSlotsResponse> => {
-        if (syncRange) {
-          await fetchJson(
-            '/api/v1/journal/slots/sync-range',
-            withIdempotencyHeaders({
-              method: 'POST',
-              signal: controller.signal,
-              body: JSON.stringify({ teacherId: nextTeacherId, dateFrom, dateTo })
-            })
-          );
-        }
-
-        return fetchJson<WeekSlotsResponse>(
-          `/api/v1/journal/slots?teacherId=${encodeURIComponent(nextTeacherId)}&dateFrom=${dateFrom}&dateTo=${dateTo}&includeBaseline=1`,
-          { signal: controller.signal }
-        );
-      };
-
-      const applyPeriodPayload = (payload: WeekSlotsResponse) => {
-        weekSlotsCacheRef.current.set(periodCacheKey, { ts: Date.now(), data: payload });
-        setSlots(payload.slots);
-        setPlannedBaselineByStudentId(
-          Object.fromEntries(payload.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
-        );
-        setWeeklyKpi(normalizeWeeklyKpi(payload.weeklyKpi));
-      };
-
-      if (hasFreshCachedPeriod) {
-        void (async () => {
-          try {
-            const freshPeriod = await fetchCurrentPeriod(!isWeekMode);
-            applyPeriodPayload(freshPeriod);
-          } catch (error) {
-            if (error instanceof DOMException && error.name === 'AbortError') return;
-          }
-        })();
-      } else {
-        const slotsPayload = await fetchCurrentPeriod(true);
-        applyPeriodPayload(slotsPayload);
-      }
-
-      setStudents(studentsData);
-      setWeeklyTemplate(templateData);
+      weekSlotsCacheRef.current.set(periodCacheKey, { ts: Date.now(), data: bootstrap.slotsPayload });
+      studentsCacheRef.current.set(nextTeacherId, { ts: now, data: bootstrap.students });
+      weeklyTemplateCacheRef.current.set(nextTeacherId, { ts: now, data: bootstrap.weeklyTemplate });
+      setSlots(bootstrap.slotsPayload.slots);
+      setPlannedBaselineByStudentId(
+        Object.fromEntries(bootstrap.slotsPayload.baseline.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))]))
+      );
+      setWeeklyKpi(normalizeWeeklyKpi(bootstrap.slotsPayload.weeklyKpi));
+      setStudents(bootstrap.students);
+      setWeeklyTemplate(bootstrap.weeklyTemplate);
 
       if (viewMode === 'week') {
         void prefetchPeriodData(nextTeacherId, addDays(weekStart, -7), 'week', controller.signal);
@@ -1087,6 +1037,17 @@ export function JournalSection() {
       }
     >();
     for (const slot of slots) {
+      if (slot.reschedule_source_slot_id && slot.reschedule_source_date && slot.reschedule_source_time) {
+        if (map.has(slot.id)) continue;
+        map.set(slot.id, {
+          sourceSlotId: slot.reschedule_source_slot_id,
+          sourceDate: slot.reschedule_source_date,
+          sourceStartTime: slot.reschedule_source_time,
+          sourceWeeklySlotId: slot.source_weekly_slot_id ?? null,
+          sourceReason: slot.status_reason ?? null
+        });
+        continue;
+      }
       if (slot.status !== 'rescheduled' || !slot.rescheduled_to_slot_id) continue;
       if (map.has(slot.rescheduled_to_slot_id)) continue;
       map.set(slot.rescheduled_to_slot_id, {
@@ -1788,6 +1749,7 @@ export function JournalSection() {
                         const isClosedRescheduledTargetSlot =
                           isRescheduledTargetSlot && (slot.status === 'completed' || slot.status === 'canceled');
                         const shouldShowActionsMenu = (!isRegularLesson || isRescheduledTargetSlot) && !isClosedRescheduledTargetSlot;
+                        const shouldPinActionsMenuRight = isRescheduledTargetWithSource && shouldShowActionsMenu;
                         const canDeleteSlot =
                           !slot.source_weekly_slot_id &&
                           !slot.rescheduled_to_slot_id;
@@ -1991,7 +1953,7 @@ export function JournalSection() {
 
                       {shouldShowSlotActions ? (
                         slot.student_id ? (
-                        <div className="flex w-full justify-start">
+                        <div className={`flex w-full items-center ${shouldPinActionsMenuRight ? 'justify-between gap-2' : 'justify-start'}`}>
                         <ButtonGroup className="shrink-0">
                         <TooltipProvider>
                           <Tooltip>
@@ -2117,7 +2079,7 @@ export function JournalSection() {
                           </Tooltip>
                         </TooltipProvider>
 
-                        {shouldShowActionsMenu ? (
+                        {shouldShowActionsMenu && !shouldPinActionsMenuRight ? (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
@@ -2150,7 +2112,7 @@ export function JournalSection() {
                                 openStudentEditor(slot);
                               }}
                             >
-                              {isRescheduledTargetWithSource ? 'Редактировать перенос' : 'Редактировать'}
+                              Редактировать
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               className="whitespace-nowrap"
@@ -2164,6 +2126,50 @@ export function JournalSection() {
                         </DropdownMenu>
                         ) : null}
                         </ButtonGroup>
+                        {shouldShowActionsMenu && shouldPinActionsMenuRight ? (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="outline"
+                                size="icon-sm"
+                                aria-label="Список действий"
+                                disabled={
+                                  deletingSlotId === slot.id ||
+                                  statusUpdatingSlotId === slot.id ||
+                                  assigningStudentSlotId === slot.id ||
+                                  slot.status === 'completed'
+                                }
+                              >
+                                <Ellipsis absoluteStrokeWidth className="size-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem
+                                disabled={
+                                  slot.status === 'completed' ||
+                                  (!isRescheduledTargetWithSource && Boolean(slot.source_weekly_slot_id))
+                                }
+                                onSelect={() => {
+                                  if (isRescheduledTargetWithSource) {
+                                    openRescheduleEditorForTargetSlot(slot, rescheduledSource ?? null);
+                                    return;
+                                  }
+                                  openStudentEditor(slot);
+                                }}
+                              >
+                                Редактировать
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                className="whitespace-nowrap"
+                                variant="destructive"
+                                disabled={isRescheduledTargetWithSource ? !canDeleteReschedule : !canDeleteSlot}
+                                onSelect={() => openDeleteConfirm(slot)}
+                              >
+                                {isRescheduledTargetWithSource ? 'Удалить перенос' : 'Удалить занятие'}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        ) : null}
                         </div>
                       ) : (
                         <div className="flex w-full items-center justify-start gap-2">
@@ -2228,7 +2234,7 @@ export function JournalSection() {
                                   openStudentEditor(slot);
                                 }}
                               >
-                                {isRescheduledTargetWithSource ? 'Редактировать перенос' : 'Редактировать'}
+                                Редактировать
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 className="whitespace-nowrap"
@@ -3089,6 +3095,7 @@ function getOccupiedTimesForDay(
   }
 
   for (const slot of slotMapByDate.get(date) ?? []) {
+    if (slot.status === 'canceled' || slot.status === 'rescheduled') continue;
     occupied.add(slot.start_time);
   }
 
