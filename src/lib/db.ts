@@ -1963,6 +1963,9 @@ export type JournalLessonSlot = {
   rescheduled_to_slot_id: string | null;
   reschedule_target_date?: string | null;
   reschedule_target_time?: string | null;
+  reschedule_source_slot_id?: string | null;
+  reschedule_source_date?: string | null;
+  reschedule_source_time?: string | null;
   source_weekly_slot_id: string | null;
   lock_version: number;
   status_changed_by_login?: string | null;
@@ -1986,7 +1989,12 @@ export async function listJournalAuditEvents(input: {
   cursorId?: number;
 }): Promise<JournalAuditEvent[]> {
   const whereCursor: string[] = [];
-  const params: Array<string | number> = [input.teacherId, input.teacherId, input.teacherId, input.teacherId];
+  const params: Array<string | number> = [
+    input.teacherId,
+    input.teacherId,
+    input.teacherId,
+    input.teacherId
+  ];
 
   if (input.cursorCreatedAt && typeof input.cursorId === 'number') {
     whereCursor.push('(al.created_at < ? OR (al.created_at = ? AND al.id < ?))');
@@ -1998,22 +2006,62 @@ export async function listJournalAuditEvents(input: {
   const [rows] = await getPool().query<mysql.RowDataPacket[]>(
     `
       SELECT
-        al.id,
-        al.entity_type,
-        al.action,
-        al.diff_before,
-        al.diff_after,
-        al.created_at,
-        actor.login AS actor_login
-      FROM audit_logs al
-      LEFT JOIN users actor ON actor.id = al.actor_user_id
-      LEFT JOIN lesson_slots ls ON ls.id = al.entity_id
-      WHERE (
-        (
-          al.entity_type = 'lesson_slot'
+        q.id,
+        q.entity_type,
+        q.action,
+        q.diff_before,
+        q.diff_after,
+        q.created_at,
+        q.actor_login
+      FROM (
+        SELECT
+          al.id,
+          al.entity_type,
+          al.action,
+          al.diff_before,
+          al.diff_after,
+          al.created_at,
+          actor.login AS actor_login
+        FROM audit_logs al
+        INNER JOIN lesson_slots ls ON ls.id = al.entity_id
+        LEFT JOIN users actor ON actor.id = al.actor_user_id
+        WHERE al.entity_type = 'lesson_slot'
+          AND ls.teacher_id = ?
+          AND al.created_at >= (UTC_TIMESTAMP() - INTERVAL 12 MONTH)
+
+        UNION ALL
+
+        SELECT
+          al.id,
+          al.entity_type,
+          al.action,
+          al.diff_before,
+          al.diff_after,
+          al.created_at,
+          actor.login AS actor_login
+        FROM audit_logs al
+        LEFT JOIN users actor ON actor.id = al.actor_user_id
+        WHERE al.entity_type = 'journal_weekly_template'
+          AND al.entity_id = ?
+          AND al.created_at >= (UTC_TIMESTAMP() - INTERVAL 12 MONTH)
+
+        UNION ALL
+
+        SELECT
+          al.id,
+          al.entity_type,
+          al.action,
+          al.diff_before,
+          al.diff_after,
+          al.created_at,
+          actor.login AS actor_login
+        FROM audit_logs al
+        LEFT JOIN lesson_slots ls ON ls.id = al.entity_id
+        LEFT JOIN users actor ON actor.id = al.actor_user_id
+        WHERE al.entity_type = 'lesson_slot'
+          AND ls.id IS NULL
           AND (
-            ls.teacher_id = ?
-            OR (
+            (
               CASE
                 WHEN al.diff_before IS NOT NULL AND JSON_VALID(al.diff_before)
                   THEN JSON_UNQUOTE(JSON_EXTRACT(al.diff_before, '$.teacher_id'))
@@ -2028,12 +2076,11 @@ export async function listJournalAuditEvents(input: {
               END
             ) = ?
           )
-        )
-        OR (al.entity_type = 'journal_weekly_template' AND al.entity_id = ?)
-      )
-      AND al.created_at >= (UTC_TIMESTAMP() - INTERVAL 12 MONTH)
-      ${whereCursor.length > 0 ? `AND ${whereCursor.join(' AND ')}` : ''}
-      ORDER BY al.created_at DESC, al.id DESC
+          AND al.created_at >= (UTC_TIMESTAMP() - INTERVAL 12 MONTH)
+      ) q
+      WHERE 1=1
+      ${whereCursor.length > 0 ? `AND ${whereCursor.map((part) => part.replaceAll('al.', 'q.')).join(' AND ')}` : ''}
+      ORDER BY q.created_at DESC, q.id DESC
       LIMIT ?
     `,
     params
@@ -2482,7 +2529,7 @@ export async function replaceTeacherWeeklyTemplate(input: {
               DELETE FROM lesson_slots
               WHERE teacher_id = ?
                 AND source_weekly_slot_id = ?
-                AND status = 'planned'
+                AND status IN ('planned', 'overdue')
                 AND date >= CURRENT_DATE()
                 AND date < ?
             `,
@@ -2797,7 +2844,7 @@ export async function createTeacherWeeklyTemplateSlot(input: {
           DELETE FROM lesson_slots
           WHERE teacher_id = ?
             AND source_weekly_slot_id = ?
-            AND status = 'planned'
+            AND status IN ('planned', 'overdue')
             AND date >= CURRENT_DATE()
         `,
         [input.teacherId, slotId]
@@ -2962,7 +3009,7 @@ export async function updateTeacherWeeklyTemplateSlot(input: {
         DELETE FROM lesson_slots
         WHERE teacher_id = ?
           AND source_weekly_slot_id = ?
-          AND status = 'planned'
+          AND status IN ('planned', 'overdue')
           AND date >= ?
       `,
       [input.teacherId, input.slotId, today]
@@ -3174,6 +3221,9 @@ export async function listTeacherLessonSlots(input: {
         ls.rescheduled_to_slot_id,
         DATE_FORMAT(rsl.date, '%Y-%m-%d') AS reschedule_target_date,
         TIME_FORMAT(rsl.start_time, '%H:%i') AS reschedule_target_time,
+        reschedule_source.source_slot_id AS reschedule_source_slot_id,
+        reschedule_source.source_date AS reschedule_source_date,
+        reschedule_source.source_time AS reschedule_source_time,
         COALESCE(ls.source_weekly_slot_id, reschedule_source.inherited_source_weekly_slot_id) AS source_weekly_slot_id,
         UNIX_TIMESTAMP(ls.updated_at) AS lock_version,
         status_audit.created_at AS status_changed_at,
@@ -3181,20 +3231,7 @@ export async function listTeacherLessonSlots(input: {
         JSON_UNQUOTE(JSON_EXTRACT(status_audit.diff_after, '$.reason')) AS status_reason,
         CASE
           WHEN ls.student_id IS NULL THEN 0
-          WHEN EXISTS (
-            SELECT 1
-            FROM lesson_slots ls_prev
-            WHERE ls_prev.teacher_id = ls.teacher_id
-              AND ls_prev.student_id = ls.student_id
-              AND ls_prev.status NOT IN ('completed', 'canceled', 'rescheduled')
-              AND (
-                ls_prev.date < ls.date
-                OR (ls_prev.date = ls.date AND ls_prev.start_time < ls.start_time)
-              )
-              AND ls_prev.id <> ls.id
-              AND (ls_prev.rescheduled_to_slot_id IS NULL OR ls_prev.rescheduled_to_slot_id <> ls.id)
-            LIMIT 1
-          ) THEN 1
+          WHEN earlier_unconfirmed.has_earlier_unconfirmed = 1 THEN 1
           ELSE 0
         END AS has_earlier_unconfirmed
       FROM lesson_slots ls
@@ -3203,23 +3240,62 @@ export async function listTeacherLessonSlots(input: {
       LEFT JOIN (
         SELECT
           rescheduled_to_slot_id AS target_slot_id,
-          MAX(source_weekly_slot_id) AS inherited_source_weekly_slot_id
+          MAX(source_weekly_slot_id) AS inherited_source_weekly_slot_id,
+          MAX(id) AS source_slot_id,
+          MAX(DATE_FORMAT(date, '%Y-%m-%d')) AS source_date,
+          MAX(TIME_FORMAT(start_time, '%H:%i')) AS source_time
         FROM lesson_slots
-        WHERE rescheduled_to_slot_id IS NOT NULL
+        WHERE teacher_id = ?
+          AND rescheduled_to_slot_id IS NOT NULL
         GROUP BY rescheduled_to_slot_id
       ) reschedule_source ON reschedule_source.target_slot_id = ls.id
       LEFT JOIN (
-        SELECT entity_id, MAX(id) AS latest_audit_id
-        FROM audit_logs
-        WHERE entity_type = 'lesson_slot' AND action = 'status_update'
-        GROUP BY entity_id
+        SELECT al.entity_id, MAX(al.id) AS latest_audit_id
+        FROM audit_logs al
+        INNER JOIN lesson_slots ls_scope ON ls_scope.id = al.entity_id
+        WHERE al.entity_type = 'lesson_slot'
+          AND al.action = 'status_update'
+          AND ls_scope.teacher_id = ?
+          AND ls_scope.date BETWEEN ? AND ?
+        GROUP BY al.entity_id
       ) latest_status_audit ON latest_status_audit.entity_id = ls.id
       LEFT JOIN audit_logs status_audit ON status_audit.id = latest_status_audit.latest_audit_id
       LEFT JOIN users actor ON actor.id = status_audit.actor_user_id
+      LEFT JOIN (
+        SELECT
+          ls_curr.id AS slot_id,
+          1 AS has_earlier_unconfirmed
+        FROM lesson_slots ls_curr
+        INNER JOIN lesson_slots ls_prev
+          ON ls_prev.teacher_id = ls_curr.teacher_id
+          AND ls_prev.student_id = ls_curr.student_id
+          AND ls_prev.status NOT IN ('completed', 'canceled', 'rescheduled')
+          AND (
+            ls_prev.date < ls_curr.date
+            OR (ls_prev.date = ls_curr.date AND ls_prev.start_time < ls_curr.start_time)
+          )
+          AND ls_prev.id <> ls_curr.id
+          AND (ls_prev.rescheduled_to_slot_id IS NULL OR ls_prev.rescheduled_to_slot_id <> ls_curr.id)
+        WHERE ls_curr.teacher_id = ?
+          AND ls_curr.date BETWEEN ? AND ?
+          AND ls_curr.student_id IS NOT NULL
+        GROUP BY ls_curr.id
+      ) earlier_unconfirmed ON earlier_unconfirmed.slot_id = ls.id
       WHERE ls.teacher_id = ? AND ls.date BETWEEN ? AND ?
       ORDER BY ls.date ASC, ls.start_time ASC
     `,
-    [input.teacherId, input.dateFrom, input.dateTo]
+    [
+      input.teacherId,
+      input.teacherId,
+      input.dateFrom,
+      input.dateTo,
+      input.teacherId,
+      input.dateFrom,
+      input.dateTo,
+      input.teacherId,
+      input.dateFrom,
+      input.dateTo
+    ]
   );
 
   return rows.map((row) => ({
@@ -3234,6 +3310,9 @@ export async function listTeacherLessonSlots(input: {
     rescheduled_to_slot_id: row.rescheduled_to_slot_id ? String(row.rescheduled_to_slot_id) : null,
     reschedule_target_date: row.reschedule_target_date ? String(row.reschedule_target_date) : null,
     reschedule_target_time: row.reschedule_target_time ? String(row.reschedule_target_time) : null,
+    reschedule_source_slot_id: row.reschedule_source_slot_id ? String(row.reschedule_source_slot_id) : null,
+    reschedule_source_date: row.reschedule_source_date ? String(row.reschedule_source_date) : null,
+    reschedule_source_time: row.reschedule_source_time ? String(row.reschedule_source_time) : null,
     source_weekly_slot_id: row.source_weekly_slot_id ? String(row.source_weekly_slot_id) : null,
     lock_version: Number(row.lock_version ?? 0),
     status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
@@ -3274,6 +3353,9 @@ export async function listTeacherLessonSlotsChangedSince(input: {
         ls.rescheduled_to_slot_id,
         DATE_FORMAT(rsl.date, '%Y-%m-%d') AS reschedule_target_date,
         TIME_FORMAT(rsl.start_time, '%H:%i') AS reschedule_target_time,
+        reschedule_source.source_slot_id AS reschedule_source_slot_id,
+        reschedule_source.source_date AS reschedule_source_date,
+        reschedule_source.source_time AS reschedule_source_time,
         COALESCE(ls.source_weekly_slot_id, reschedule_source.inherited_source_weekly_slot_id) AS source_weekly_slot_id,
         UNIX_TIMESTAMP(ls.updated_at) AS lock_version,
         status_audit.created_at AS status_changed_at,
@@ -3281,20 +3363,7 @@ export async function listTeacherLessonSlotsChangedSince(input: {
         JSON_UNQUOTE(JSON_EXTRACT(status_audit.diff_after, '$.reason')) AS status_reason,
         CASE
           WHEN ls.student_id IS NULL THEN 0
-          WHEN EXISTS (
-            SELECT 1
-            FROM lesson_slots ls_prev
-            WHERE ls_prev.teacher_id = ls.teacher_id
-              AND ls_prev.student_id = ls.student_id
-              AND ls_prev.status NOT IN ('completed', 'canceled', 'rescheduled')
-              AND (
-                ls_prev.date < ls.date
-                OR (ls_prev.date = ls.date AND ls_prev.start_time < ls.start_time)
-              )
-              AND ls_prev.id <> ls.id
-              AND (ls_prev.rescheduled_to_slot_id IS NULL OR ls_prev.rescheduled_to_slot_id <> ls.id)
-            LIMIT 1
-          ) THEN 1
+          WHEN earlier_unconfirmed.has_earlier_unconfirmed = 1 THEN 1
           ELSE 0
         END AS has_earlier_unconfirmed
       FROM lesson_slots ls
@@ -3303,25 +3372,67 @@ export async function listTeacherLessonSlotsChangedSince(input: {
       LEFT JOIN (
         SELECT
           rescheduled_to_slot_id AS target_slot_id,
-          MAX(source_weekly_slot_id) AS inherited_source_weekly_slot_id
+          MAX(source_weekly_slot_id) AS inherited_source_weekly_slot_id,
+          MAX(id) AS source_slot_id,
+          MAX(DATE_FORMAT(date, '%Y-%m-%d')) AS source_date,
+          MAX(TIME_FORMAT(start_time, '%H:%i')) AS source_time
         FROM lesson_slots
-        WHERE rescheduled_to_slot_id IS NOT NULL
+        WHERE teacher_id = ?
+          AND rescheduled_to_slot_id IS NOT NULL
         GROUP BY rescheduled_to_slot_id
       ) reschedule_source ON reschedule_source.target_slot_id = ls.id
       LEFT JOIN (
-        SELECT entity_id, MAX(id) AS latest_audit_id
-        FROM audit_logs
-        WHERE entity_type = 'lesson_slot' AND action = 'status_update'
-        GROUP BY entity_id
+        SELECT al.entity_id, MAX(al.id) AS latest_audit_id
+        FROM audit_logs al
+        INNER JOIN lesson_slots ls_scope ON ls_scope.id = al.entity_id
+        WHERE al.entity_type = 'lesson_slot'
+          AND al.action = 'status_update'
+          AND ls_scope.teacher_id = ?
+          AND ls_scope.date BETWEEN ? AND ?
+        GROUP BY al.entity_id
       ) latest_status_audit ON latest_status_audit.entity_id = ls.id
       LEFT JOIN audit_logs status_audit ON status_audit.id = latest_status_audit.latest_audit_id
       LEFT JOIN users actor ON actor.id = status_audit.actor_user_id
+      LEFT JOIN (
+        SELECT
+          ls_curr.id AS slot_id,
+          1 AS has_earlier_unconfirmed
+        FROM lesson_slots ls_curr
+        INNER JOIN lesson_slots ls_prev
+          ON ls_prev.teacher_id = ls_curr.teacher_id
+          AND ls_prev.student_id = ls_curr.student_id
+          AND ls_prev.status NOT IN ('completed', 'canceled', 'rescheduled')
+          AND (
+            ls_prev.date < ls_curr.date
+            OR (ls_prev.date = ls_curr.date AND ls_prev.start_time < ls_curr.start_time)
+          )
+          AND ls_prev.id <> ls_curr.id
+          AND (ls_prev.rescheduled_to_slot_id IS NULL OR ls_prev.rescheduled_to_slot_id <> ls_curr.id)
+        WHERE ls_curr.teacher_id = ?
+          AND ls_curr.date BETWEEN ? AND ?
+          AND UNIX_TIMESTAMP(ls_curr.updated_at) > ?
+          AND ls_curr.student_id IS NOT NULL
+        GROUP BY ls_curr.id
+      ) earlier_unconfirmed ON earlier_unconfirmed.slot_id = ls.id
       WHERE ls.teacher_id = ?
         AND ls.date BETWEEN ? AND ?
         AND UNIX_TIMESTAMP(ls.updated_at) > ?
       ORDER BY ls.date ASC, ls.start_time ASC
     `,
-    [input.teacherId, input.dateFrom, input.dateTo, effectiveSinceUnix]
+    [
+      input.teacherId,
+      input.teacherId,
+      input.dateFrom,
+      input.dateTo,
+      input.teacherId,
+      input.dateFrom,
+      input.dateTo,
+      effectiveSinceUnix,
+      input.teacherId,
+      input.dateFrom,
+      input.dateTo,
+      effectiveSinceUnix
+    ]
   );
 
   return rows.map((row) => ({
@@ -3336,6 +3447,9 @@ export async function listTeacherLessonSlotsChangedSince(input: {
     rescheduled_to_slot_id: row.rescheduled_to_slot_id ? String(row.rescheduled_to_slot_id) : null,
     reschedule_target_date: row.reschedule_target_date ? String(row.reschedule_target_date) : null,
     reschedule_target_time: row.reschedule_target_time ? String(row.reschedule_target_time) : null,
+    reschedule_source_slot_id: row.reschedule_source_slot_id ? String(row.reschedule_source_slot_id) : null,
+    reschedule_source_date: row.reschedule_source_date ? String(row.reschedule_source_date) : null,
+    reschedule_source_time: row.reschedule_source_time ? String(row.reschedule_source_time) : null,
     source_weekly_slot_id: row.source_weekly_slot_id ? String(row.source_weekly_slot_id) : null,
     lock_version: Number(row.lock_version ?? 0),
     status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
@@ -4500,6 +4614,9 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
         ls.rescheduled_to_slot_id,
         DATE_FORMAT(rsl.date, '%Y-%m-%d') AS reschedule_target_date,
         TIME_FORMAT(rsl.start_time, '%H:%i') AS reschedule_target_time,
+        reschedule_source.source_slot_id AS reschedule_source_slot_id,
+        reschedule_source.source_date AS reschedule_source_date,
+        reschedule_source.source_time AS reschedule_source_time,
         COALESCE(ls.source_weekly_slot_id, reschedule_source.inherited_source_weekly_slot_id) AS source_weekly_slot_id,
         UNIX_TIMESTAMP(ls.updated_at) AS lock_version,
         status_audit.created_at AS status_changed_at,
@@ -4529,7 +4646,10 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
       LEFT JOIN (
         SELECT
           rescheduled_to_slot_id AS target_slot_id,
-          MAX(source_weekly_slot_id) AS inherited_source_weekly_slot_id
+          MAX(source_weekly_slot_id) AS inherited_source_weekly_slot_id,
+          MAX(id) AS source_slot_id,
+          MAX(DATE_FORMAT(date, '%Y-%m-%d')) AS source_date,
+          MAX(TIME_FORMAT(start_time, '%H:%i')) AS source_time
         FROM lesson_slots
         WHERE rescheduled_to_slot_id IS NOT NULL
         GROUP BY rescheduled_to_slot_id
@@ -4566,6 +4686,9 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
     rescheduled_to_slot_id: row.rescheduled_to_slot_id ? String(row.rescheduled_to_slot_id) : null,
     reschedule_target_date: row.reschedule_target_date ? String(row.reschedule_target_date) : null,
     reschedule_target_time: row.reschedule_target_time ? String(row.reschedule_target_time) : null,
+    reschedule_source_slot_id: row.reschedule_source_slot_id ? String(row.reschedule_source_slot_id) : null,
+    reschedule_source_date: row.reschedule_source_date ? String(row.reschedule_source_date) : null,
+    reschedule_source_time: row.reschedule_source_time ? String(row.reschedule_source_time) : null,
     source_weekly_slot_id: row.source_weekly_slot_id ? String(row.source_weekly_slot_id) : null,
     lock_version: Number(row.lock_version ?? 0),
     status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,

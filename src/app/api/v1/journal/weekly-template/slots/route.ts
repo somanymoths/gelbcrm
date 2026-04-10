@@ -4,6 +4,7 @@ import { requireUser } from '@/lib/api-auth';
 import { mapInfraError } from '@/lib/api-error-mappers';
 import { createTeacherWeeklyTemplateSlot } from '@/lib/db';
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
+import { invalidateJournalTeacherCache } from '@/lib/journal-cache';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 
 const querySchema = z.object({
@@ -51,6 +52,7 @@ export async function POST(request: Request) {
         isActive: parsedBody.data.isActive ?? true
       })
     );
+    invalidateJournalTeacherCache(scope.teacherId);
 
     return NextResponse.json(slot, { status: 201 });
   } catch (error) {

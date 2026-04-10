@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireUser } from '@/lib/api-auth';
 import { mapInfraError } from '@/lib/api-error-mappers';
 import { invalidateFunnelBoardRelatedCache, invalidateFunnelCardCache } from '@/lib/funnel-cache';
+import { invalidateJournalTeacherCache } from '@/lib/journal-cache';
 import {
   deleteTeacherLessonSlot,
   deleteTeacherWeeklySeriesFromSlot,
@@ -55,6 +56,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     );
 
     invalidateFunnelBoardRelatedCache();
+    invalidateJournalTeacherCache(scope.teacherId);
     const affectedStudentIds = new Set<string>();
     if (previousStudentId) affectedStudentIds.add(previousStudentId);
     if (updated.student_id) affectedStudentIds.add(updated.student_id);
@@ -115,6 +117,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     });
 
     invalidateFunnelBoardRelatedCache();
+    invalidateJournalTeacherCache(scope.teacherId);
     if (previousStudentId) {
       invalidateFunnelCardCache(previousStudentId);
     }
