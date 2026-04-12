@@ -2945,6 +2945,41 @@ export async function updateTeacherWeeklyTemplateSlot(input: {
     const nextStudentId = hasWeeklySlotStudentIdColumn ? input.studentId ?? existing.student_id : input.studentId ?? existing.student_id;
     const nextIsActive = input.isActive ?? existing.is_active === 1;
 
+    const [conflictRows] = await connection.query<mysql.RowDataPacket[]>(
+      `
+        SELECT id, is_active
+        FROM teacher_weekly_slots
+        WHERE teacher_id = ? AND weekday = ? AND start_time = ? AND id <> ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [input.teacherId, nextWeekday, `${nextStartTime}:00`, input.slotId]
+    );
+    if (conflictRows.length > 0) {
+      const conflictId = String(conflictRows[0].id);
+      const conflictIsActive = Number(conflictRows[0].is_active) === 1;
+      if (conflictIsActive) {
+        throw new Error('SLOT_ALREADY_EXISTS');
+      }
+
+      // Hidden inactive duplicates should not block edits: reattach series links and remove duplicate.
+      await connection.query(
+        `
+          UPDATE lesson_slots
+          SET source_weekly_slot_id = ?
+          WHERE teacher_id = ? AND source_weekly_slot_id = ?
+        `,
+        [input.slotId, input.teacherId, conflictId]
+      );
+      await connection.query(
+        `
+          DELETE FROM teacher_weekly_slots
+          WHERE id = ? AND teacher_id = ? AND is_active = 0
+        `,
+        [conflictId, input.teacherId]
+      );
+    }
+
     await assertStudentBelongsToTeacher(connection, input.teacherId, nextStudentId ?? null);
     await assertWeeklyTemplateStartFromBounds(connection, input.teacherId, [
       {
