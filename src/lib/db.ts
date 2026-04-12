@@ -4574,6 +4574,49 @@ async function ensureTemplateSlotsForRange(
     `,
     values
   );
+
+  await cleanupWeeklyTemplateSlotDuplicates(connection, {
+    teacherId,
+    dateFrom,
+    dateTo
+  });
+}
+
+async function cleanupWeeklyTemplateSlotDuplicates(
+  connection: mysql.PoolConnection,
+  input: { teacherId: string; dateFrom: string; dateTo: string }
+): Promise<void> {
+  const [duplicateRows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT id
+      FROM (
+        SELECT
+          ls.id,
+          ROW_NUMBER() OVER (
+            PARTITION BY ls.teacher_id, ls.date, ls.source_weekly_slot_id
+            ORDER BY ls.updated_at DESC, ls.created_at DESC, ls.start_time DESC, ls.id DESC
+          ) AS row_num
+        FROM lesson_slots ls
+        WHERE ls.teacher_id = ?
+          AND ls.source_weekly_slot_id IS NOT NULL
+          AND ls.status IN ('planned', 'overdue')
+          AND ls.date BETWEEN ? AND ?
+      ) ranked
+      WHERE row_num > 1
+    `,
+    [input.teacherId, input.dateFrom, input.dateTo]
+  );
+
+  if (duplicateRows.length === 0) return;
+  const duplicateIds = duplicateRows.map((row) => String(row.id));
+  await connection.query(
+    `
+      DELETE FROM lesson_slots
+      WHERE teacher_id = ?
+        AND id IN (${duplicateIds.map(() => '?').join(', ')})
+    `,
+    [input.teacherId, ...duplicateIds]
+  );
 }
 
 async function syncWeeklyStudentAssignment(
