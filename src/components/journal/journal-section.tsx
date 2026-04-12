@@ -8,6 +8,7 @@ import { Avatar as UIAvatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
+import { Calendar } from '@/components/ui/calendar';
 import {
   Card,
   CardContent,
@@ -22,11 +23,22 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import type { DateRange } from 'react-day-picker';
 import { getStableAvatarColor, getStableAvatarInitial, getStableAvatarSeed } from '@/lib/avatar-color';
 import {
   Select,
@@ -53,7 +65,15 @@ type WeeklySlot = {
   is_active: 0 | 1;
   student_id?: string | null;
 };
-type LessonStatus = 'planned' | 'overdue' | 'completed' | 'rescheduled' | 'canceled';
+type LessonStatus =
+  | 'planned'
+  | 'overdue'
+  | 'completed'
+  | 'rescheduled'
+  | 'canceled'
+  | 'teacher_vacation'
+  | 'student_vacation'
+  | 'holidays';
 type LessonSlot = {
   id: string;
   student_id: string | null;
@@ -89,16 +109,39 @@ type JournalBootstrapResponse = {
   slotsPayload: WeekSlotsResponse;
 };
 type JournalViewMode = 'week' | 'month';
-type JournalAuditItem = {
-  id: number;
-  created_at: string;
-  action_label: 'создал' | 'изменил' | 'удалил';
-  description: string;
-  actor_login: string | null;
+type VacationType = 'teacher' | 'student' | 'holidays';
+type VacationHistoryStatus = 'planned' | 'active' | 'completed' | 'canceled';
+type VacationModificationType = 'cancel' | 'early_finish' | null;
+type VacationPreviewSlot = {
+  slotId: string;
+  date: string;
+  startTime: string;
+  studentId: string | null;
+  studentFullName: string | null;
 };
-type JournalAuditResponse = {
-  items: JournalAuditItem[];
-  nextCursor: { createdAt: string; id: number } | null;
+type VacationHistoryItem = {
+  id: string;
+  type: VacationType;
+  dateFrom: string;
+  dateTo: string;
+  effectiveDateTo: string;
+  status: VacationHistoryStatus;
+  comment: string | null;
+  createdAt: string;
+  createdByLogin: string | null;
+  modifiedAt: string | null;
+  modifiedByLogin: string | null;
+  modificationType: VacationModificationType;
+  affectedStudents: Array<{ id: string; fullName: string }>;
+  appliedSlotsCount: number;
+};
+type VacationHistoryResponse = {
+  items: VacationHistoryItem[];
+  total: number;
+  nextOffset: number | null;
+};
+type VacationPreviewResponse = {
+  impactedSlots: VacationPreviewSlot[];
 };
 
 type DayDraft = {
@@ -150,6 +193,8 @@ const QUARTER_TIME_GRID = HOURLY_TIME_OPTIONS.flatMap((option) =>
   QUARTER_MINUTE_OPTIONS.map((minute) => withMinuteOffset(option.value, minute))
 );
 const RESCHEDULE_REASONS = ['По причине ученика', 'По причине учителя'] as const;
+const VACATION_HISTORY_PAGE_SIZE = 20;
+const VACATION_STATUS_COLOR_CLASS = 'bg-violet-100 text-violet-800 border border-violet-200';
 
 export function JournalSection() {
   const [loading, setLoading] = useState(false);
@@ -180,11 +225,43 @@ export function JournalSection() {
   const [assigningStudentSlotId, setAssigningStudentSlotId] = useState<string | null>(null);
   const [statusUpdatingSlotId, setStatusUpdatingSlotId] = useState<string | null>(null);
   const [confirmUpdatingSlotId, setConfirmUpdatingSlotId] = useState<string | null>(null);
-  const [auditOpen, setAuditOpen] = useState(false);
-  const [auditLoading, setAuditLoading] = useState(false);
-  const [auditLoadingMore, setAuditLoadingMore] = useState(false);
-  const [auditItems, setAuditItems] = useState<JournalAuditItem[]>([]);
-  const [auditCursor, setAuditCursor] = useState<{ createdAt: string; id: number } | null>(null);
+  const [vacationsOpen, setVacationsOpen] = useState(false);
+  const [vacationsTab, setVacationsTab] = useState<'assign' | 'history'>('assign');
+  const [vacationType, setVacationType] = useState<VacationType>('teacher');
+  const [vacationDateFrom, setVacationDateFrom] = useState('');
+  const [vacationDateTo, setVacationDateTo] = useState('');
+  const [vacationComment, setVacationComment] = useState('');
+  const [vacationSelectedStudentIds, setVacationSelectedStudentIds] = useState<string[]>([]);
+  const [vacationPreviewLoading, setVacationPreviewLoading] = useState(false);
+  const [vacationPreviewError, setVacationPreviewError] = useState<string | null>(null);
+  const [vacationPreviewSlots, setVacationPreviewSlots] = useState<VacationPreviewSlot[]>([]);
+  const [vacationFormError, setVacationFormError] = useState<{ student?: string; period?: string } | null>(null);
+  const [vacationSubmitting, setVacationSubmitting] = useState(false);
+  const [vacationConfirmOpen, setVacationConfirmOpen] = useState(false);
+  const [vacationConfirmError, setVacationConfirmError] = useState<string | null>(null);
+  const [vacationHistoryItems, setVacationHistoryItems] = useState<VacationHistoryItem[]>([]);
+  const [vacationHistoryTotal, setVacationHistoryTotal] = useState(0);
+  const [vacationHistoryOffset, setVacationHistoryOffset] = useState<number | null>(0);
+  const [vacationHistoryLoading, setVacationHistoryLoading] = useState(false);
+  const [vacationHistoryLoadingMore, setVacationHistoryLoadingMore] = useState(false);
+  const [vacationHistoryError, setVacationHistoryError] = useState<string | null>(null);
+  const [vacationActionLoadingId, setVacationActionLoadingId] = useState<string | null>(null);
+  const [vacationCancelConfirm, setVacationCancelConfirm] = useState<{
+    id: string;
+    rollbackCount: number;
+    loading: boolean;
+    error: string | null;
+  } | null>(null);
+  const [vacationEarlyFinishState, setVacationEarlyFinishState] = useState<{
+    id: string;
+    minDate: string;
+    maxDate: string;
+    selectedDate: string;
+    rollbackCount: number | null;
+    loadingPreview: boolean;
+    submitting: boolean;
+    error: string | null;
+  } | null>(null);
   const studentsCacheRef = useRef<Map<string, { ts: number; data: StudentItem[] }>>(new Map());
   const weeklyTemplateCacheRef = useRef<Map<string, { ts: number; data: WeeklySlot[] }>>(new Map());
   const weekSlotsCacheRef = useRef<Map<string, { ts: number; data: WeekSlotsResponse }>>(new Map());
@@ -194,7 +271,6 @@ export function JournalSection() {
   const softRefreshTimerRef = useRef<number | null>(null);
   const weekColumnsScrollRef = useRef<HTMLDivElement | null>(null);
   const weekDayRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const auditListRef = useRef<HTMLDivElement | null>(null);
   const dragScrollStateRef = useRef<{
     startX: number;
     startY: number;
@@ -451,57 +527,6 @@ export function JournalSection() {
     }, 250);
   }, [refreshPeriodData, selectedTeacherId]);
 
-  const loadAudit = useCallback(
-    async (options?: { append?: boolean }) => {
-      if (roleUser?.role !== 'admin' || !selectedTeacherId) return;
-      const append = options?.append ?? false;
-      if (append && !auditCursor) return;
-
-      if (append) {
-        setAuditLoadingMore(true);
-      } else {
-        setAuditLoading(true);
-      }
-
-      try {
-        const params = new URLSearchParams({
-          teacherId: selectedTeacherId,
-          limit: '50'
-        });
-
-        if (append && auditCursor) {
-          params.set('cursorCreatedAt', auditCursor.createdAt);
-          params.set('cursorId', String(auditCursor.id));
-        }
-
-        const payload = await fetchJson<JournalAuditResponse>(`/api/v1/journal/audit?${params.toString()}`);
-
-        setAuditItems((prev) => (append ? [...prev, ...payload.items] : payload.items));
-        setAuditCursor(payload.nextCursor);
-      } catch (error) {
-        showError(error instanceof Error ? error.message : 'Не удалось загрузить аудит журнала');
-      } finally {
-        if (append) {
-          setAuditLoadingMore(false);
-        } else {
-          setAuditLoading(false);
-        }
-      }
-    },
-    [auditCursor, roleUser?.role, selectedTeacherId, showError]
-  );
-
-  const handleAuditScroll = useCallback(() => {
-    const container = auditListRef.current;
-    if (!container) return;
-    if (auditLoading || auditLoadingMore || !auditCursor) return;
-
-    const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    if (distanceToBottom < 120) {
-      void loadAudit({ append: true });
-    }
-  }, [auditCursor, auditLoading, auditLoadingMore, loadAudit]);
-
   const loadAll = useCallback(async () => {
     loadAbortRef.current?.abort();
     const controller = new AbortController();
@@ -636,16 +661,6 @@ export function JournalSection() {
     if (roleUser?.role !== 'admin' || !selectedTeacherId) return;
     localStorage.setItem(ADMIN_JOURNAL_TEACHER_STORAGE_KEY, selectedTeacherId);
   }, [roleUser?.role, selectedTeacherId]);
-
-  useEffect(() => {
-    setAuditItems([]);
-    setAuditCursor(null);
-  }, [selectedTeacherId]);
-
-  useEffect(() => {
-    if (!auditOpen) return;
-    void loadAudit();
-  }, [auditOpen, loadAudit]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !weekStartHydrated) return;
@@ -1174,6 +1189,452 @@ export function JournalSection() {
     ],
     [students]
   );
+  const sortedJournalStudents = useMemo(
+    () => [...students].sort((a, b) => a.full_name.localeCompare(b.full_name, 'ru')),
+    [students]
+  );
+  const vacationSelectableStudentIds = useMemo(() => sortedJournalStudents.map((student) => student.id), [sortedJournalStudents]);
+  const vacationAllStudentsSelected = useMemo(() => {
+    if (vacationSelectableStudentIds.length === 0) return false;
+    return vacationSelectableStudentIds.every((id) => vacationSelectedStudentIds.includes(id));
+  }, [vacationSelectableStudentIds, vacationSelectedStudentIds]);
+  const vacationExcludedStudents = useMemo(
+    () => sortedJournalStudents.filter((student) => !vacationSelectedStudentIds.includes(student.id)),
+    [sortedJournalStudents, vacationSelectedStudentIds]
+  );
+  const vacationIncludedStudents = useMemo(
+    () => sortedJournalStudents.filter((student) => vacationSelectedStudentIds.includes(student.id)),
+    [sortedJournalStudents, vacationSelectedStudentIds]
+  );
+  const vacationPreviewCount = vacationPreviewSlots.length;
+  const vacationHasZeroPreview = !vacationPreviewLoading && vacationPreviewCount === 0;
+  const vacationMinStartDate = useMemo(() => addDays(new Date(), 1), []);
+  const vacationSelectedRange = useMemo<DateRange | undefined>(() => {
+    const from = parseIsoDateToDate(vacationDateFrom);
+    const to = parseIsoDateToDate(vacationDateTo);
+    if (!from && !to) return undefined;
+    return {
+      from: from ?? undefined,
+      to: to ?? from ?? undefined
+    };
+  }, [vacationDateFrom, vacationDateTo]);
+
+  const resetVacationForm = useCallback(() => {
+    const tomorrow = addDays(new Date(), 1);
+    const plusWeek = addDays(new Date(), 8);
+    const defaultFrom = toIsoDate(tomorrow);
+    const defaultTo = toIsoDate(plusWeek);
+    const allStudentIds = sortedJournalStudents.map((student) => student.id);
+
+    setVacationsTab('assign');
+    setVacationType('teacher');
+    setVacationDateFrom(defaultFrom);
+    setVacationDateTo(defaultTo);
+    setVacationComment('');
+    setVacationSelectedStudentIds(allStudentIds);
+    setVacationPreviewError(null);
+    setVacationPreviewSlots([]);
+    setVacationFormError(null);
+    setVacationSubmitting(false);
+    setVacationConfirmOpen(false);
+    setVacationConfirmError(null);
+    setVacationActionLoadingId(null);
+    setVacationCancelConfirm(null);
+    setVacationEarlyFinishState(null);
+  }, [sortedJournalStudents]);
+
+  const loadVacationPreview = useCallback(
+    async (params: {
+      type: VacationType;
+      dateFrom: string;
+      dateTo: string;
+      selectedStudentIds: string[];
+    }) => {
+      if (!selectedTeacherId) return;
+      setVacationPreviewLoading(true);
+      setVacationPreviewError(null);
+      try {
+        const payload = await fetchJson<VacationPreviewResponse>('/api/v1/journal/vacations/preview', {
+          method: 'POST',
+          body: JSON.stringify({
+            teacherId: selectedTeacherId,
+            type: params.type,
+            dateFrom: params.dateFrom,
+            dateTo: params.dateTo,
+            selectedStudentIds: params.selectedStudentIds
+          })
+        });
+        setVacationPreviewSlots(payload.impactedSlots);
+      } catch (error) {
+        setVacationPreviewSlots([]);
+        setVacationPreviewError(error instanceof Error ? error.message : 'Не удалось рассчитать пропущенные занятия');
+      } finally {
+        setVacationPreviewLoading(false);
+      }
+    },
+    [selectedTeacherId]
+  );
+
+  const refreshVacationHistory = useCallback(
+    async (options?: { append?: boolean }) => {
+      if (!selectedTeacherId) return;
+      const append = options?.append ?? false;
+      const nextOffset = append ? vacationHistoryOffset : 0;
+      if (append && nextOffset === null) return;
+
+      if (append) {
+        setVacationHistoryLoadingMore(true);
+      } else {
+        setVacationHistoryLoading(true);
+        setVacationHistoryError(null);
+      }
+
+      try {
+        const query = new URLSearchParams({
+          teacherId: selectedTeacherId,
+          limit: String(VACATION_HISTORY_PAGE_SIZE),
+          offset: String(nextOffset ?? 0)
+        });
+        const payload = await fetchJson<VacationHistoryResponse>(`/api/v1/journal/vacations?${query.toString()}`);
+        setVacationHistoryTotal(payload.total);
+        setVacationHistoryOffset(payload.nextOffset);
+        setVacationHistoryItems((prev) => (append ? [...prev, ...payload.items] : payload.items));
+      } catch (error) {
+        setVacationHistoryError(error instanceof Error ? error.message : 'Не удалось загрузить историю отпусков');
+      } finally {
+        if (append) {
+          setVacationHistoryLoadingMore(false);
+        } else {
+          setVacationHistoryLoading(false);
+        }
+      }
+    },
+    [selectedTeacherId, vacationHistoryOffset]
+  );
+
+  const validateVacationForm = useCallback((): boolean => {
+    const errors: { student?: string; period?: string } = {};
+    const tomorrowIso = toIsoDate(addDays(new Date(), 1));
+
+    if (!vacationDateFrom || !vacationDateTo) {
+      errors.period = 'Выберите период отпуска';
+    } else if (vacationDateTo < vacationDateFrom) {
+      errors.period = 'Дата окончания не может быть раньше даты начала';
+    } else if (vacationDateFrom < tomorrowIso) {
+      errors.period = 'Дата начала отпуска должна быть не раньше завтрашнего дня';
+    }
+
+    if ((vacationType === 'teacher' || vacationType === 'holidays') && vacationSelectedStudentIds.length === 0) {
+      errors.student = 'Выберите хотя бы одного ученика';
+    }
+    if (vacationType === 'student' && vacationSelectedStudentIds.length !== 1) {
+      errors.student = 'Выберите ученика';
+    }
+    if (sortedJournalStudents.length === 0) {
+      errors.student = 'У учителя нет учеников для назначения отпуска';
+    }
+
+    setVacationFormError(errors);
+    return !errors.student && !errors.period;
+  }, [sortedJournalStudents.length, vacationDateFrom, vacationDateTo, vacationSelectedStudentIds.length, vacationType]);
+
+  const vacationSummaryText = useMemo(() => {
+    if (!vacationDateFrom || !vacationDateTo) return 'Выберите период отпуска';
+    const fromText = formatDayMonthLongRu(vacationDateFrom);
+    const toText = formatDayMonthLongRu(vacationDateTo);
+
+    if (vacationType === 'student') {
+      const student = sortedJournalStudents.find((item) => item.id === vacationSelectedStudentIds[0]);
+      const studentName = student?.full_name ?? 'выбранного ученика';
+      return `С ${fromText} по ${toText} у ${studentName} не будет занятий по расписанию`;
+    }
+
+    if (vacationAllStudentsSelected) {
+      return `С ${fromText} по ${toText} занятий по расписанию не будет у всех`;
+    }
+
+    if (vacationExcludedStudents.length > 0) {
+      const excluded = vacationExcludedStudents.map((student) => student.full_name).join(', ');
+      return `С ${fromText} по ${toText} занятий по расписанию не будет у всех, кроме ${excluded}`;
+    }
+
+    const included = vacationIncludedStudents.map((student) => student.full_name).join(', ');
+    return `С ${fromText} по ${toText} занятий по расписанию не будет у: ${included}`;
+  }, [
+    vacationAllStudentsSelected,
+    vacationDateFrom,
+    vacationDateTo,
+    vacationExcludedStudents,
+    vacationIncludedStudents,
+    vacationSelectedStudentIds,
+    vacationType,
+    sortedJournalStudents
+  ]);
+
+  const handleVacationSubmit = useCallback(() => {
+    if (!validateVacationForm()) return;
+    setVacationConfirmError(null);
+    setVacationConfirmOpen(true);
+  }, [validateVacationForm]);
+
+  const handleVacationTypeChange = useCallback(
+    (nextType: VacationType) => {
+      setVacationType(nextType);
+      setVacationPreviewError(null);
+      setVacationFormError(null);
+      if (nextType === 'student') {
+        setVacationSelectedStudentIds([]);
+        setVacationPreviewSlots([]);
+        return;
+      }
+      setVacationSelectedStudentIds(sortedJournalStudents.map((student) => student.id));
+    },
+    [sortedJournalStudents]
+  );
+
+  const toggleVacationStudent = useCallback((studentId: string, checked: boolean) => {
+    setVacationSelectedStudentIds((prev) => {
+      if (vacationType === 'student') {
+        if (!checked) return [];
+        return [studentId];
+      }
+      if (checked) {
+        return [...new Set([...prev, studentId])];
+      }
+      return prev.filter((id) => id !== studentId);
+    });
+  }, [vacationType]);
+
+  const confirmVacationCreate = useCallback(async () => {
+    if (!selectedTeacherId) return;
+    setVacationSubmitting(true);
+    setVacationConfirmError(null);
+    try {
+      await fetchJson<{ id: string; impactedCount: number }>('/api/v1/journal/vacations', {
+        method: 'POST',
+        body: JSON.stringify({
+          teacherId: selectedTeacherId,
+          type: vacationType,
+          dateFrom: vacationDateFrom,
+          dateTo: vacationDateTo,
+          selectedStudentIds: vacationSelectedStudentIds,
+          comment: vacationComment.trim() ? vacationComment.trim() : null
+        })
+      });
+      setVacationHistoryTotal((prev) => prev + 1);
+      setVacationsOpen(false);
+      setVacationConfirmOpen(false);
+      showSuccess('Отпуск назначен');
+      await refreshPeriodData(selectedTeacherId, { syncRange: false });
+    } catch (error) {
+      setVacationConfirmError(error instanceof Error ? error.message : 'Не удалось назначить отпуск');
+    } finally {
+      setVacationSubmitting(false);
+    }
+  }, [
+    refreshPeriodData,
+    selectedTeacherId,
+    showSuccess,
+    vacationComment,
+    vacationDateFrom,
+    vacationDateTo,
+    vacationSelectedStudentIds,
+    vacationType
+  ]);
+
+  const openCancelVacationConfirm = useCallback(
+    async (vacationId: string) => {
+      if (!selectedTeacherId) return;
+      setVacationActionLoadingId(vacationId);
+      try {
+        const payload = await fetchJson<{ rollbackCount: number }>(`/api/v1/journal/vacations/${encodeURIComponent(vacationId)}/cancel`, {
+          method: 'POST',
+          body: JSON.stringify({
+            teacherId: selectedTeacherId,
+            previewOnly: true
+          })
+        });
+        setVacationCancelConfirm({ id: vacationId, rollbackCount: payload.rollbackCount, loading: false, error: null });
+      } catch (error) {
+        showError(error instanceof Error ? error.message : 'Не удалось подготовить отмену отпуска');
+      } finally {
+        setVacationActionLoadingId(null);
+      }
+    },
+    [selectedTeacherId, showError]
+  );
+
+  const submitCancelVacation = useCallback(async () => {
+    if (!vacationCancelConfirm || !selectedTeacherId) return;
+    setVacationCancelConfirm((prev) => (prev ? { ...prev, loading: true, error: null } : prev));
+    try {
+      await fetchJson<{ rollbackCount: number }>(`/api/v1/journal/vacations/${encodeURIComponent(vacationCancelConfirm.id)}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify({
+          teacherId: selectedTeacherId
+        })
+      });
+      setVacationCancelConfirm(null);
+      await refreshVacationHistory();
+      await refreshPeriodData(selectedTeacherId, { syncRange: false });
+      showSuccess('Отпуск отменён');
+    } catch (error) {
+      setVacationCancelConfirm((prev) =>
+        prev ? { ...prev, loading: false, error: error instanceof Error ? error.message : 'Не удалось отменить отпуск' } : prev
+      );
+    }
+  }, [refreshPeriodData, refreshVacationHistory, selectedTeacherId, showSuccess, vacationCancelConfirm]);
+
+  const openEarlyFinishDialog = useCallback(
+    async (item: VacationHistoryItem) => {
+      if (!selectedTeacherId) return;
+      const todayIso = getCurrentMskIsoDate();
+      const minDate = addDays(parseIsoDateToDate(todayIso) ?? new Date(), -1);
+      const maxDate = addDays(parseIsoDateToDate(item.effectiveDateTo) ?? new Date(), -1);
+      const minIso = toIsoDate(minDate);
+      const maxIso = toIsoDate(maxDate);
+      if (minIso > maxIso) return;
+
+      setVacationEarlyFinishState({
+        id: item.id,
+        minDate: minIso,
+        maxDate: maxIso,
+        selectedDate: maxIso,
+        rollbackCount: null,
+        loadingPreview: true,
+        submitting: false,
+        error: null
+      });
+
+      try {
+        const payload = await fetchJson<{ rollbackCount: number }>(`/api/v1/journal/vacations/${encodeURIComponent(item.id)}/finish`, {
+          method: 'POST',
+          body: JSON.stringify({
+            teacherId: selectedTeacherId,
+            earlyFinishDate: maxIso,
+            previewOnly: true
+          })
+        });
+        setVacationEarlyFinishState((prev) => (prev ? { ...prev, rollbackCount: payload.rollbackCount, loadingPreview: false } : prev));
+      } catch (error) {
+        setVacationEarlyFinishState((prev) =>
+          prev
+            ? {
+                ...prev,
+                loadingPreview: false,
+                error: error instanceof Error ? error.message : 'Не удалось подготовить досрочное завершение'
+              }
+            : prev
+        );
+      }
+    },
+    [selectedTeacherId]
+  );
+
+  const submitEarlyFinish = useCallback(async () => {
+    if (!vacationEarlyFinishState || !selectedTeacherId) return;
+    setVacationEarlyFinishState((prev) => (prev ? { ...prev, submitting: true, error: null } : prev));
+    try {
+      await fetchJson<{ rollbackCount: number }>(`/api/v1/journal/vacations/${encodeURIComponent(vacationEarlyFinishState.id)}/finish`, {
+        method: 'POST',
+        body: JSON.stringify({
+          teacherId: selectedTeacherId,
+          earlyFinishDate: vacationEarlyFinishState.selectedDate
+        })
+      });
+      setVacationEarlyFinishState(null);
+      await refreshVacationHistory();
+      await refreshPeriodData(selectedTeacherId, { syncRange: false });
+      showSuccess('Отпуск завершён досрочно');
+    } catch (error) {
+      setVacationEarlyFinishState((prev) =>
+        prev ? { ...prev, submitting: false, error: error instanceof Error ? error.message : 'Не удалось завершить отпуск досрочно' } : prev
+      );
+    }
+  }, [refreshPeriodData, refreshVacationHistory, selectedTeacherId, showSuccess, vacationEarlyFinishState]);
+
+  useEffect(() => {
+    if (!vacationsOpen) return;
+    resetVacationForm();
+  }, [resetVacationForm, vacationsOpen]);
+
+  useEffect(() => {
+    if (!vacationsOpen) return;
+    if (!selectedTeacherId) return;
+    if (!vacationDateFrom || !vacationDateTo) return;
+    if (vacationDateTo < vacationDateFrom) return;
+    if ((vacationType === 'teacher' || vacationType === 'holidays') && vacationSelectedStudentIds.length === 0) {
+      setVacationPreviewSlots([]);
+      return;
+    }
+    if (vacationType === 'student' && vacationSelectedStudentIds.length !== 1) {
+      setVacationPreviewSlots([]);
+      return;
+    }
+
+    void loadVacationPreview({
+      type: vacationType,
+      dateFrom: vacationDateFrom,
+      dateTo: vacationDateTo,
+      selectedStudentIds: vacationSelectedStudentIds
+    });
+  }, [
+    loadVacationPreview,
+    selectedTeacherId,
+    vacationDateFrom,
+    vacationDateTo,
+    vacationSelectedStudentIds,
+    vacationType,
+    vacationsOpen
+  ]);
+
+  useEffect(() => {
+    if (!vacationsOpen || vacationsTab !== 'history' || !selectedTeacherId) return;
+    void refreshVacationHistory();
+  }, [refreshVacationHistory, selectedTeacherId, vacationsOpen, vacationsTab]);
+
+  useEffect(() => {
+    if (!vacationEarlyFinishState || !selectedTeacherId) return;
+    if (!vacationEarlyFinishState.loadingPreview) return;
+
+    let cancelled = false;
+    void fetchJson<{ rollbackCount: number }>(`/api/v1/journal/vacations/${encodeURIComponent(vacationEarlyFinishState.id)}/finish`, {
+      method: 'POST',
+      body: JSON.stringify({
+        teacherId: selectedTeacherId,
+        earlyFinishDate: vacationEarlyFinishState.selectedDate,
+        previewOnly: true
+      })
+    })
+      .then((payload) => {
+        if (cancelled) return;
+        setVacationEarlyFinishState((prev) =>
+          prev
+            ? {
+                ...prev,
+                rollbackCount: payload.rollbackCount,
+                loadingPreview: false
+              }
+            : prev
+        );
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setVacationEarlyFinishState((prev) =>
+          prev
+            ? {
+                ...prev,
+                loadingPreview: false,
+                error: error instanceof Error ? error.message : 'Не удалось обновить предпросмотр'
+              }
+            : prev
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedTeacherId, vacationEarlyFinishState]);
 
   const submitCreateSlot = async () => {
     if (!createSlotState) return;
@@ -1579,15 +2040,14 @@ export function JournalSection() {
             <CalendarDays absoluteStrokeWidth className="size-4" />
             <span>Шаблон недели</span>
           </Button>
-          {roleUser?.role === 'admin' ? (
+          {selectedTeacherId ? (
             <Button
               variant="outline"
               className="h-9 gap-2"
-              aria-label="Открыть аудит журнала"
-              disabled={!selectedTeacherId}
-              onClick={() => setAuditOpen(true)}
+              aria-label="Добавить отпуск"
+              onClick={() => setVacationsOpen(true)}
             >
-              <span>Аудит</span>
+              <span>Добавить отпуск</span>
             </Button>
           ) : null}
         </div>
@@ -1793,6 +2253,8 @@ export function JournalSection() {
                                 ? 'Нажмите, чтобы вернуть в «Просрочено»'
                                 : 'Нажмите, чтобы вернуть в Запланировано'
                               : undefined;
+                        const isVacationSlot =
+                          slot.status === 'teacher_vacation' || slot.status === 'student_vacation' || slot.status === 'holidays';
                         const isFutureDayCompletionForbidden = slot.status !== 'completed' && isFutureMskDate(slot.date);
                         const forecastPaidLessonsLeft = forecastBySlotId.get(slot.id);
                         const rescheduledSource = rescheduledSourceByTargetSlotId.get(slot.id);
@@ -1817,11 +2279,12 @@ export function JournalSection() {
                           Boolean(rescheduleSourceSortKey && rescheduleSourceSortKey > slotCurrentSortKey);
                         const rescheduledToDateLabel = formatDayMonthRu(slot.reschedule_target_date);
                         const rescheduledFromDateLabel = formatDayMonthRu(rescheduledSource?.sourceDate ?? null);
-                        const shouldShowSlotActions = !slot.rescheduled_to_slot_id;
+                        const shouldShowSlotActions = !slot.rescheduled_to_slot_id && !isVacationSlot;
                         const isRescheduledTargetWithSource = isRescheduledTargetSlot && Boolean(rescheduledSource?.sourceSlotId);
                         const isClosedRescheduledTargetSlot =
                           isRescheduledTargetSlot && (slot.status === 'completed' || slot.status === 'canceled');
-                        const shouldShowActionsMenu = (!isRegularLesson || isRescheduledTargetSlot) && !isClosedRescheduledTargetSlot;
+                        const shouldShowActionsMenu =
+                          (!isRegularLesson || isRescheduledTargetSlot) && !isClosedRescheduledTargetSlot && !isVacationSlot;
                         const shouldPinActionsMenuRight = isRescheduledTargetWithSource && shouldShowActionsMenu;
                         const canDeleteSlot =
                           !slot.source_weekly_slot_id &&
@@ -1929,7 +2392,7 @@ export function JournalSection() {
                         ) : (
                           <Badge className={statusBadgeClass(slot.status)}>{statusLabel(slot.status)}</Badge>
                         )}
-                        {!isRescheduledSourceSlot && typeof forecastPaidLessonsLeft === 'number' ? (
+                        {!isRescheduledSourceSlot && !isVacationSlot && typeof forecastPaidLessonsLeft === 'number' ? (
                           <TooltipProvider>
                             <Tooltip>
                               <TooltipTrigger asChild>
@@ -2475,44 +2938,436 @@ export function JournalSection() {
         </TooltipProvider>
       </div>
 
-      <Dialog open={auditOpen} onOpenChange={setAuditOpen}>
-        <DialogContent className="max-w-2xl">
+      <Dialog open={vacationsOpen} onOpenChange={setVacationsOpen}>
+        <DialogContent className="flex h-[85vh] max-h-[85vh] max-w-5xl flex-col">
           <DialogHeader>
-            <DialogTitle>Аудит журнала</DialogTitle>
+            <DialogTitle>Отпуска</DialogTitle>
           </DialogHeader>
-          <div
-            ref={auditListRef}
-            onScroll={handleAuditScroll}
-            className="max-h-[60vh] space-y-2 overflow-y-auto rounded-md border p-2"
+
+          <Tabs
+            value={vacationsTab}
+            onValueChange={(value) => setVacationsTab(value as 'assign' | 'history')}
+            className="flex min-h-0 flex-1 flex-col"
           >
-            {auditLoading ? (
-              Array.from({ length: 5 }, (_, index) => (
-                <div key={`audit-loading-${index}`} className="rounded-md border p-2">
-                  <Skeleton className="h-4 w-5/6" />
-                  <Skeleton className="mt-2 h-3 w-1/3" />
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="assign" className="w-full">Назначить отпуск</TabsTrigger>
+              <TabsTrigger value="history" className="w-full">История отпусков</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="assign" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden pt-4">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+                <div className="space-y-1">
+                  <div className="text-sm text-muted-foreground">Тип отпуска</div>
+                  <ToggleGroup
+                    type="single"
+                    value={vacationType}
+                    onValueChange={(value) => {
+                      if (!value) return;
+                      handleVacationTypeChange(value as VacationType);
+                    }}
+                    variant="outline"
+                    size="sm"
+                    className="grid w-full grid-cols-3"
+                  >
+                    <ToggleGroupItem value="teacher" className="w-full justify-center">Учитель</ToggleGroupItem>
+                    <ToggleGroupItem value="student" className="w-full justify-center">Ученик</ToggleGroupItem>
+                    <ToggleGroupItem value="holidays" className="w-full justify-center">Праздники</ToggleGroupItem>
+                  </ToggleGroup>
                 </div>
-              ))
-            ) : auditItems.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Событий пока нет</p>
-            ) : (
-              auditItems.map((event) => (
-                <div key={event.id} className="rounded-md border p-2 text-sm">
-                  <p className="font-medium">
-                    {new Date(event.created_at).toLocaleString('ru-RU')} — {event.action_label} {event.description}
-                  </p>
-                  <p className="text-xs text-muted-foreground">Пользователь: {event.actor_login ?? '—'}</p>
+
+                <div className="space-y-1">
+                  <div className="text-sm text-muted-foreground">Период отпуска</div>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" className="w-full justify-start text-left font-normal">
+                        <CalendarDays absoluteStrokeWidth className="mr-2 size-4" />
+                        {vacationDateFrom && vacationDateTo
+                          ? `${formatDayMonthLongRu(vacationDateFrom)} — ${formatDayMonthLongRu(vacationDateTo)}`
+                          : 'Выберите период'}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar
+                        mode="range"
+                        numberOfMonths={2}
+                        selected={vacationSelectedRange}
+                        disabled={{ before: vacationMinStartDate }}
+                        onSelect={(range) => {
+                          const from = range?.from ? toIsoDate(range.from) : '';
+                          const to = range?.to ? toIsoDate(range.to) : from;
+                          setVacationDateFrom(from);
+                          setVacationDateTo(to);
+                          setVacationFormError((prev) => (prev ? { ...prev, period: undefined } : prev));
+                        }}
+                      />
+                    </PopoverContent>
+                  </Popover>
                 </div>
-              ))
-            )}
-            {auditLoadingMore ? (
-              <div className="rounded-md border p-2">
-                <Skeleton className="h-4 w-4/6" />
-                <Skeleton className="mt-2 h-3 w-1/3" />
+
+                {vacationFormError?.period ? (
+                  <Alert variant="destructive">
+                    <AlertDescription>{vacationFormError.period}</AlertDescription>
+                  </Alert>
+                ) : null}
+
+                <div className="space-y-1">
+                  <div className="text-sm text-muted-foreground">Комментарий</div>
+                  <Textarea
+                    value={vacationComment}
+                    maxLength={500}
+                    onChange={(event) => setVacationComment(event.target.value)}
+                    placeholder="Комментарий (необязательно)"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">У кого не будет занятий по расписанию</div>
+                  {sortedJournalStudents.length === 0 ? (
+                    <Alert variant="destructive">
+                      <AlertDescription>У учителя нет учеников для назначения отпуска</AlertDescription>
+                    </Alert>
+                  ) : (
+                    <div className="max-h-52 space-y-2 overflow-auto rounded-md border border-border/60 p-3">
+                      {vacationType === 'student' ? (
+                        <RadioGroup value={vacationSelectedStudentIds[0] ?? ''} onValueChange={(value) => toggleVacationStudent(value, true)}>
+                          <div className="space-y-2">
+                            {sortedJournalStudents.map((student) => (
+                              <label key={`vacation-student-${student.id}`} className="flex items-center gap-2 text-sm">
+                                <RadioGroupItem value={student.id} id={`vacation-student-radio-${student.id}`} />
+                                <span>{student.full_name}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </RadioGroup>
+                      ) : (
+                        sortedJournalStudents.map((student) => (
+                          <label key={`vacation-student-${student.id}`} className="flex items-center gap-2 text-sm">
+                            <Checkbox
+                              checked={vacationSelectedStudentIds.includes(student.id)}
+                              onCheckedChange={(checked) => toggleVacationStudent(student.id, checked === true)}
+                              id={`vacation-student-check-${student.id}`}
+                            />
+                            <span>{student.full_name}</span>
+                          </label>
+                        ))
+                      )}
+                    </div>
+                  )}
+
+                  {vacationFormError?.student ? (
+                    <p className="text-sm text-destructive">{vacationFormError.student}</p>
+                  ) : null}
+                </div>
+
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-sm">{vacationSummaryText}</div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">Пропущенные занятия</span>
+                    <Badge variant="secondary">{vacationPreviewCount}</Badge>
+                  </div>
+
+                  {vacationPreviewError ? (
+                    <Alert variant="destructive">
+                      <AlertTitle>Ошибка расчёта</AlertTitle>
+                      <AlertDescription className="space-y-2">
+                        <p>{vacationPreviewError}</p>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() =>
+                            void loadVacationPreview({
+                              type: vacationType,
+                              dateFrom: vacationDateFrom,
+                              dateTo: vacationDateTo,
+                              selectedStudentIds: vacationSelectedStudentIds
+                            })
+                          }
+                        >
+                          Повторить
+                        </Button>
+                      </AlertDescription>
+                    </Alert>
+                  ) : null}
+
+                  {vacationHasZeroPreview ? (
+                    <Alert>
+                      <AlertDescription>0 пропущенных занятий</AlertDescription>
+                    </Alert>
+                  ) : null}
+
+                  <div className="max-h-64 overflow-auto rounded-md border border-border/60">
+                    {vacationPreviewLoading ? (
+                      <div className="space-y-2 p-3">
+                        <Skeleton className="h-4 w-full" />
+                        <Skeleton className="h-4 w-5/6" />
+                        <Skeleton className="h-4 w-4/6" />
+                      </div>
+                    ) : vacationPreviewSlots.length === 0 ? (
+                      <div className="p-3 text-sm text-muted-foreground">Нет пропущенных занятий</div>
+                    ) : (
+                      <div className="divide-y">
+                        {vacationPreviewSlots.map((slot) => (
+                          <div key={`vacation-preview-${slot.slotId}`} className="grid grid-cols-[1fr_auto_1fr] gap-3 p-3 text-sm">
+                            <span>{formatDayMonthLongRu(slot.date)}</span>
+                            <span>{slot.startTime}</span>
+                            <span>{slot.studentFullName ?? '—'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
+            </TabsContent>
+
+            <TabsContent value="history" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden pt-4">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+                <div className="text-sm text-muted-foreground">Всего отпусков: {vacationHistoryTotal}</div>
+
+                {vacationHistoryLoading ? (
+                  <div className="space-y-2">
+                    <Skeleton className="h-24 w-full" />
+                    <Skeleton className="h-24 w-full" />
+                  </div>
+                ) : vacationHistoryError ? (
+                  <Alert variant="destructive">
+                    <AlertDescription className="space-y-2">
+                      <p>{vacationHistoryError}</p>
+                      <Button size="sm" variant="secondary" onClick={() => void refreshVacationHistory()}>
+                        Повторить
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                ) : vacationHistoryItems.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-border p-6 text-center">
+                    <p className="text-sm font-medium">История отпусков пуста</p>
+                    <p className="text-sm text-muted-foreground">Здесь будут отображаться созданные отпуска</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {vacationHistoryItems.map((item) => {
+                      const canCancel = item.status === 'planned';
+                      const canEarlyFinish = item.status === 'active' && addDays(parseIsoDateToDate(item.effectiveDateTo) ?? new Date(), -1) >= addDays(new Date(), -1);
+                      return (
+                        <div key={`vacation-history-${item.id}`} className="rounded-md border border-border/60 p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge className={historyStatusBadgeClass(item.status)}>{historyStatusLabel(item.status)}</Badge>
+                              <Badge variant="outline">{vacationHistoryTypeLabel(item.type)}</Badge>
+                            </div>
+                            {(canCancel || canEarlyFinish) ? (
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={vacationActionLoadingId === item.id}
+                                  >
+                                    Действия
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  {canCancel ? (
+                                    <DropdownMenuItem onSelect={() => void openCancelVacationConfirm(item.id)}>
+                                      Отменить
+                                    </DropdownMenuItem>
+                                  ) : null}
+                                  {canEarlyFinish ? (
+                                    <DropdownMenuItem onSelect={() => void openEarlyFinishDialog(item)}>
+                                      Завершить досрочно
+                                    </DropdownMenuItem>
+                                  ) : null}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            ) : null}
+                          </div>
+                          <div className="mt-2 space-y-1 text-sm">
+                            <p>
+                              Период: {formatDayMonthLongRu(item.dateFrom)} — {formatDayMonthLongRu(item.effectiveDateTo)}
+                            </p>
+                            <p>Кто создал: {item.createdByLogin ?? '—'}</p>
+                            <p>Дата создания: {formatDateTimeLongRu(item.createdAt)}</p>
+                            <p>
+                              Затронутые ученики:{' '}
+                              {item.affectedStudents.length === 0 ? '—' : item.affectedStudents.map((student) => student.fullName).join(', ')}
+                            </p>
+                            <p>Затронуто занятий: {item.appliedSlotsCount}</p>
+                            {item.comment ? <p>Комментарий: {item.comment}</p> : null}
+                            <p className="text-muted-foreground">Применено к занятиям на момент создания</p>
+                            {item.modificationType ? (
+                              <p className="text-muted-foreground">
+                                Изменение: {item.modificationType === 'cancel' ? 'отмена' : 'досрочное завершение'} •{' '}
+                                {item.modifiedByLogin ?? '—'} • {item.modifiedAt ? formatDateTimeLongRu(item.modifiedAt) : '—'}
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {vacationHistoryOffset !== null ? (
+                  <div className="flex items-center justify-center gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => void refreshVacationHistory({ append: true })}
+                      disabled={vacationHistoryLoadingMore}
+                    >
+                      {vacationHistoryLoadingMore ? <Loader className="mr-2 size-4 animate-spin" /> : null}
+                      Показать ещё
+                    </Button>
+                  </div>
+                ) : vacationHistoryItems.length > 0 ? (
+                  <p className="text-center text-sm text-muted-foreground">Больше записей нет</p>
+                ) : null}
+              </div>
+            </TabsContent>
+          </Tabs>
+
+          <DialogFooter>
+            {vacationsTab === 'assign' ? (
+              <>
+                <Button variant="secondary" onClick={() => setVacationsOpen(false)}>
+                  Отмена
+                </Button>
+                <Button
+                  onClick={handleVacationSubmit}
+                  disabled={vacationPreviewLoading || Boolean(vacationPreviewError) || vacationSubmitting}
+                >
+                  {vacationSubmitting ? <Loader className="mr-2 size-4 animate-spin" /> : null}
+                  Сохранить отпуск
+                </Button>
+              </>
+            ) : (
+              <Button variant="secondary" onClick={() => setVacationsOpen(false)}>
+                Закрыть
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={vacationConfirmOpen} onOpenChange={setVacationConfirmOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{`Будет затронуто ${vacationPreviewCount} занятий, продолжить?`}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm">{vacationSummaryText}</p>
+            <p className="text-sm">Комментарий: {vacationComment.trim() ? vacationComment.trim() : '—'}</p>
+            {vacationPreviewCount === 0 ? (
+              <Alert>
+                <AlertDescription>Будет возвращено 0 занятий</AlertDescription>
+              </Alert>
+            ) : null}
+            <div className="max-h-72 overflow-auto rounded-md border border-border/60">
+              <div className="divide-y">
+                {groupPreviewSlotsByDate(vacationPreviewSlots).map((group) => (
+                  <div key={`vacation-confirm-group-${group.date}`} className="p-3">
+                    <p className="mb-2 text-sm font-medium">{formatDayMonthLongRu(group.date)}</p>
+                    <div className="space-y-1">
+                      {group.items.map((item) => (
+                        <div key={`vacation-confirm-slot-${item.slotId}`} className="grid grid-cols-[auto_1fr] gap-3 text-sm">
+                          <span>{item.startTime}</span>
+                          <span>{item.studentFullName ?? '—'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {vacationConfirmError ? (
+              <Alert variant="destructive">
+                <AlertDescription>{vacationConfirmError}</AlertDescription>
+              </Alert>
             ) : null}
           </div>
           <DialogFooter>
-            <Button variant="secondary" onClick={() => setAuditOpen(false)}>Закрыть</Button>
+            <Button variant="secondary" onClick={() => setVacationConfirmOpen(false)}>
+              Отмена
+            </Button>
+            <Button onClick={() => void confirmVacationCreate()} disabled={vacationSubmitting}>
+              {vacationSubmitting ? <Loader className="mr-2 size-4 animate-spin" /> : null}
+              Подтвердить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(vacationCancelConfirm)} onOpenChange={(open) => !open && setVacationCancelConfirm(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Отменить отпуск?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p>{`Будет возвращено ${vacationCancelConfirm?.rollbackCount ?? 0} занятий в статус «Запланирован».`}</p>
+            <p>Статус станет «Отменён», занятия не изменятся.</p>
+            {vacationCancelConfirm?.rollbackCount === 0 ? <p className="text-muted-foreground">Будет возвращено 0 занятий</p> : null}
+            {vacationCancelConfirm?.error ? (
+              <Alert variant="destructive">
+                <AlertDescription>{vacationCancelConfirm.error}</AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setVacationCancelConfirm(null)}>
+              Отмена
+            </Button>
+            <Button onClick={() => void submitCancelVacation()} disabled={vacationCancelConfirm?.loading}>
+              {vacationCancelConfirm?.loading ? <Loader className="mr-2 size-4 animate-spin" /> : null}
+              Подтвердить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(vacationEarlyFinishState)} onOpenChange={(open) => !open && setVacationEarlyFinishState(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Завершить досрочно</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <div className="text-sm text-muted-foreground">Дата завершения</div>
+              <Input
+                type="date"
+                min={vacationEarlyFinishState?.minDate}
+                max={vacationEarlyFinishState?.maxDate}
+                value={vacationEarlyFinishState?.selectedDate ?? ''}
+                onChange={(event) =>
+                  setVacationEarlyFinishState((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          selectedDate: event.target.value,
+                          loadingPreview: true
+                        }
+                      : prev
+                  )
+                }
+              />
+            </div>
+            <p className="text-sm">
+              {`Будет возвращено ${vacationEarlyFinishState?.rollbackCount ?? 0} занятий в статус «Запланирован».`}
+            </p>
+            {vacationEarlyFinishState?.rollbackCount === 0 ? <p className="text-sm text-muted-foreground">Будет возвращено 0 занятий</p> : null}
+            {vacationEarlyFinishState?.error ? (
+              <Alert variant="destructive">
+                <AlertDescription>{vacationEarlyFinishState.error}</AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setVacationEarlyFinishState(null)}>
+              Отмена
+            </Button>
+            <Button onClick={() => void submitEarlyFinish()} disabled={vacationEarlyFinishState?.submitting}>
+              {vacationEarlyFinishState?.submitting ? <Loader className="mr-2 size-4 animate-spin" /> : null}
+              Подтвердить
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -3085,6 +3940,9 @@ function createDayDraft(): DayDraft {
 }
 
 function statusLabel(status: LessonStatus): string {
+  if (status === 'teacher_vacation') return 'Отпуск учителя';
+  if (status === 'student_vacation') return 'Отпуск ученика';
+  if (status === 'holidays') return 'Праздники';
   if (status === 'completed') return 'Завершено';
   if (status === 'overdue') return 'Просрочено';
   if (status === 'rescheduled') return 'Перенесено';
@@ -3093,6 +3951,9 @@ function statusLabel(status: LessonStatus): string {
 }
 
 function statusBadgeClass(status: LessonStatus): string {
+  if (status === 'teacher_vacation' || status === 'student_vacation' || status === 'holidays') {
+    return VACATION_STATUS_COLOR_CLASS;
+  }
   if (status === 'completed') return 'bg-emerald-100 text-emerald-800 border border-emerald-200';
   if (status === 'overdue') return 'bg-orange-100 text-orange-800 border border-orange-200';
   if (status === 'rescheduled') return 'bg-amber-100 text-amber-800 border border-amber-200';
@@ -3163,6 +4024,73 @@ function formatDayMonthRuShort(value: string | null | undefined): string {
     month: 'long',
     timeZone: 'UTC'
   }).format(date);
+}
+
+function formatDayMonthLongRu(value: string | null | undefined): string {
+  if (!value) return '—';
+  const [yearRaw, monthRaw, dayRaw] = value.split('-');
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return value;
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (Number.isNaN(date.getTime())) return value;
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    timeZone: 'UTC'
+  }).format(date);
+}
+
+function formatDateTimeLongRu(value: string | null | undefined): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(date);
+}
+
+function vacationHistoryTypeLabel(type: VacationType): string {
+  if (type === 'student') return 'Отпуск ученика';
+  if (type === 'holidays') return 'Праздники';
+  return 'Отпуск учителя';
+}
+
+function historyStatusLabel(status: VacationHistoryStatus): string {
+  if (status === 'planned') return 'Запланирован';
+  if (status === 'active') return 'Активный';
+  if (status === 'canceled') return 'Отменён';
+  return 'Завершён';
+}
+
+function historyStatusBadgeClass(status: VacationHistoryStatus): string {
+  if (status === 'planned') return 'bg-blue-100 text-blue-800 border border-blue-200';
+  if (status === 'active') return 'bg-violet-100 text-violet-800 border border-violet-200';
+  if (status === 'canceled') return 'bg-slate-100 text-slate-600 border border-slate-300';
+  return 'bg-slate-200 text-slate-800 border border-slate-400';
+}
+
+function groupPreviewSlotsByDate(slots: VacationPreviewSlot[]): Array<{ date: string; items: VacationPreviewSlot[] }> {
+  const map = new Map<string, VacationPreviewSlot[]>();
+  for (const slot of slots) {
+    const bucket = map.get(slot.date) ?? [];
+    bucket.push(slot);
+    map.set(slot.date, bucket);
+  }
+
+  return [...map.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, items]) => ({
+      date,
+      items: [...items].sort((a, b) => a.startTime.localeCompare(b.startTime))
+    }));
 }
 
 function parseIsoDateToDate(value: string | null): Date | null {
@@ -3395,6 +4323,7 @@ function capitalizeFirst(value: string): string {
 }
 
 function statusDotClass(status: LessonStatus): string {
+  if (status === 'teacher_vacation' || status === 'student_vacation' || status === 'holidays') return 'bg-violet-500';
   if (status === 'completed') return 'bg-emerald-500';
   if (status === 'overdue') return 'bg-orange-500';
   if (status === 'canceled') return 'bg-rose-500';

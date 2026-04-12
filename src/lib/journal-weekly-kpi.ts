@@ -10,7 +10,15 @@ export type JournalWeeklyKpi = {
 };
 
 type SlotLike = {
-  status: 'planned' | 'overdue' | 'completed' | 'rescheduled' | 'canceled';
+  status:
+    | 'planned'
+    | 'overdue'
+    | 'completed'
+    | 'rescheduled'
+    | 'canceled'
+    | 'teacher_vacation'
+    | 'student_vacation'
+    | 'holidays';
 };
 
 const ZERO_METRIC: JournalWeeklyKpiMetric = { amount: 0, count: 0 };

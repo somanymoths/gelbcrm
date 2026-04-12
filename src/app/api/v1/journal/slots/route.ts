@@ -8,6 +8,7 @@ import { createTeacherLessonSlot, getTeacherRateRub, listTeacherLessonSlots, lis
 import { getIdempotencyKeyFromRequest, runIdempotent } from '@/lib/idempotency';
 import { normalizeHmTime, normalizeIsoDate, resolveJournalScope } from '@/lib/journal';
 import { calculateJournalWeeklyKpi } from '@/lib/journal-weekly-kpi';
+import { getVacationOverlayBySlotIds, listVacationPlannedCountsBeforeDate } from '@/lib/journal-vacations';
 
 const listSchema = z.object({
   teacherId: z.string().trim().optional(),
@@ -48,10 +49,19 @@ export async function GET(request: Request) {
     const dateFrom = normalizeIsoDate(parsed.data.dateFrom);
     const dateTo = normalizeIsoDate(parsed.data.dateTo);
 
-    const slots = await listTeacherLessonSlots({
+    const slotsRaw = await listTeacherLessonSlots({
       teacherId: scope.teacherId,
       dateFrom,
       dateTo
+    });
+    const overlayBySlotId = await getVacationOverlayBySlotIds({
+      teacherId: scope.teacherId,
+      slotIds: slotsRaw.map((slot) => slot.id)
+    });
+    const slots = slotsRaw.map((slot) => {
+      const vacationStatus = overlayBySlotId.get(slot.id);
+      if (!vacationStatus) return slot;
+      return { ...slot, status: vacationStatus };
     });
 
     if (!parsed.data.includeBaseline) {
@@ -62,9 +72,25 @@ export async function GET(request: Request) {
       });
     }
 
-    const baseline = await listTeacherPlannedSlotCountsBeforeDate({
-      teacherId: scope.teacherId,
-      date: dateFrom
+    const [baselineRaw, vacationBaselineRaw] = await Promise.all([
+      listTeacherPlannedSlotCountsBeforeDate({
+        teacherId: scope.teacherId,
+        date: dateFrom
+      }),
+      listVacationPlannedCountsBeforeDate({
+        teacherId: scope.teacherId,
+        date: dateFrom
+      })
+    ]);
+    const vacationBaselineByStudentId = new Map(
+      vacationBaselineRaw.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))])
+    );
+    const baseline = baselineRaw.map((item) => {
+      const vacationCount = vacationBaselineByStudentId.get(item.student_id) ?? 0;
+      return {
+        student_id: item.student_id,
+        planned_count: Math.max(0, Number(item.planned_count ?? 0) - vacationCount)
+      };
     });
 
     const rateRub = await getTeacherRateRub({ teacherId: scope.teacherId });

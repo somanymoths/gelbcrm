@@ -15,6 +15,7 @@ import {
 import { invalidateJournalTeacherCache, JournalCacheKeys } from '@/lib/journal-cache';
 import { normalizeIsoDate } from '@/lib/journal';
 import { calculateJournalWeeklyKpi } from '@/lib/journal-weekly-kpi';
+import { getVacationOverlayBySlotIds, listVacationPlannedCountsBeforeDate } from '@/lib/journal-vacations';
 import { withShortTtlCache } from '@/lib/request-cache';
 
 const JOURNAL_BOOTSTRAP_TTL_MS = 3_000;
@@ -113,13 +114,33 @@ export async function GET(request: Request) {
     });
 
     const loadPayload = async () => {
-      const [students, weeklyTemplate, slots, baseline, rateRub] = await Promise.all([
+      const [students, weeklyTemplate, slotsRaw, baselineRaw, vacationBaselineRaw, rateRub] = await Promise.all([
         listTeacherStudentsForJournal(selectedTeacherId),
         getTeacherWeeklyTemplate(selectedTeacherId),
         listTeacherLessonSlots({ teacherId: selectedTeacherId, dateFrom, dateTo }),
         listTeacherPlannedSlotCountsBeforeDate({ teacherId: selectedTeacherId, date: dateFrom }),
+        listVacationPlannedCountsBeforeDate({ teacherId: selectedTeacherId, date: dateFrom }),
         getTeacherRateRub({ teacherId: selectedTeacherId })
       ]);
+      const vacationBaselineByStudentId = new Map(
+        vacationBaselineRaw.map((item) => [item.student_id, Math.max(0, Number(item.planned_count ?? 0))])
+      );
+      const baseline = baselineRaw.map((item) => {
+        const vacationCount = vacationBaselineByStudentId.get(item.student_id) ?? 0;
+        return {
+          student_id: item.student_id,
+          planned_count: Math.max(0, Number(item.planned_count ?? 0) - vacationCount)
+        };
+      });
+      const overlayBySlotId = await getVacationOverlayBySlotIds({
+        teacherId: selectedTeacherId,
+        slotIds: slotsRaw.map((slot) => slot.id)
+      });
+      const slots = slotsRaw.map((slot) => {
+        const vacationStatus = overlayBySlotId.get(slot.id);
+        if (!vacationStatus) return slot;
+        return { ...slot, status: vacationStatus };
+      });
       const weeklyKpi = calculateJournalWeeklyKpi({ slots, rateRub });
 
       return {

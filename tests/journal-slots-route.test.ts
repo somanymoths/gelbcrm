@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET as getSlots } from '@/app/api/v1/journal/slots/route';
 import { requireUser } from '@/lib/api-auth';
 import { getTeacherRateRub, listTeacherLessonSlots, listTeacherPlannedSlotCountsBeforeDate } from '@/lib/db';
+import { getVacationOverlayBySlotIds, listVacationPlannedCountsBeforeDate } from '@/lib/journal-vacations';
 
 vi.mock('@/lib/api-auth', () => ({
   requireUser: vi.fn()
@@ -15,14 +16,23 @@ vi.mock('@/lib/db', () => ({
   getTeacherRateRub: vi.fn()
 }));
 
+vi.mock('@/lib/journal-vacations', () => ({
+  getVacationOverlayBySlotIds: vi.fn(),
+  listVacationPlannedCountsBeforeDate: vi.fn()
+}));
+
 const mockedRequireUser = vi.mocked(requireUser);
 const mockedListTeacherLessonSlots = vi.mocked(listTeacherLessonSlots);
 const mockedListTeacherPlannedSlotCountsBeforeDate = vi.mocked(listTeacherPlannedSlotCountsBeforeDate);
 const mockedGetTeacherRateRub = vi.mocked(getTeacherRateRub);
+const mockedGetVacationOverlayBySlotIds = vi.mocked(getVacationOverlayBySlotIds);
+const mockedListVacationPlannedCountsBeforeDate = vi.mocked(listVacationPlannedCountsBeforeDate);
 
 describe('Journal slots route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedGetVacationOverlayBySlotIds.mockResolvedValue(new Map());
+    mockedListVacationPlannedCountsBeforeDate.mockResolvedValue([]);
   });
 
   it('returns weeklyKpi in includeBaseline payload', async () => {
@@ -89,6 +99,28 @@ describe('Journal slots route', () => {
         fact: { amount: 1000, count: 1 },
         cancellations: { amount: 1000, count: 1 }
       }
+    });
+  });
+
+  it('subtracts vacation planned counts from baseline', async () => {
+    mockedRequireUser.mockResolvedValue({
+      session: { id: 'admin-1', role: 'admin', login: 'admin', sessionVersion: 1 }
+    } as Awaited<ReturnType<typeof requireUser>>);
+
+    mockedListTeacherLessonSlots.mockResolvedValue([]);
+    mockedListTeacherPlannedSlotCountsBeforeDate.mockResolvedValue([{ student_id: 'student-1', planned_count: 9 }]);
+    mockedListVacationPlannedCountsBeforeDate.mockResolvedValue([{ student_id: 'student-1', planned_count: 3 }]);
+    mockedGetTeacherRateRub.mockResolvedValue(1000);
+
+    const response = await getSlots(
+      new Request(
+        'http://localhost/api/v1/journal/slots?teacherId=teacher-1&dateFrom=2026-03-30&dateTo=2026-04-05&includeBaseline=1'
+      )
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      baseline: [{ student_id: 'student-1', planned_count: 6 }]
     });
   });
 });
