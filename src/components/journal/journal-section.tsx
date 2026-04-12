@@ -107,6 +107,7 @@ type DayDraft = {
   studentId: string | null;
   repeatWeekly: boolean;
 };
+type QuarterMinute = '00' | '15' | '30' | '45';
 
 type CreateSlotState = {
   mode: 'create' | 'edit';
@@ -144,6 +145,10 @@ const HOURLY_TIME_OPTIONS = Array.from({ length: 24 }, (_, hour) => {
   const value = `${String(hour).padStart(2, '0')}:00`;
   return { value, label: value };
 });
+const QUARTER_MINUTE_OPTIONS: QuarterMinute[] = ['00', '15', '30', '45'];
+const QUARTER_TIME_GRID = HOURLY_TIME_OPTIONS.flatMap((option) =>
+  QUARTER_MINUTE_OPTIONS.map((minute) => withMinuteOffset(option.value, minute))
+);
 const RESCHEDULE_REASONS = ['По причине ученика', 'По причине учителя'] as const;
 
 export function JournalSection() {
@@ -318,6 +323,27 @@ export function JournalSection() {
 
   const removeSlotFromState = useCallback((slotId: string) => {
     setSlots((prev) => prev.filter((slot) => slot.id !== slotId));
+  }, []);
+
+  const applyTemplateTimeToVisibleSlots = useCallback((slotId: string, nextStartTime: string) => {
+    const todayMsk = getCurrentMskIsoDate();
+    setSlots((prev) => {
+      let changed = false;
+      const next = prev
+        .map((slot) => {
+          if (slot.source_weekly_slot_id !== slotId) return slot;
+          if (slot.date < todayMsk) return slot;
+          if (slot.status !== 'planned' && slot.status !== 'overdue') return slot;
+          if (slot.start_time === nextStartTime) return slot;
+          changed = true;
+          return { ...slot, start_time: nextStartTime };
+        })
+        .sort((a, b) => {
+          if (a.date !== b.date) return a.date.localeCompare(b.date);
+          return a.start_time.localeCompare(b.start_time);
+        });
+      return changed ? next : prev;
+    });
   }, []);
 
   const weekDays = useMemo(() => {
@@ -1289,6 +1315,33 @@ export function JournalSection() {
   const templateSlotDraft = templateSlotState ? dayDrafts[templateSlotState.weekday] ?? null : null;
   const templateSlotMinAllowedStartFrom =
     templateSlotDraft?.studentId ? studentLastConfirmedDateById.get(templateSlotDraft.studentId) ?? null : null;
+  const templateSelectedMinute: QuarterMinute = useMemo(
+    () => normalizeQuarterMinute(templateSlotDraft?.time),
+    [templateSlotDraft?.time]
+  );
+
+  const getTemplateBlockedTimesByWeekday = useCallback(
+    (weekday: number, excludedSlotId?: string): Set<string> => {
+      const activeTimes = (weeklyTemplateByWeekday.get(weekday) ?? [])
+        .filter((slot) => slot.id !== excludedSlotId && slot.is_active === 1)
+        .map((slot) => slot.start_time);
+
+      const occupied = new Set<string>();
+      for (const candidateTime of QUARTER_TIME_GRID) {
+        for (const activeTime of activeTimes) {
+          if (!areOneHourSlotsOverlapping(candidateTime, activeTime)) continue;
+          occupied.add(candidateTime);
+          break;
+        }
+      }
+      return occupied;
+    },
+    [weeklyTemplateByWeekday]
+  );
+  const templateBlockedTimes = useMemo(() => {
+    if (!templateSlotState) return new Set<string>();
+    return getTemplateBlockedTimesByWeekday(templateSlotState.weekday, templateSlotState.slotId);
+  }, [getTemplateBlockedTimesByWeekday, templateSlotState]);
 
   const openTemplateSlotModal = (weekday: number, slot?: WeeklySlot) => {
     if (slot) {
@@ -1306,8 +1359,11 @@ export function JournalSection() {
       return;
     }
 
-    const occupiedTimes = new Set((weeklyTemplateByWeekday.get(weekday) ?? []).map((item) => item.start_time));
-    const firstAvailableTime = HOURLY_TIME_OPTIONS.find((option) => !occupiedTimes.has(option.value))?.value ?? '10:00';
+    const occupiedTimes = getTemplateBlockedTimesByWeekday(weekday);
+    const firstAvailableTime = (
+      HOURLY_TIME_OPTIONS.map((option) => withMinuteOffset(option.value, '00')).find((time) => !occupiedTimes.has(time)) ??
+      '10:00'
+    );
     setDayDrafts((prev) => ({
       ...prev,
         [weekday]: {
@@ -1333,6 +1389,11 @@ export function JournalSection() {
       return;
     }
 
+    if (templateBlockedTimes.has(draft.time)) {
+      showError('Выбранное время занято или пересекается с другим часовым занятием');
+      return;
+    }
+
     const exists = (weeklyTemplateByWeekday.get(templateSlotState.weekday) ?? []).some(
       (slot) => slot.start_time === draft.time && slot.id !== templateSlotState.slotId
     );
@@ -1352,6 +1413,10 @@ export function JournalSection() {
     }
 
     const previousTemplate = weeklyTemplate;
+    const previousSlots = slots;
+    const previousTemplateSlot = templateSlotState.slotId
+      ? weeklyTemplate.find((slot) => slot.id === templateSlotState.slotId) ?? null
+      : null;
     const optimisticSlotId = templateSlotState.slotId ?? `temp-${templateSlotState.weekday}-${draft.time}-${Date.now()}`;
     const nextTemplate = templateSlotState.slotId
       ? weeklyTemplate.map((slot) =>
@@ -1378,6 +1443,9 @@ export function JournalSection() {
 
     setWeeklyTemplate(nextTemplate);
     weeklyTemplateCacheRef.current.set(selectedTeacherId, { ts: Date.now(), data: nextTemplate });
+    if (templateSlotState.slotId && previousTemplateSlot?.start_time !== draft.time) {
+      applyTemplateTimeToVisibleSlots(templateSlotState.slotId, draft.time);
+    }
     setTemplateSlotState(null);
 
     try {
@@ -1427,6 +1495,7 @@ export function JournalSection() {
     } catch (error) {
       setWeeklyTemplate(previousTemplate);
       weeklyTemplateCacheRef.current.set(selectedTeacherId, { ts: Date.now(), data: previousTemplate });
+      setSlots(previousSlots);
       showError(error instanceof Error ? error.message : 'Не удалось сохранить шаблон недели');
     }
   };
@@ -2586,18 +2655,52 @@ export function JournalSection() {
           {templateSlotState ? (
             <div className="flex flex-col gap-3">
               <div className="flex flex-col gap-2">
-                <span className="text-sm text-muted-foreground">Время</span>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm text-muted-foreground">Время</span>
+                  <ButtonGroup aria-label="Минуты слота">
+                    {QUARTER_MINUTE_OPTIONS.map((minute) => (
+                      <Button
+                        key={`template-minute-${minute}`}
+                        type="button"
+                        size="sm"
+                        variant={templateSelectedMinute === minute ? 'default' : 'outline'}
+                        className="h-6 w-10"
+                        onClick={() => {
+                          const currentTime = dayDrafts[templateSlotState.weekday]?.time ?? '10:00';
+                          const hourBase = getHourBaseTime(currentTime);
+                          const nextTimeCandidate = withMinuteOffset(hourBase, minute);
+                          const firstAvailableTime = HOURLY_TIME_OPTIONS
+                            .map((option) => withMinuteOffset(option.value, minute))
+                            .find((time) => !templateBlockedTimes.has(time));
+                          const nextTime = templateBlockedTimes.has(nextTimeCandidate)
+                            ? firstAvailableTime ?? ''
+                            : nextTimeCandidate;
+
+                          setDayDrafts((prev) => ({
+                            ...prev,
+                            [templateSlotState.weekday]: {
+                              ...(prev[templateSlotState.weekday] ?? createDayDraft()),
+                              time: nextTime,
+                              repeatWeekly: true
+                            }
+                          }));
+                        }}
+                      >
+                        :{minute}
+                      </Button>
+                    ))}
+                  </ButtonGroup>
+                </div>
                 <div className="grid grid-cols-6 gap-2">
                   {HOURLY_TIME_OPTIONS.map((option) => {
                     const selectedTime = dayDrafts[templateSlotState.weekday]?.time ?? '10:00';
-                    const isOccupied = (weeklyTemplateByWeekday.get(templateSlotState.weekday) ?? []).some(
-                      (slot) => slot.start_time === option.value && slot.id !== templateSlotState.slotId
-                    );
-                    const isActive = selectedTime === option.value;
+                    const timeWithSelectedMinute = withMinuteOffset(option.value, templateSelectedMinute);
+                    const isOccupied = templateBlockedTimes.has(timeWithSelectedMinute);
+                    const isActive = selectedTime === timeWithSelectedMinute;
 
                     return (
                       <Button
-                        key={option.value}
+                        key={timeWithSelectedMinute}
                         type="button"
                         size="sm"
                         variant={isActive ? 'default' : 'outline'}
@@ -2608,13 +2711,13 @@ export function JournalSection() {
                             ...prev,
                             [templateSlotState.weekday]: {
                               ...(prev[templateSlotState.weekday] ?? createDayDraft()),
-                              time: option.value,
+                              time: timeWithSelectedMinute,
                               repeatWeekly: true
                             }
                           }))
                         }
                       >
-                        {option.label}
+                        {timeWithSelectedMinute}
                       </Button>
                     );
                   })}
@@ -3100,6 +3203,44 @@ function getCurrentMskIsoDate(now: Date = new Date()): string {
 function isFutureMskDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   return value > getCurrentMskIsoDate();
+}
+
+function normalizeQuarterMinute(time: string | null | undefined): QuarterMinute {
+  if (!time) return '00';
+  const minute = time.split(':')[1];
+  if (minute === '15' || minute === '30' || minute === '45') return minute;
+  return '00';
+}
+
+function getHourBaseTime(time: string): string {
+  const hourRaw = time.split(':')[0];
+  const hour = Number(hourRaw);
+  if (!Number.isFinite(hour) || hour < 0 || hour > 23) return '10:00';
+  return `${String(hour).padStart(2, '0')}:00`;
+}
+
+function withMinuteOffset(hourBaseTime: string, minute: QuarterMinute): string {
+  const hourRaw = hourBaseTime.split(':')[0];
+  const hour = Number(hourRaw);
+  if (!Number.isFinite(hour) || hour < 0 || hour > 23) return `10:${minute}`;
+  return `${String(hour).padStart(2, '0')}:${minute}`;
+}
+
+function toDayMinutes(time: string): number | null {
+  const [hourRaw, minuteRaw] = time.split(':');
+  const hour = Number(hourRaw);
+  const minute = Number(minuteRaw);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return hour * 60 + minute;
+}
+
+function areOneHourSlotsOverlapping(aStartTime: string, bStartTime: string): boolean {
+  const aStart = toDayMinutes(aStartTime);
+  const bStart = toDayMinutes(bStartTime);
+  if (aStart === null || bStart === null) return false;
+  const oneHour = 60;
+  return aStart < bStart + oneHour && bStart < aStart + oneHour;
 }
 
 function getOccupiedTimesForDay(
