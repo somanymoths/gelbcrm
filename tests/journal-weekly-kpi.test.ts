@@ -37,4 +37,22 @@ describe('calculateJournalWeeklyKpi', () => {
       cancellations: { amount: 0, count: 0 }
     });
   });
+
+  it('does not count vacation statuses in forecast/fact/cancellations', () => {
+    const result = calculateJournalWeeklyKpi({
+      rateRub: 1000,
+      slots: [
+        { status: 'teacher_vacation' },
+        { status: 'student_vacation' },
+        { status: 'holidays' },
+        { status: 'planned' }
+      ]
+    });
+
+    expect(result).toEqual({
+      forecast: { amount: 1000, count: 1 },
+      fact: { amount: 0, count: 0 },
+      cancellations: { amount: 0, count: 0 }
+    });
+  });
 });

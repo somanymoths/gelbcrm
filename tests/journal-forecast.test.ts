@@ -87,5 +87,47 @@ describe('journal forecast', () => {
     expect(forecast.has('canceled-1')).toBe(false);
     expect(forecast.get('planned-2')).toBe(2);
   });
-});
 
+  it('does not include vacation statuses in the decrement chain', () => {
+    const studentId = 'student-3';
+    const slots: ForecastSlot[] = [
+      {
+        id: 'planned-1',
+        student_id: studentId,
+        date: '2026-04-10',
+        start_time: '10:00',
+        status: 'planned',
+        source_weekly_slot_id: 'weekly-slot-id',
+        student_paid_lessons_left: 4
+      },
+      {
+        id: 'vacation-1',
+        student_id: studentId,
+        date: '2026-04-11',
+        start_time: '10:00',
+        status: 'teacher_vacation',
+        source_weekly_slot_id: 'weekly-slot-id',
+        student_paid_lessons_left: 4
+      },
+      {
+        id: 'planned-2',
+        student_id: studentId,
+        date: '2026-04-12',
+        start_time: '10:00',
+        status: 'planned',
+        source_weekly_slot_id: 'weekly-slot-id',
+        student_paid_lessons_left: 4
+      }
+    ];
+
+    const forecast = calculateForecastBySlotId({
+      slots,
+      studentPaidLessonsById: new Map([[studentId, 4]]),
+      plannedBaselineByStudentId: {}
+    });
+
+    expect(forecast.get('planned-1')).toBe(4);
+    expect(forecast.has('vacation-1')).toBe(false);
+    expect(forecast.get('planned-2')).toBe(3);
+  });
+});

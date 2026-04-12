@@ -1,4 +1,12 @@
-export type ForecastLessonStatus = 'planned' | 'overdue' | 'completed' | 'rescheduled' | 'canceled';
+export type ForecastLessonStatus =
+  | 'planned'
+  | 'overdue'
+  | 'completed'
+  | 'rescheduled'
+  | 'canceled'
+  | 'teacher_vacation'
+  | 'student_vacation'
+  | 'holidays';
 
 export type ForecastSlot = {
   id: string;
