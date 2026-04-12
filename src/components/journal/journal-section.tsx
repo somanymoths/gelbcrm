@@ -73,6 +73,7 @@ type LessonSlot = {
   status_changed_at: string | null;
   status_reason?: string | null;
   has_earlier_unconfirmed?: boolean;
+  earlier_unconfirmed_date?: string | null;
   source_weekly_slot_id?: string | null;
 };
 type PlannedForecastBaseline = { student_id: string; planned_count: number };
@@ -1703,16 +1704,19 @@ export function JournalSection() {
                           !isStudentMissing &&
                           slot.status !== 'completed' &&
                           Boolean(slot.has_earlier_unconfirmed);
+                        const earlierUnconfirmedDateLabel = formatDayMonthRuShort(slot.earlier_unconfirmed_date);
                         const confirmTooltip = isStudentMissing
                           ? 'Нельзя подтвердить занятие без ученика'
                           : isStudentConflict
                             ? 'У выбранного ученика уже есть занятие в это время'
-                            : slot.status === 'canceled'
+                          : slot.status === 'canceled'
                               ? 'Сначала снимите отмену занятия'
                             : isStudentBalanceEmpty
                               ? 'У ученика нет оплаченных занятий'
                             : hasUnconfirmedLessons
-                              ? 'Есть неподтвержденные предыдущие занятия'
+                              ? earlierUnconfirmedDateLabel
+                                ? `Есть неподтвержденное занятие ${earlierUnconfirmedDateLabel}`
+                                : 'Есть неподтвержденное занятие'
                             : slot.status !== 'completed' && isFutureMskDate(slot.date)
                               ? 'Нельзя завершить занятие будущего дня'
                             : slot.status === 'completed'
@@ -3038,6 +3042,24 @@ function formatDayMonthRu(value: string | null | undefined): string {
 
   const weekdayShort = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][date.getUTCDay()] ?? '';
   return `${weekdayShort}, ${dayMonth}`;
+}
+
+function formatDayMonthRuShort(value: string | null | undefined): string {
+  if (!value) return '';
+  const [yearRaw, monthRaw, dayRaw] = value.split('-');
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return '';
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (Number.isNaN(date.getTime())) return '';
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    timeZone: 'UTC'
+  }).format(date);
 }
 
 function parseIsoDateToDate(value: string | null): Date | null {

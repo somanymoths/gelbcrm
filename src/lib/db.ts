@@ -1972,6 +1972,7 @@ export type JournalLessonSlot = {
   status_changed_at?: string | null;
   status_reason?: string | null;
   has_earlier_unconfirmed?: boolean;
+  earlier_unconfirmed_date?: string | null;
 };
 
 export type JournalAuditEvent = {
@@ -3268,7 +3269,8 @@ export async function listTeacherLessonSlots(input: {
           WHEN ls.student_id IS NULL THEN 0
           WHEN earlier_unconfirmed.has_earlier_unconfirmed = 1 THEN 1
           ELSE 0
-        END AS has_earlier_unconfirmed
+        END AS has_earlier_unconfirmed,
+        earlier_unconfirmed.earlier_unconfirmed_date AS earlier_unconfirmed_date
       FROM lesson_slots ls
       LEFT JOIN students s ON s.id = ls.student_id
       LEFT JOIN lesson_slots rsl ON rsl.id = ls.rescheduled_to_slot_id
@@ -3299,7 +3301,8 @@ export async function listTeacherLessonSlots(input: {
       LEFT JOIN (
         SELECT
           ls_curr.id AS slot_id,
-          1 AS has_earlier_unconfirmed
+          1 AS has_earlier_unconfirmed,
+          MIN(DATE_FORMAT(ls_prev.date, '%Y-%m-%d')) AS earlier_unconfirmed_date
         FROM lesson_slots ls_curr
         INNER JOIN lesson_slots ls_prev
           ON ls_prev.teacher_id = ls_curr.teacher_id
@@ -3353,7 +3356,8 @@ export async function listTeacherLessonSlots(input: {
     status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
     status_changed_at: row.status_changed_at ? new Date(row.status_changed_at).toISOString() : null,
     status_reason: row.status_reason ? String(row.status_reason) : null,
-    has_earlier_unconfirmed: Boolean(Number(row.has_earlier_unconfirmed ?? 0))
+    has_earlier_unconfirmed: Boolean(Number(row.has_earlier_unconfirmed ?? 0)),
+    earlier_unconfirmed_date: row.earlier_unconfirmed_date ? String(row.earlier_unconfirmed_date) : null
   }));
 }
 
@@ -3400,7 +3404,8 @@ export async function listTeacherLessonSlotsChangedSince(input: {
           WHEN ls.student_id IS NULL THEN 0
           WHEN earlier_unconfirmed.has_earlier_unconfirmed = 1 THEN 1
           ELSE 0
-        END AS has_earlier_unconfirmed
+        END AS has_earlier_unconfirmed,
+        earlier_unconfirmed.earlier_unconfirmed_date AS earlier_unconfirmed_date
       FROM lesson_slots ls
       LEFT JOIN students s ON s.id = ls.student_id
       LEFT JOIN lesson_slots rsl ON rsl.id = ls.rescheduled_to_slot_id
@@ -3431,7 +3436,8 @@ export async function listTeacherLessonSlotsChangedSince(input: {
       LEFT JOIN (
         SELECT
           ls_curr.id AS slot_id,
-          1 AS has_earlier_unconfirmed
+          1 AS has_earlier_unconfirmed,
+          MIN(DATE_FORMAT(ls_prev.date, '%Y-%m-%d')) AS earlier_unconfirmed_date
         FROM lesson_slots ls_curr
         INNER JOIN lesson_slots ls_prev
           ON ls_prev.teacher_id = ls_curr.teacher_id
@@ -3490,7 +3496,8 @@ export async function listTeacherLessonSlotsChangedSince(input: {
     status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
     status_changed_at: row.status_changed_at ? new Date(row.status_changed_at).toISOString() : null,
     status_reason: row.status_reason ? String(row.status_reason) : null,
-    has_earlier_unconfirmed: Boolean(Number(row.has_earlier_unconfirmed ?? 0))
+    has_earlier_unconfirmed: Boolean(Number(row.has_earlier_unconfirmed ?? 0)),
+    earlier_unconfirmed_date: row.earlier_unconfirmed_date ? String(row.earlier_unconfirmed_date) : null
   }));
 }
 
@@ -4567,6 +4574,49 @@ async function ensureTemplateSlotsForRange(
     `,
     values
   );
+
+  await cleanupWeeklyTemplateSlotDuplicates(connection, {
+    teacherId,
+    dateFrom,
+    dateTo
+  });
+}
+
+async function cleanupWeeklyTemplateSlotDuplicates(
+  connection: mysql.PoolConnection,
+  input: { teacherId: string; dateFrom: string; dateTo: string }
+): Promise<void> {
+  const [duplicateRows] = await connection.query<mysql.RowDataPacket[]>(
+    `
+      SELECT id
+      FROM (
+        SELECT
+          ls.id,
+          ROW_NUMBER() OVER (
+            PARTITION BY ls.teacher_id, ls.date, ls.source_weekly_slot_id
+            ORDER BY ls.updated_at DESC, ls.created_at DESC, ls.start_time DESC, ls.id DESC
+          ) AS row_num
+        FROM lesson_slots ls
+        WHERE ls.teacher_id = ?
+          AND ls.source_weekly_slot_id IS NOT NULL
+          AND ls.status IN ('planned', 'overdue')
+          AND ls.date BETWEEN ? AND ?
+      ) ranked
+      WHERE row_num > 1
+    `,
+    [input.teacherId, input.dateFrom, input.dateTo]
+  );
+
+  if (duplicateRows.length === 0) return;
+  const duplicateIds = duplicateRows.map((row) => String(row.id));
+  await connection.query(
+    `
+      DELETE FROM lesson_slots
+      WHERE teacher_id = ?
+        AND id IN (${duplicateIds.map(() => '?').join(', ')})
+    `,
+    [input.teacherId, ...duplicateIds]
+  );
 }
 
 async function syncWeeklyStudentAssignment(
@@ -4674,7 +4724,21 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
             LIMIT 1
           ) THEN 1
           ELSE 0
-        END AS has_earlier_unconfirmed
+        END AS has_earlier_unconfirmed,
+        (
+          SELECT MIN(DATE_FORMAT(ls_prev.date, '%Y-%m-%d'))
+          FROM lesson_slots ls_prev
+          WHERE ls_prev.teacher_id = ls.teacher_id
+            AND ls_prev.student_id = ls.student_id
+            AND ls_prev.status NOT IN ('completed', 'canceled', 'rescheduled')
+            AND (
+              ls_prev.date < ls.date
+              OR (ls_prev.date = ls.date AND ls_prev.start_time < ls.start_time)
+            )
+            AND ls_prev.id <> ls.id
+            AND (ls_prev.rescheduled_to_slot_id IS NULL OR ls_prev.rescheduled_to_slot_id <> ls.id)
+          LIMIT 1
+        ) AS earlier_unconfirmed_date
       FROM lesson_slots ls
       LEFT JOIN students s ON s.id = ls.student_id
       LEFT JOIN lesson_slots rsl ON rsl.id = ls.rescheduled_to_slot_id
@@ -4729,7 +4793,8 @@ async function getLessonSlotById(connection: mysql.PoolConnection, id: string): 
     status_changed_by_login: row.status_changed_by_login ? String(row.status_changed_by_login) : null,
     status_changed_at: row.status_changed_at ? new Date(row.status_changed_at).toISOString() : null,
     status_reason: row.status_reason ? String(row.status_reason) : null,
-    has_earlier_unconfirmed: Boolean(Number(row.has_earlier_unconfirmed ?? 0))
+    has_earlier_unconfirmed: Boolean(Number(row.has_earlier_unconfirmed ?? 0)),
+    earlier_unconfirmed_date: row.earlier_unconfirmed_date ? String(row.earlier_unconfirmed_date) : null
   };
 }
 
