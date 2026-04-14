@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import type { Editor } from '@tiptap/react';
 import type { Content } from '@tiptap/core';
-import { CircleCheck, Copy, Loader2, Plus, Trash2 } from 'lucide-react';
+import { CircleCheck, Copy, Loader, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -777,7 +777,7 @@ export function InstructionsSection({ initialSlug }: { initialSlug?: string }) {
                   onClick={() => void handleCreateInstruction()}
                   disabled={creating}
                 >
-                  {creating ? <Loader2 className="animate-spin" /> : <Plus />}
+                  {creating ? <Loader className="size-4 animate-spin" /> : <Plus />}
                   Новый документ
                 </Button>
               </li>
@@ -893,7 +893,7 @@ export function InstructionsSection({ initialSlug }: { initialSlug?: string }) {
                                       }}
                                     />
                                     <span className="relative inline-flex items-center gap-2">
-                                      {toggleLoading ? <Loader2 className="animate-spin" /> : null}
+                                      {toggleLoading ? <Loader className="size-4 animate-spin" /> : null}
                                       {acknowledgeState.acknowledged ? 'Снять отметку' : 'Понял, принял'}
                                     </span>
                                   </Button>
@@ -920,7 +920,7 @@ export function InstructionsSection({ initialSlug }: { initialSlug?: string }) {
                       <Button size="sm" onClick={() => handleTogglePublish()}>
                         {currentStatus === 'published' && persistedStatus !== 'published' ? (
                           <>
-                            <Loader2 className="animate-spin" />
+                            <Loader className="size-4 animate-spin" />
                             Публикация...
                           </>
                         ) : currentStatus === 'published' ? (
@@ -1006,7 +1006,7 @@ export function InstructionsSection({ initialSlug }: { initialSlug?: string }) {
 
                 {isAdmin ? (
                   <Button className="ml-4 mt-4" variant="outline" size="sm" onClick={() => void handleDeleteInstruction()} disabled={deleting}>
-                    {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                    {deleting ? <Loader className="size-4 animate-spin" /> : <Trash2 />}
                     Удалить
                   </Button>
                 ) : null}

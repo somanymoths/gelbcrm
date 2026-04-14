@@ -12,10 +12,10 @@ import { NativeSelect } from '@/components/ui/native-select';
 import { Separator } from '@/components/ui/separator';
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { getStableAvatarColor, getStableAvatarInitial, getStableAvatarSeed } from '@/lib/avatar-color';
 import { cn } from '@/lib/utils';
+import { Loader } from 'lucide-react';
 import { toast } from 'sonner';
 
 const CloseOutlined = () => <span>✕</span>;
@@ -366,6 +366,7 @@ export function FunnelBoard() {
   const [paymentLinkDeleting, setPaymentLinkDeleting] = useState(false);
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [detailsSaving, setDetailsSaving] = useState(false);
   const [newNoteBody, setNewNoteBody] = useState('');
   const [addingNote, setAddingNote] = useState(false);
   const [nowTs, setNowTs] = useState(Date.now());
@@ -373,6 +374,8 @@ export function FunnelBoard() {
   const [archivedCards, setArchivedCards] = useState<ArchivedCard[]>([]);
   const [archivedLoading, setArchivedLoading] = useState(false);
   const [archiveModalOpen, setArchiveModalOpen] = useState(false);
+  const [restoringArchivedCard, setRestoringArchivedCard] = useState(false);
+  const [archivingSelectedCard, setArchivingSelectedCard] = useState(false);
   const [restoreStageCode, setRestoreStageCode] = useState<string | null>(null);
   const [restoreCardId, setRestoreCardId] = useState<string | null>(null);
 
@@ -738,22 +741,27 @@ export function FunnelBoard() {
     if (selectedCard.start_lessons_at) payload.startLessonsAt = selectedCard.start_lessons_at;
     if (selectedCard.last_lesson_at) payload.lastLessonAt = selectedCard.last_lesson_at;
 
-    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+    setDetailsSaving(true);
+    try {
+      const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось сохранить карточку');
-      return;
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        toast.error(payload?.message ?? 'Не удалось сохранить карточку');
+        return;
+      }
+
+      toast.success('Карточка сохранена');
+      await loadBoard();
+      await refreshSelectedCard(selectedCard.id);
+      setEditMode(false);
+    } finally {
+      setDetailsSaving(false);
     }
-
-    toast.success('Карточка сохранена');
-    await loadBoard();
-    await refreshSelectedCard(selectedCard.id);
-    setEditMode(false);
   }
 
   async function onAddNote() {
@@ -766,23 +774,24 @@ export function FunnelBoard() {
     }
 
     setAddingNote(true);
+    try {
+      const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body })
+      });
 
-    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/comments`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body })
-    });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        toast.error(payload?.message ?? 'Не удалось добавить заметку');
+        return;
+      }
 
-    setAddingNote(false);
-
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось добавить заметку');
-      return;
+      setNewNoteBody('');
+      await refreshSelectedCard(selectedCard.id);
+    } finally {
+      setAddingNote(false);
     }
-
-    setNewNoteBody('');
-    await refreshSelectedCard(selectedCard.id);
   }
 
   async function onAssignTeacher() {
@@ -791,58 +800,60 @@ export function FunnelBoard() {
     if (selectedCard.assigned_teacher_id === selectedTeacherId) return;
 
     setTeacherSaving(true);
+    try {
+      const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/teacher`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ teacherId: selectedTeacherId })
+      });
 
-    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/teacher`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teacherId: selectedTeacherId })
-    });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        toast.error(payload?.message ?? 'Не удалось сохранить преподавателя');
+        return;
+      }
 
-    setTeacherSaving(false);
-
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось сохранить преподавателя');
-      return;
+      toast.success(selectedTeacherId ? 'Преподаватель назначен' : 'Преподаватель снят');
+      await loadBoard();
+      await refreshSelectedCard(selectedCard.id);
+    } finally {
+      setTeacherSaving(false);
     }
-
-    toast.success(selectedTeacherId ? 'Преподаватель назначен' : 'Преподаватель снят');
-    await loadBoard();
-    await refreshSelectedCard(selectedCard.id);
   }
 
   async function onCreatePaymentLink() {
     if (!selectedCard || !selectedTariffId) return;
 
     setPaymentLinkCreating(true);
+    try {
+      const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/payment-links`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tariffGridId: selectedTariffId })
+      });
 
-    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/payment-links`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tariffGridId: selectedTariffId })
-    });
-
-    setPaymentLinkCreating(false);
-
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string; code?: string } | null;
-      if (payload?.code === 'ACTIVE_PAYMENT_LINK_EXISTS') {
-        toast.error(payload.message ?? 'У ученика уже есть активная ссылка');
-        await refreshSelectedCard(selectedCard.id);
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string; code?: string } | null;
+        if (payload?.code === 'ACTIVE_PAYMENT_LINK_EXISTS') {
+          toast.error(payload.message ?? 'У ученика уже есть активная ссылка');
+          await refreshSelectedCard(selectedCard.id);
+          return;
+        }
+        toast.error(payload?.message ?? 'Не удалось создать ссылку оплаты');
         return;
       }
-      toast.error(payload?.message ?? 'Не удалось создать ссылку оплаты');
-      return;
+
+      const payload = (await response.json()) as { confirmationUrl: string };
+      toast.success('Ссылка на оплату создана');
+
+      if (payload.confirmationUrl) {
+        window.open(payload.confirmationUrl, '_blank', 'noopener,noreferrer');
+      }
+
+      await refreshSelectedCard(selectedCard.id);
+    } finally {
+      setPaymentLinkCreating(false);
     }
-
-    const payload = (await response.json()) as { confirmationUrl: string };
-    toast.success('Ссылка на оплату создана');
-
-    if (payload.confirmationUrl) {
-      window.open(payload.confirmationUrl, '_blank', 'noopener,noreferrer');
-    }
-
-    await refreshSelectedCard(selectedCard.id);
   }
 
   async function onCopyPaymentLink(url: string) {
@@ -858,67 +869,73 @@ export function FunnelBoard() {
     if (!selectedCard || !activePaymentLink) return;
 
     setPaymentLinkCreating(true);
+    try {
+      const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/payment-links`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshActive: true })
+      });
 
-    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/payment-links`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshActive: true })
-    });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        toast.error(payload?.message ?? 'Не удалось обновить ссылку оплаты');
+        return;
+      }
 
-    setPaymentLinkCreating(false);
+      const payload = (await response.json()) as { confirmationUrl?: string };
+      toast.success('Ссылка оплаты обновлена');
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось обновить ссылку оплаты');
-      return;
+      if (payload.confirmationUrl) {
+        window.open(payload.confirmationUrl, '_blank', 'noopener,noreferrer');
+      }
+
+      await refreshSelectedCard(selectedCard.id);
+    } finally {
+      setPaymentLinkCreating(false);
     }
-
-    const payload = (await response.json()) as { confirmationUrl?: string };
-    toast.success('Ссылка оплаты обновлена');
-
-    if (payload.confirmationUrl) {
-      window.open(payload.confirmationUrl, '_blank', 'noopener,noreferrer');
-    }
-
-    await refreshSelectedCard(selectedCard.id);
   }
 
   async function onDeleteActivePaymentLink() {
     if (!selectedCard || !activePaymentLink) return;
 
     setPaymentLinkDeleting(true);
+    try {
+      const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/payment-links`, {
+        method: 'DELETE'
+      });
 
-    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/payment-links`, {
-      method: 'DELETE'
-    });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        toast.error(payload?.message ?? 'Не удалось удалить активную ссылку');
+        return;
+      }
 
-    setPaymentLinkDeleting(false);
-
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось удалить активную ссылку');
-      return;
+      toast.success('Активная ссылка удалена');
+      await refreshSelectedCard(selectedCard.id);
+    } finally {
+      setPaymentLinkDeleting(false);
     }
-
-    toast.success('Активная ссылка удалена');
-    await refreshSelectedCard(selectedCard.id);
   }
 
   async function onArchiveSelectedCard() {
     if (!selectedCard) return;
+    setArchivingSelectedCard(true);
+    try {
+      const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/archive`, { method: 'POST' });
 
-    const response = await fetch(`/api/v1/funnel/cards/${selectedCard.id}/archive`, { method: 'POST' });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        toast.error(payload?.message ?? 'Не удалось архивировать карточку');
+        return;
+      }
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось архивировать карточку');
-      return;
+      toast.success('Карточка архивирована');
+      setDrawerOpen(false);
+      setSelectedCard(null);
+      await loadBoard();
+    } finally {
+      setArchivingSelectedCard(false);
     }
-
-    toast.success('Карточка архивирована');
-    setDrawerOpen(false);
-    setSelectedCard(null);
-    await loadBoard();
   }
 
   async function onOpenArchive() {
@@ -934,22 +951,26 @@ export function FunnelBoard() {
       toast.error('Выберите карточку и этап восстановления');
       return;
     }
+    setRestoringArchivedCard(true);
+    try {
+      const response = await fetch(`/api/v1/funnel/cards/${restoreCardId}/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stageCode: restoreStageCode })
+      });
 
-    const response = await fetch(`/api/v1/funnel/cards/${restoreCardId}/restore`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stageCode: restoreStageCode })
-    });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        toast.error(payload?.message ?? 'Не удалось восстановить карточку');
+        return;
+      }
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      toast.error(payload?.message ?? 'Не удалось восстановить карточку');
-      return;
+      toast.success('Карточка восстановлена');
+      setArchiveModalOpen(false);
+      await loadBoard();
+    } finally {
+      setRestoringArchivedCard(false);
     }
-
-    toast.success('Карточка восстановлена');
-    setArchiveModalOpen(false);
-    await loadBoard();
   }
 
   function closeCardDrawer() {
@@ -1249,7 +1270,8 @@ export function FunnelBoard() {
                           <UIInput value={selectedCard.lead_source ?? ''} onChange={(event) => setSelectedCard((prev) => (prev ? { ...prev, lead_source: event.target.value } : prev))} />
                         </div>
                         <div className="sm:col-span-2 flex flex-wrap gap-2 pt-1">
-                          <UIButton variant="default" onClick={() => void onSaveDetails()}>
+                          <UIButton variant="default" onClick={() => void onSaveDetails()} disabled={detailsSaving}>
+                            {detailsSaving ? <Loader className="size-4 animate-spin" /> : null}
                             Сохранить
                           </UIButton>
                           <UIButton
@@ -1319,7 +1341,7 @@ export function FunnelBoard() {
                       >
                         {teacherSaving ? (
                           <>
-                            <Spinner className="size-4" />
+                            <Loader className="size-4 animate-spin" />
                             <span>Сохранение...</span>
                           </>
                         ) : (
@@ -1365,7 +1387,7 @@ export function FunnelBoard() {
                       >
                         {paymentLinkCreating ? (
                           <>
-                            <Spinner className="size-4" />
+                            <Loader className="size-4 animate-spin" />
                             <span>Создание...</span>
                           </>
                         ) : (
@@ -1389,11 +1411,11 @@ export function FunnelBoard() {
                               <ExportOutlined />
                             </UIButton>
                             <UIButton variant="outline" disabled={paymentLinkCreating} onClick={() => void onRefreshPaymentLink()}>
-                              {paymentLinkCreating ? <Spinner className="size-4" /> : <RedoOutlined />}
+                              {paymentLinkCreating ? <Loader className="size-4 animate-spin" /> : <RedoOutlined />}
                               Обновить
                             </UIButton>
                             <UIButton variant="destructive" disabled={paymentLinkDeleting} onClick={() => void onDeleteActivePaymentLink()}>
-                              {paymentLinkDeleting ? <Spinner className="size-4" /> : <DeleteOutlined />}
+                              {paymentLinkDeleting ? <Loader className="size-4 animate-spin" /> : <DeleteOutlined />}
                               Удалить
                             </UIButton>
                           </div>
@@ -1493,8 +1515,8 @@ export function FunnelBoard() {
                       />
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-xs text-muted-foreground">Заметка сохраняется в общую историю карточки.</span>
-                        <UIButton disabled={addingNote} onClick={() => void onAddNote()}>
-                          {addingNote ? <Spinner className="size-4" /> : null}
+                          <UIButton disabled={addingNote} onClick={() => void onAddNote()}>
+                          {addingNote ? <Loader className="size-4 animate-spin" /> : null}
                           Добавить заметку
                         </UIButton>
                       </div>
@@ -1529,7 +1551,8 @@ export function FunnelBoard() {
                     <CardTitle>Опасная зона</CardTitle>
                   </CardHeader>
                   <CardContent className="px-4 pb-4">
-                    <UIButton variant="destructive" onClick={() => void onArchiveSelectedCard()}>
+                    <UIButton variant="destructive" onClick={() => void onArchiveSelectedCard()} disabled={archivingSelectedCard}>
+                      {archivingSelectedCard ? <Loader className="size-4 animate-spin" /> : null}
                       В архив
                     </UIButton>
                   </CardContent>
@@ -1591,7 +1614,7 @@ export function FunnelBoard() {
             <div className="flex items-end gap-2 md:col-span-2 lg:col-span-4">
               <UIButton onClick={() => setCreateModalOpen(false)}>Отмена</UIButton>
               <UIButton type="submit" disabled={creating}>
-                {creating ? <Spinner className="size-4" /> : null}
+                {creating ? <Loader className="size-4 animate-spin" /> : null}
                 Создать карточку
               </UIButton>
             </div>
@@ -1696,7 +1719,8 @@ export function FunnelBoard() {
           </div>
           <DialogFooter>
             <UIButton onClick={() => setArchiveModalOpen(false)}>Отмена</UIButton>
-            <UIButton variant="default" disabled={archivedLoading} onClick={() => void onRestoreCard()}>
+            <UIButton variant="default" disabled={archivedLoading || restoringArchivedCard} onClick={() => void onRestoreCard()}>
+              {restoringArchivedCard ? <Loader className="size-4 animate-spin" /> : null}
               Восстановить
             </UIButton>
           </DialogFooter>

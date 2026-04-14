@@ -1,6 +1,7 @@
 'use client';
 
 import { type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Loader } from 'lucide-react';
 import Link from 'next/link';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -234,6 +235,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
 
   const [undoArchiveTeacherId, setUndoArchiveTeacherId] = useState<string | null>(null);
+  const [mutationAction, setMutationAction] = useState<string | null>(null);
   const undoTimerRef = useRef<number | null>(null);
 
   const requestSerial = useRef(0);
@@ -260,6 +262,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
   const showSuccess = useCallback((text: string) => {
     setNotice({ type: 'success', text });
   }, []);
+  const isActionLoading = (key: string) => mutationAction === key;
 
   const fetchLanguages = useCallback(async (): Promise<Language[]> => {
     const response = await fetch('/api/v1/school/languages', { cache: 'no-store' });
@@ -627,45 +630,55 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
     }
   }
 
-  async function archiveTeacherById(teacherId: string) {
-    const response = await fetch(`/api/v1/teachers/${teacherId}/archive`, { method: 'POST' });
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      throw new Error(payload?.message ?? 'Не удалось архивировать преподавателя');
+  async function archiveTeacherById(teacherId: string, actionKey = `archive-${teacherId}`) {
+    setMutationAction(actionKey);
+    try {
+      const response = await fetch(`/api/v1/teachers/${teacherId}/archive`, { method: 'POST' });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(payload?.message ?? 'Не удалось архивировать преподавателя');
+      }
+
+      if (undoTimerRef.current) {
+        window.clearTimeout(undoTimerRef.current);
+      }
+
+      setUndoArchiveTeacherId(teacherId);
+      undoTimerRef.current = window.setTimeout(() => {
+        setUndoArchiveTeacherId(null);
+      }, 9000);
+
+      showSuccess('Преподаватель архивирован. Можно отменить в течение 9 секунд.');
+
+      if (detail?.id === teacherId) {
+        setDetailOpen(false);
+        setDetail(null);
+      }
+
+      await fetchTeachers(0, false);
+    } finally {
+      setMutationAction((current) => (current === actionKey ? null : current));
     }
-
-    if (undoTimerRef.current) {
-      window.clearTimeout(undoTimerRef.current);
-    }
-
-    setUndoArchiveTeacherId(teacherId);
-    undoTimerRef.current = window.setTimeout(() => {
-      setUndoArchiveTeacherId(null);
-    }, 9000);
-
-    showSuccess('Преподаватель архивирован. Можно отменить в течение 9 секунд.');
-
-    if (detail?.id === teacherId) {
-      setDetailOpen(false);
-      setDetail(null);
-    }
-
-    await fetchTeachers(0, false);
   }
 
-  async function restoreTeacherById(teacherId: string) {
-    const response = await fetch(`/api/v1/teachers/${teacherId}/restore`, { method: 'POST' });
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      throw new Error(payload?.message ?? 'Не удалось восстановить преподавателя');
-    }
+  async function restoreTeacherById(teacherId: string, actionKey = `restore-${teacherId}`) {
+    setMutationAction(actionKey);
+    try {
+      const response = await fetch(`/api/v1/teachers/${teacherId}/restore`, { method: 'POST' });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(payload?.message ?? 'Не удалось восстановить преподавателя');
+      }
 
-    if (undoArchiveTeacherId === teacherId) {
-      setUndoArchiveTeacherId(null);
-    }
+      if (undoArchiveTeacherId === teacherId) {
+        setUndoArchiveTeacherId(null);
+      }
 
-    showSuccess('Восстановлен');
-    await fetchTeachers(0, false);
+      showSuccess('Восстановлен');
+      await fetchTeachers(0, false);
+    } finally {
+      setMutationAction((current) => (current === actionKey ? null : current));
+    }
   }
 
   async function openDeleteModal(teacher: Teacher) {
@@ -694,57 +707,75 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
 
   async function unbindSelected() {
     if (!deleteTeacher || selectedStudentIds.length === 0) return;
+    const actionKey = `unbind-selected-${deleteTeacher.id}`;
+    setMutationAction(actionKey);
 
-    const response = await fetch(`/api/v1/teachers/${deleteTeacher.id}/unbind-students`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ studentIds: selectedStudentIds })
-    });
+    try {
+      const response = await fetch(`/api/v1/teachers/${deleteTeacher.id}/unbind-students`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ studentIds: selectedStudentIds })
+      });
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      showError(payload?.message ?? 'Не удалось отвязать учеников');
-      return;
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        showError(payload?.message ?? 'Не удалось отвязать учеников');
+        return;
+      }
+
+      await openDeleteModal(deleteTeacher);
+    } finally {
+      setMutationAction((current) => (current === actionKey ? null : current));
     }
-
-    await openDeleteModal(deleteTeacher);
   }
 
   async function deletePermanently(teacher: Teacher) {
-    const response = await fetch(`/api/v1/teachers/${teacher.id}`, { method: 'DELETE' });
+    const actionKey = `delete-${teacher.id}`;
+    setMutationAction(actionKey);
+    try {
+      const response = await fetch(`/api/v1/teachers/${teacher.id}`, { method: 'DELETE' });
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      showError(payload?.message ?? 'Не удалось удалить преподавателя');
-      return;
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        showError(payload?.message ?? 'Не удалось удалить преподавателя');
+        return;
+      }
+
+      setDeleteOpen(false);
+      setDeleteTeacher(null);
+      showSuccess('Удалён навсегда');
+      await fetchTeachers(0, false);
+    } finally {
+      setMutationAction((current) => (current === actionKey ? null : current));
     }
-
-    setDeleteOpen(false);
-    setDeleteTeacher(null);
-    showSuccess('Удалён навсегда');
-    await fetchTeachers(0, false);
   }
 
   async function unbindAllAndDelete(teacher: Teacher) {
-    const response = await fetch(`/api/v1/teachers/${teacher.id}/unbind-all-and-delete`, {
-      method: 'POST'
-    });
+    const actionKey = `unbind-delete-${teacher.id}`;
+    setMutationAction(actionKey);
+    try {
+      const response = await fetch(`/api/v1/teachers/${teacher.id}/unbind-all-and-delete`, {
+        method: 'POST'
+      });
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as
-        | { message?: string; students?: TeacherDetails['students'] }
-        | null;
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | { message?: string; students?: TeacherDetails['students'] }
+          | null;
 
-      setDependencies(payload?.students ?? dependencies);
-      setSelectedStudentIds([]);
-      showError(payload?.message ?? 'Не удалось отвязать всех учеников');
-      return;
+        setDependencies(payload?.students ?? dependencies);
+        setSelectedStudentIds([]);
+        showError(payload?.message ?? 'Не удалось отвязать всех учеников');
+        return;
+      }
+
+      setDeleteOpen(false);
+      setDeleteTeacher(null);
+      showSuccess('Удалён навсегда');
+      await fetchTeachers(0, false);
+    } finally {
+      setMutationAction((current) => (current === actionKey ? null : current));
     }
-
-    setDeleteOpen(false);
-    setDeleteTeacher(null);
-    showSuccess('Удалён навсегда');
-    await fetchTeachers(0, false);
   }
 
   return (
@@ -786,10 +817,12 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
             <p className="text-sm">Преподаватель архивирован. Можно отменить действие в течение 9 секунд.</p>
             <Button
               variant="outline"
+              disabled={isActionLoading(`restore-${undoArchiveTeacherId}`)}
               onClick={() => {
-                void restoreTeacherById(undoArchiveTeacherId);
+                void restoreTeacherById(undoArchiveTeacherId, `restore-${undoArchiveTeacherId}`);
               }}
             >
+              {isActionLoading(`restore-${undoArchiveTeacherId}`) ? <Loader className="mr-2 size-4 animate-spin" /> : null}
               Undo
             </Button>
           </CardContent>
@@ -859,6 +892,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
             />
 
             <Button variant="secondary" onClick={() => void addLanguageFromFilter()} disabled={creatingFilterLanguage}>
+              {creatingFilterLanguage ? <Loader className="mr-2 size-4 animate-spin" /> : null}
               {creatingFilterLanguage ? 'Добавляем...' : 'Добавить язык'}
             </Button>
           </div>
@@ -947,26 +981,28 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                               </DropdownMenuItem>
                               {scope === 'active' ? (
                                 <DropdownMenuItem
+                                  disabled={isActionLoading(`archive-${row.id}`)}
                                   onClick={(event) => {
                                     event.stopPropagation();
-                                    void archiveTeacherById(row.id).catch((err) => {
+                                    void archiveTeacherById(row.id, `archive-${row.id}`).catch((err) => {
                                       showError(err instanceof Error ? err.message : 'Не удалось архивировать преподавателя');
                                     });
                                   }}
                                 >
-                                  Архивировать
+                                  {isActionLoading(`archive-${row.id}`) ? 'Архивирование...' : 'Архивировать'}
                                 </DropdownMenuItem>
                               ) : (
                                 <>
                                   <DropdownMenuItem
+                                    disabled={isActionLoading(`restore-${row.id}`)}
                                     onClick={(event) => {
                                       event.stopPropagation();
-                                      void restoreTeacherById(row.id).catch((err) => {
+                                      void restoreTeacherById(row.id, `restore-${row.id}`).catch((err) => {
                                         showError(err instanceof Error ? err.message : 'Не удалось восстановить преподавателя');
                                       });
                                     }}
                                   >
-                                    Восстановить
+                                    {isActionLoading(`restore-${row.id}`) ? 'Восстановление...' : 'Восстановить'}
                                   </DropdownMenuItem>
                                   <DropdownMenuItem
                                     className="text-destructive focus:text-destructive"
@@ -1070,6 +1106,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                             onClick={() => void createTeacherAccessById(detail.id)}
                             title={!detail.email ? 'Сначала заполните email преподавателя' : undefined}
                           >
+                            {accessSubmitting ? <Loader className="mr-2 size-4 animate-spin" /> : null}
                             Создать доступ
                           </Button>
                         ) : (
@@ -1081,6 +1118,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                                 setAccessLoginDialogOpen(true);
                               }}
                             >
+                              {accessSubmitting ? <Loader className="mr-2 size-4 animate-spin" /> : null}
                               Сменить логин
                             </Button>
                             <Button
@@ -1092,6 +1130,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                                 setAccessPasswordDialogOpen(true);
                               }}
                             >
+                              {accessSubmitting ? <Loader className="mr-2 size-4 animate-spin" /> : null}
                               Сменить пароль
                             </Button>
                           </>
@@ -1131,12 +1170,14 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                     <Button onClick={() => setIsEditing(true)}>Редактировать</Button>
                     <Button
                       variant="secondary"
+                      disabled={isActionLoading(`archive-${detail.id}`)}
                       onClick={() => {
-                        void archiveTeacherById(detail.id).catch((err) => {
+                        void archiveTeacherById(detail.id, `archive-${detail.id}`).catch((err) => {
                           showError(err instanceof Error ? err.message : 'Не удалось архивировать преподавателя');
                         });
                       }}
                     >
+                      {isActionLoading(`archive-${detail.id}`) ? <Loader className="mr-2 size-4 animate-spin" /> : null}
                       Архивировать
                     </Button>
                   </>
@@ -1144,12 +1185,14 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                   <>
                     <Button
                       variant="secondary"
+                      disabled={isActionLoading(`restore-${detail.id}`)}
                       onClick={() => {
-                        void restoreTeacherById(detail.id).catch((err) => {
+                        void restoreTeacherById(detail.id, `restore-${detail.id}`).catch((err) => {
                           showError(err instanceof Error ? err.message : 'Не удалось восстановить преподавателя');
                         });
                       }}
                     >
+                      {isActionLoading(`restore-${detail.id}`) ? <Loader className="mr-2 size-4 animate-spin" /> : null}
                       Восстановить
                     </Button>
                     <Button variant="destructive" onClick={() => void openDeleteModal(detail)}>
@@ -1259,6 +1302,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
 
               <DialogFooter>
                 <Button disabled={submitting} onClick={() => void saveTeacher(detail.id)}>
+                  {submitting ? <Loader className="mr-2 size-4 animate-spin" /> : null}
                   {submitting ? 'Сохраняем...' : 'Сохранить'}
                 </Button>
                 <Button
@@ -1337,6 +1381,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                 void changeTeacherAccessLogin(detail.id);
               }}
             >
+              {accessSubmitting ? <Loader className="mr-2 size-4 animate-spin" /> : null}
               {accessSubmitting ? 'Сохраняем...' : 'Сохранить'}
             </Button>
           </DialogFooter>
@@ -1382,6 +1427,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
                 void changeTeacherAccessPassword(detail.id);
               }}
             >
+              {accessSubmitting ? <Loader className="mr-2 size-4 animate-spin" /> : null}
               {accessSubmitting ? 'Сохраняем...' : 'Сменить пароль'}
             </Button>
           </DialogFooter>
@@ -1503,6 +1549,7 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
 
           <DialogFooter>
             <Button disabled={submitting} onClick={() => void createTeacher()}>
+              {submitting ? <Loader className="mr-2 size-4 animate-spin" /> : null}
               {submitting ? 'Создаём...' : 'Создать'}
             </Button>
             <Button
@@ -1554,11 +1601,13 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
               <p className="text-sm">Привязанных учеников нет. Можно удалить преподавателя навсегда.</p>
               <Button
                 variant="destructive"
+                disabled={isActionLoading(`delete-${deleteTeacher.id}`)}
                 onClick={() => {
                   if (!window.confirm('Удалить навсегда? Это действие нельзя отменить.')) return;
                   void deletePermanently(deleteTeacher);
                 }}
               >
+                {isActionLoading(`delete-${deleteTeacher.id}`) ? <Loader className="mr-2 size-4 animate-spin" /> : null}
                 Удалить навсегда
               </Button>
             </div>
@@ -1603,15 +1652,18 @@ export function TeachersSection({ scope, basePath = '/teachers' }: { scope: Scop
 
               <div className="flex flex-wrap gap-2">
                 <Button variant="secondary" disabled={selectedStudentIds.length === 0} onClick={() => void unbindSelected()}>
+                  {deleteTeacher && isActionLoading(`unbind-selected-${deleteTeacher.id}`) ? <Loader className="mr-2 size-4 animate-spin" /> : null}
                   Отвязать выбранных
                 </Button>
                 <Button
                   variant="destructive"
+                  disabled={isActionLoading(`unbind-delete-${deleteTeacher.id}`)}
                   onClick={() => {
                     if (!window.confirm('Отвязать всех и удалить? Это действие нельзя отменить.')) return;
                     void unbindAllAndDelete(deleteTeacher);
                   }}
                 >
+                  {isActionLoading(`unbind-delete-${deleteTeacher.id}`) ? <Loader className="mr-2 size-4 animate-spin" /> : null}
                   Отвязать всех и удалить
                 </Button>
               </div>
