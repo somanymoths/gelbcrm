@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Loader } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -66,6 +67,7 @@ export function TariffsTab() {
   const [tariffs, setTariffs] = useState<TariffGrid[]>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [actionLoadingKey, setActionLoadingKey] = useState<string | null>(null);
   const [packages, setPackages] = useState<NewPackage[]>([createEmptyPackage()]);
   const [notice, setNotice] = useState<Notice | null>(null);
 
@@ -111,31 +113,32 @@ export function TariffsTab() {
     }
 
     setCreating(true);
+    try {
+      const response = await fetch('/api/v1/tariff-grids', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: trimmedName,
+          packages: packages.map((item) => ({
+            lessonsCount: item.lessonsCount,
+            pricePerLessonRub: item.pricePerLesson
+          }))
+        })
+      });
 
-    const response = await fetch('/api/v1/tariff-grids', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: trimmedName,
-        packages: packages.map((item) => ({
-          lessonsCount: item.lessonsCount,
-          pricePerLessonRub: item.pricePerLesson
-        }))
-      })
-    });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        setNotice({ type: 'error', text: payload?.message ?? 'Не удалось создать тариф' });
+        return;
+      }
 
-    setCreating(false);
-
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      setNotice({ type: 'error', text: payload?.message ?? 'Не удалось создать тариф' });
-      return;
+      setPackages([createEmptyPackage()]);
+      setTariffName('');
+      setNotice({ type: 'success', text: 'Тариф создан' });
+      await loadTariffs();
+    } finally {
+      setCreating(false);
     }
-
-    setPackages([createEmptyPackage()]);
-    setTariffName('');
-    setNotice({ type: 'success', text: 'Тариф создан' });
-    await loadTariffs();
   };
 
   const renameTariffGrid = async (tariff: TariffGrid) => {
@@ -145,20 +148,26 @@ export function TariffsTab() {
       return;
     }
 
-    const response = await fetch(`/api/v1/tariff-grids/${tariff.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
-    });
+    const actionKey = `rename-${tariff.id}`;
+    setActionLoadingKey(actionKey);
+    try {
+      const response = await fetch(`/api/v1/tariff-grids/${tariff.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      setNotice({ type: 'error', text: payload?.message ?? 'Не удалось переименовать тариф' });
-      return;
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        setNotice({ type: 'error', text: payload?.message ?? 'Не удалось переименовать тариф' });
+        return;
+      }
+
+      setNotice({ type: 'success', text: 'Тариф переименован' });
+      await loadTariffs();
+    } finally {
+      setActionLoadingKey((current) => (current === actionKey ? null : current));
     }
-
-    setNotice({ type: 'success', text: 'Тариф переименован' });
-    await loadTariffs();
   };
 
   const addPackageToTariff = async (tariff: TariffGrid) => {
@@ -176,20 +185,26 @@ export function TariffsTab() {
       return;
     }
 
-    const response = await fetch(`/api/v1/tariff-grids/${tariff.id}/packages`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lessonsCount, pricePerLessonRub })
-    });
+    const actionKey = `add-package-${tariff.id}`;
+    setActionLoadingKey(actionKey);
+    try {
+      const response = await fetch(`/api/v1/tariff-grids/${tariff.id}/packages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lessonsCount, pricePerLessonRub })
+      });
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      setNotice({ type: 'error', text: payload?.message ?? 'Не удалось добавить пакет' });
-      return;
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        setNotice({ type: 'error', text: payload?.message ?? 'Не удалось добавить пакет' });
+        return;
+      }
+
+      setNotice({ type: 'success', text: 'Пакет добавлен' });
+      await loadTariffs();
+    } finally {
+      setActionLoadingKey((current) => (current === actionKey ? null : current));
     }
-
-    setNotice({ type: 'success', text: 'Пакет добавлен' });
-    await loadTariffs();
   };
 
   const deleteTariffGrid = async (tariff: TariffGrid) => {
@@ -197,16 +212,22 @@ export function TariffsTab() {
       return;
     }
 
-    const response = await fetch(`/api/v1/tariff-grids/${tariff.id}`, { method: 'DELETE' });
+    const actionKey = `delete-${tariff.id}`;
+    setActionLoadingKey(actionKey);
+    try {
+      const response = await fetch(`/api/v1/tariff-grids/${tariff.id}`, { method: 'DELETE' });
 
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-      setNotice({ type: 'error', text: payload?.message ?? 'Не удалось удалить тариф' });
-      return;
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        setNotice({ type: 'error', text: payload?.message ?? 'Не удалось удалить тариф' });
+        return;
+      }
+
+      setNotice({ type: 'success', text: 'Тариф удалён' });
+      await loadTariffs();
+    } finally {
+      setActionLoadingKey((current) => (current === actionKey ? null : current));
     }
-
-    setNotice({ type: 'success', text: 'Тариф удалён' });
-    await loadTariffs();
   };
 
   return (
@@ -281,9 +302,11 @@ export function TariffsTab() {
               Добавить пакет
             </Button>
             <Button onClick={handleCreateTariff} disabled={!canCreate || creating}>
+              {creating ? <Loader className="mr-2 size-4 animate-spin" /> : null}
               {creating ? 'Создаём...' : 'Создать тариф'}
             </Button>
             <Button variant="secondary" onClick={() => void loadTariffs()} disabled={loading}>
+              {loading ? <Loader className="mr-2 size-4 animate-spin" /> : null}
               {loading ? 'Обновляем...' : 'Обновить список'}
             </Button>
           </div>
@@ -343,13 +366,24 @@ export function TariffsTab() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => void renameTariffGrid(tariff)}>Переименовать</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => void addPackageToTariff(tariff)}>Добавить пакет</DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={actionLoadingKey === `rename-${tariff.id}`}
+                            onClick={() => void renameTariffGrid(tariff)}
+                          >
+                            {actionLoadingKey === `rename-${tariff.id}` ? 'Переименование...' : 'Переименовать'}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={actionLoadingKey === `add-package-${tariff.id}`}
+                            onClick={() => void addPackageToTariff(tariff)}
+                          >
+                            {actionLoadingKey === `add-package-${tariff.id}` ? 'Добавление...' : 'Добавить пакет'}
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             className="text-destructive focus:text-destructive"
+                            disabled={actionLoadingKey === `delete-${tariff.id}`}
                             onClick={() => void deleteTariffGrid(tariff)}
                           >
-                            Удалить тариф
+                            {actionLoadingKey === `delete-${tariff.id}` ? 'Удаление...' : 'Удалить тариф'}
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>

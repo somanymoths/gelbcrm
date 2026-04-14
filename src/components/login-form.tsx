@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
+import { Loader } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -83,6 +84,7 @@ export function LoginForm() {
       ) : null}
 
       <Button type="submit" disabled={loading}>
+        {loading ? <Loader className="size-4 animate-spin" /> : null}
         {loading ? 'Вход...' : 'Войти'}
       </Button>
     </form>
