@@ -59,6 +59,7 @@ function formatCountdown(targetDate: string | null, nowTs: number): string {
 export default function PaymentLinkPage() {
   const params = useParams<{ slug: string }>();
   const searchParams = useSearchParams();
+  const slug = useMemo(() => (typeof params?.slug === 'string' ? params.slug : ''), [params]);
   const [payerName, setPayerName] = useState('');
   const [payerEmail, setPayerEmail] = useState('');
   const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
@@ -67,10 +68,10 @@ export default function PaymentLinkPage() {
   const [tariff, setTariff] = useState<PublicTariff | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [nowTs, setNowTs] = useState(Date.now());
-  const presetName = useMemo(() => searchParams.get('name')?.trim() ?? '', [searchParams]);
-  const presetEmail = useMemo(() => searchParams.get('email')?.trim() ?? '', [searchParams]);
-  const expiresAt = useMemo(() => searchParams.get('expiresAt')?.trim() ?? null, [searchParams]);
-  const paymentLinkId = useMemo(() => searchParams.get('paymentLinkId')?.trim() ?? '', [searchParams]);
+  const presetName = useMemo(() => searchParams?.get('name')?.trim() ?? '', [searchParams]);
+  const presetEmail = useMemo(() => searchParams?.get('email')?.trim() ?? '', [searchParams]);
+  const expiresAt = useMemo(() => searchParams?.get('expiresAt')?.trim() ?? null, [searchParams]);
+  const paymentLinkId = useMemo(() => searchParams?.get('paymentLinkId')?.trim() ?? '', [searchParams]);
   const syncMarkerKey = useMemo(
     () => (paymentLinkId ? `gelbcrm:payment-in-progress:${paymentLinkId}` : null),
     [paymentLinkId]
@@ -88,7 +89,14 @@ export default function PaymentLinkPage() {
       setIsLoadingTariff(true);
       setErrorText(null);
 
-      const response = await fetch(`/api/v1/public/tariffs/${params.slug}`, { cache: 'no-store' });
+      if (!slug) {
+        setTariff(null);
+        setErrorText('Ссылка оплаты не найдена или устарела.');
+        setIsLoadingTariff(false);
+        return;
+      }
+
+      const response = await fetch(`/api/v1/public/tariffs/${slug}`, { cache: 'no-store' });
       const payload = (await response.json().catch(() => null)) as PublicTariff | { message?: string } | null;
 
       if (!active) return;
@@ -109,7 +117,7 @@ export default function PaymentLinkPage() {
     return () => {
       active = false;
     };
-  }, [params.slug]);
+  }, [slug]);
 
   useEffect(() => {
     if (presetName && !payerName) {
@@ -255,7 +263,11 @@ export default function PaymentLinkPage() {
     setIsSubmitting(true);
 
     try {
-      const returnUrl = `${window.location.origin}/payment-links/${params.slug}`;
+      if (!slug) {
+        setErrorText('Ссылка оплаты не найдена или устарела.');
+        return;
+      }
+      const returnUrl = `${window.location.origin}/payment-links/${slug}`;
 
       const response = await fetch('/api/v1/payments/create', {
         method: 'POST',

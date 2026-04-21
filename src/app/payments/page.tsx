@@ -20,7 +20,7 @@ export default function PaymentsPage() {
   const searchParams = useSearchParams();
 
   const defaultTab = useMemo(() => {
-    const tab = searchParams.get('tab');
+    const tab = searchParams?.get('tab');
 
     if (tab === TABS.history) {
       return TABS.history;
