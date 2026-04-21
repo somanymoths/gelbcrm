@@ -91,6 +91,7 @@ type PaymentLink = {
   status: 'pending' | 'paid' | 'failed' | 'expired';
   payment_url: string;
   amount: number;
+  lessons_count: number | null;
   created_at: string;
   expires_at: string | null;
 };
@@ -154,6 +155,15 @@ function formatNextLessonDate(value: string | null | undefined): string {
   });
 
   return `${weekday}, ${dayMonth}`;
+}
+
+function formatLessonsCountRu(value: number): string {
+  const count = Math.max(0, Math.trunc(value));
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${count} занятие`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${count} занятия`;
+  return `${count} занятий`;
 }
 
 function auditActionLabel(action: string): string {
@@ -502,9 +512,13 @@ export function FunnelBoard() {
 
     for (const item of paymentLinks) {
       if (item.status === 'paid') {
+        const titleSuffix =
+          typeof item.lessons_count === 'number' && Number.isFinite(item.lessons_count)
+            ? ` · ${formatLessonsCountRu(item.lessons_count)}`
+            : '';
         events.push({
           id: `payment-${item.id}`,
-          title: 'Оплата подтверждена',
+          title: `Оплата подтверждена${titleSuffix}`,
           created_at: item.created_at,
           color: '#b7ebd0'
         });

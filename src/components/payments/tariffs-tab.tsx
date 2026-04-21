@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -238,7 +237,7 @@ export function TariffsTab() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Новый тариф (серверный)</CardTitle>
+          <CardTitle>Новый тариф</CardTitle>
           <CardDescription>Создайте тариф и добавьте пакеты занятий.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -352,7 +351,6 @@ export function TariffsTab() {
                             <span>
                               {pkg.lessons_count} занятий x {formatRub(pkg.price_per_lesson_rub)} = {formatRub(pkg.total_price_rub)}
                             </span>
-                            {pkg.is_active ? <Badge>Активен</Badge> : <Badge variant="outline">Неактивен</Badge>}
                           </div>
                         ))}
                       </div>

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { BookType, CalendarDays, Funnel, LogOut, Wallet, BookOpenText, type LucideIcon } from 'lucide-react';
+import { BookType, CalendarDays, Funnel, LogOut, Wallet, BookOpenText, Rows3, type LucideIcon } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import {
   SidebarFooter,
@@ -24,6 +24,7 @@ export function AppNav({ role, pathname }: { role: AppRole; pathname: string }) 
     '/funnel': Funnel,
     '/teachers': BookType,
     '/payments': Wallet,
+    '/lenta': Rows3,
     '/instructions': BookOpenText,
     '/journal': CalendarDays
   };
