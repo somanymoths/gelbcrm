@@ -20,6 +20,34 @@ type PaymentHistoryItem = {
   paid_at: string | null;
 };
 
+const HIDDEN_PAYMENT_IDS = new Set([
+  '3140e38a-000f-5000-8000-11aeab562b2f',
+  '3140e5a5-000f-5001-9000-10eae9323cf7',
+  '3140f0db-000f-5000-b000-196c2a2776b2',
+  '3140f565-000f-5000-b000-1507ecf17796',
+  '31412eb7-000f-5000-b000-1f9e05697ff7',
+  '3141519e-000f-5000-b000-1ba39b11644a',
+  '314151ad-000f-5001-8000-1b3528cd2884',
+  '3148e2b5-000f-5001-9000-13d57b516539',
+  '31497bc1-000f-5001-9000-1fb3265efb84',
+  '314b2913-000f-5001-8000-128f717a5308',
+  '314b2b59-000f-5000-b000-1b3922d5743d',
+  '314b30a8-000f-5000-b000-143e3eca1898',
+  '314b3737-000f-5001-8000-113ffe89b291',
+  '314b4e6f-000f-5001-9000-18e67ee3af85',
+  '31535d81-000f-5000-b000-1ce263dd37d8',
+  '3154c447-000f-5001-9000-19389ba766f2',
+  'mock-1774367617182',
+  '3154c7b3-000f-5001-8000-19af62924c13',
+  '3154ca8e-000f-5001-8000-156fce33aaca',
+  '3156fa91-000f-5000-b000-13da927c5a42',
+  '31613fc1-000f-5001-8000-1acdb3338d08',
+  '3161415e-000f-5001-8000-15f6108e29a2',
+  '31614323-000f-5001-9000-19cb050ad24f',
+  '31614523-000f-5000-8000-12ba916303b8',
+  '316f0601-000f-5000-b000-1b7bb2722fe4'
+]);
+
 function getStatusBadge(status: string) {
   if (status === 'succeeded' || status === 'paid') {
     return <Badge>Оплачено</Badge>;
@@ -52,7 +80,7 @@ export function PaymentsHistoryTab() {
         return;
       }
 
-      setRows(json);
+      setRows(json.filter((row) => !HIDDEN_PAYMENT_IDS.has(row.provider_payment_id)));
     } finally {
       setLoading(false);
     }

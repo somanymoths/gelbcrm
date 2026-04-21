@@ -100,6 +100,7 @@ export type FunnelPaymentLink = {
   payment_url: string;
   status: 'pending' | 'paid' | 'failed' | 'expired';
   amount: number;
+  lessons_count: number | null;
   currency: string;
   created_at: string;
   updated_at: string;
@@ -1368,35 +1369,74 @@ export async function listCardPaymentLinks(input: { cardId: string }): Promise<F
   const [rows] = await getPool().query<mysql.RowDataPacket[]>(
     `
       SELECT
-        id,
-        provider,
-        provider_payment_id,
-        payment_url,
-        status,
-        amount,
-        currency,
-        created_at,
-        updated_at,
-        expires_at
-      FROM student_payment_links
-      WHERE student_id = ?
-      ORDER BY created_at DESC
+        spl.id,
+        spl.provider,
+        spl.provider_payment_id,
+        spl.payment_url,
+        spl.status,
+        spl.amount,
+        tp.lessons_count AS tariff_lessons_count,
+        yp.metadata AS yookassa_metadata,
+        spl.currency,
+        spl.created_at,
+        spl.updated_at,
+        spl.expires_at
+      FROM student_payment_links spl
+      LEFT JOIN tariff_packages tp ON tp.id = spl.tariff_package_id
+      LEFT JOIN yookassa_payments yp ON yp.provider_payment_id = spl.provider_payment_id
+      WHERE spl.student_id = ?
+      ORDER BY spl.created_at DESC
     `,
     [input.cardId]
   );
 
-  return rows.map((row) => ({
-    id: String(row.id),
-    provider: String(row.provider),
-    provider_payment_id: String(row.provider_payment_id),
-    payment_url: String(row.payment_url),
-    status: String(row.status) as FunnelPaymentLink['status'],
-    amount: Number(row.amount),
-    currency: String(row.currency),
-    created_at: String(row.created_at),
-    updated_at: String(row.updated_at),
-    expires_at: row.expires_at ? String(row.expires_at) : null
-  }));
+  const parseMetadataLessonsCount = (metadata: unknown): number | null => {
+    if (!metadata) return null;
+
+    let parsed: unknown = metadata;
+    if (typeof metadata === 'string') {
+      try {
+        parsed = JSON.parse(metadata);
+      } catch {
+        return null;
+      }
+    }
+
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const value = (parsed as { lessons_count?: unknown }).lessons_count;
+    const lessons = Number(value);
+    if (!Number.isFinite(lessons) || lessons <= 0) return null;
+    return Math.trunc(lessons);
+  };
+
+  return rows.map((row) => {
+    const metadataLessons = parseMetadataLessonsCount(row.yookassa_metadata);
+    const tariffLessons =
+      row.tariff_lessons_count === null || row.tariff_lessons_count === undefined
+        ? null
+        : Number(row.tariff_lessons_count);
+
+    const lessonsCount =
+      metadataLessons !== null
+        ? metadataLessons
+        : tariffLessons !== null && Number.isFinite(tariffLessons)
+          ? Math.max(0, Math.trunc(tariffLessons))
+          : null;
+
+    return {
+      id: String(row.id),
+      provider: String(row.provider),
+      provider_payment_id: String(row.provider_payment_id),
+      payment_url: String(row.payment_url),
+      status: String(row.status) as FunnelPaymentLink['status'],
+      amount: Number(row.amount),
+      lessons_count: lessonsCount,
+      currency: String(row.currency),
+      created_at: String(row.created_at),
+      updated_at: String(row.updated_at),
+      expires_at: row.expires_at ? String(row.expires_at) : null
+    };
+  });
 }
 
 export async function getActiveCardPaymentLink(input: { cardId: string }): Promise<FunnelPaymentLink | null> {
@@ -1445,6 +1485,7 @@ export async function getActiveCardPaymentLink(input: { cardId: string }): Promi
     payment_url: String(rows[0].payment_url),
     status: String(rows[0].status) as FunnelPaymentLink['status'],
     amount: Number(rows[0].amount),
+    lessons_count: null,
     currency: String(rows[0].currency),
     created_at: String(rows[0].created_at),
     updated_at: String(rows[0].updated_at),
